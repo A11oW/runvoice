@@ -227,6 +227,14 @@ stop_and_insert() {
 
   local old=""; [ "$RESTORE_CLIPBOARD" = "1" ] && old="$(pbpaste 2>/dev/null || true)"
   printf '%s' "$fixed" | pbcopy
+
+  # В режиме приложения ⌘V отправляет само приложение (у него есть Accessibility).
+  if [ "${DICTATE_NO_PASTE:-0}" = "1" ]; then
+    log "paste: delegated to app"
+    status done
+    return 0
+  fi
+
   sleep 0.15
   paste_text
   sleep 0.5

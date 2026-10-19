@@ -8,6 +8,7 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 import Carbon.HIToolbox
+import CoreGraphics
 
 // MARK: - Пути
 
@@ -235,6 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotkeys: [EventHotKeyRef?] = []
     private var settingsWindow: SettingsWindow?
     private var accessItem: NSMenuItem?
+    private var lastTrust: Bool?
 
     private var lastState = ""
     private var closeAt: Date?
@@ -249,6 +251,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         installHotKeyHandler()
         registerHotkeys()
         requestPermissions()
+
+        if !AXIsProcessTrusted() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.promptForAccessibility()
+            }
+        }
 
         // сбросить возможный «зависший» статус от прошлого запуска
         try? "idle".write(to: Paths.status, atomically: true, encoding: .utf8)
@@ -373,6 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         env["DICTATE_STATE_DIR"] = Paths.state.path
         env["HUD_BIN"] = "/nonexistent"   // окно рисует само приложение
         env["DICTATE_NOTIFY"] = "0"
+        env["DICTATE_NO_PASTE"] = "1"     // ⌘V отправляет само приложение
 
         let settings = SettingsStore.load()
         if !settings.promptFix.isEmpty { env["DICTATE_PROMPT_FIX"] = settings.promptFix }
@@ -388,6 +397,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch {
             showAlert("Не удалось запустить dictate.sh: \(error.localizedDescription)")
         }
+    }
+
+    /// Отправляет ⌘V из процесса приложения (у него есть Accessibility).
+    private func postPaste() {
+        guard AXIsProcessTrusted() else {
+            Log.write("paste: accessibility denied")
+            return
+        }
+        let key: CGKeyCode = 9   // физическая клавиша V
+        let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true)
+        let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
+        down?.flags = .maskCommand
+        up?.flags = .maskCommand
+        down?.post(tap: .cghidEventTap)
+        usleep(30_000)
+        up?.post(tap: .cghidEventTap)
+        Log.write("paste: app cgEvent")
     }
 
     private func showAlert(_ text: String) {
@@ -520,6 +546,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func tick() {
+        let trust = AXIsProcessTrusted()
+        if trust != lastTrust {
+            lastTrust = trust
+            Log.write("accessibility=\(trust)")
+        }
         if let closeAt, Date() >= closeAt { hideHUD(); return }
         guard let raw = try? String(contentsOf: Paths.status, encoding: .utf8) else { return }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -548,6 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             showHUD(); busy(true); label.stringValue = msg.isEmpty ? "Исправляю через OpenCode…" : msg
             setIcon("ellipsis")
         case "done":
+            postPaste()
             showHUD(); busy(false); label.stringValue = "✅ " + (msg.isEmpty ? "Готово" : msg)
             setIcon("checkmark")
             closeAt = Date().addingTimeInterval(2.0)
@@ -574,6 +606,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Разрешения
+
+    private func promptForAccessibility() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Runvoice нужен доступ Accessibility"
+        alert.informativeText = "Без этого разрешения приложение не сможет вставлять распознанный текст в активное окно.\n\nВключите Runvoice в списке Accessibility."
+        alert.addButton(withTitle: "Открыть настройки")
+        alert.addButton(withTitle: "Позже")
+        if alert.runModal() == .alertFirstButtonReturn {
+            openAccessibility()
+        }
+    }
 
     private func requestPermissions() {
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
