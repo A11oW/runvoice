@@ -57,7 +57,7 @@ OpenCode (орфография, пунктуация, заглавные), и в
 ## Структура проекта
 
 ```
-self/
+self/runvoice/
 ├── bin/
 │   ├── dictate.sh          # основной сценарий
 │   ├── pastev.c            # исходник помощника вставки ⌘V
@@ -132,8 +132,8 @@ make
 `install.sh` генерирует файл из `config/skhdrc.tmpl`:
 
 ```
-alt - space          : /Users/a11ow/Projects/self/bin/dictate.sh toggle
-ctrl + shift - space : /Users/a11ow/Projects/self/bin/dictate.sh agent
+alt - space          : /Users/a11ow/Projects/self/runvoice/bin/dictate.sh toggle
+ctrl + shift - space : /Users/a11ow/Projects/self/runvoice/bin/dictate.sh agent
 ```
 
 ```sh
@@ -483,9 +483,9 @@ launchctl bootout gui/$(id -u)/ai.opencode.whisper-server 2>/dev/null
 rm -f ~/Library/LaunchAgents/ai.opencode.whisper-server.plist
 
 # файлы инструмента — это каталог проекта:
-#   /Users/a11ow/Projects/self  (README, install.sh, Makefile, bin/, config/)
+#   /Users/a11ow/Projects/self/runvoice  (README, install.sh, Makefile, bin/, config/)
 # Если в нём нет ничего постороннего:
-# rm -rf /Users/a11ow/Projects/self
+# rm -rf /Users/a11ow/Projects/self/runvoice
 
 # модели
 rm -rf ~/.local/share/whisper
