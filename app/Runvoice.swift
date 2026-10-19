@@ -226,7 +226,7 @@ final class SettingsWindow: NSWindowController {
 
 // MARK: - Приложение
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
     private var spinner: NSProgressIndicator!
@@ -234,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private var hotkeys: [EventHotKeyRef?] = []
     private var settingsWindow: SettingsWindow?
+    private var accessItem: NSMenuItem?
 
     private var lastState = ""
     private var closeAt: Date?
@@ -242,6 +243,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
         Log.write("settings fix=\(saved.promptFix.count) agent=\(saved.promptAgent.count)")
+        Log.write("accessibility=\(AXIsProcessTrusted())")
         setupStatusItem()
         setupHUD()
         installHotKeyHandler()
@@ -282,7 +284,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(menu, "Открыть папку данных", #selector(openData))
         add(menu, "Проверить зависимости…", #selector(checkDeps))
         menu.addItem(.separator())
+
+        let access = NSMenuItem(title: "Accessibility", action: #selector(openAccessibility), keyEquivalent: "")
+        access.target = self
+        menu.addItem(access)
+        accessItem = access
+        menu.addItem(.separator())
+
         add(menu, "Выход", #selector(quit))
+        menu.delegate = self
         statusItem.menu = menu
     }
 
@@ -299,6 +309,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         if settingsWindow == nil { settingsWindow = SettingsWindow() }
         settingsWindow?.show()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        let trusted = AXIsProcessTrusted()
+        accessItem?.title = trusted ? "✓ Accessibility разрешено" : "⚠️ Нет Accessibility — открыть настройки"
+        accessItem?.action = trusted ? nil : #selector(openAccessibility)
+        accessItem?.target = self
+        accessItem?.isEnabled = !trusted
+    }
+
+    @objc private func openAccessibility() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @objc private func openLog() {

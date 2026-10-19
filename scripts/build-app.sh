@@ -28,7 +28,15 @@ cp "$REPO/bin/dictate.sh" "$APP/Contents/Resources/dictate.sh"
 cp "$REPO/bin/pastev" "$APP/Contents/Resources/pastev"
 chmod +x "$APP/Contents/Resources/dictate.sh" "$APP/Contents/Resources/pastev"
 
-echo "==> подпись (ad-hoc)"
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+echo "==> подпись"
+IDENTITY="${RUNVOICE_SIGN_IDENTITY:-Runvoice Local Signing}"
+if security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
+  codesign --force --deep --sign "$IDENTITY" "$APP" >/dev/null 2>&1 \
+    || codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  echo "    $IDENTITY"
+else
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  echo "    ad-hoc (сертификат '$IDENTITY' не найден)"
+fi
 
 echo "Готово: $APP"
