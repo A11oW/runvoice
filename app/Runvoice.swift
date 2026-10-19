@@ -132,13 +132,14 @@ struct Settings: Codable {
     var model = "deepseek-flash"
     var baseURL = ""
     var restoreClipboard = false
+    var showHUD = true
     var hotkeyToggle = HotKeySetting()
     var hotkeyAgent = HotKeySetting(keyCode: 49,
                                     modifiers: UInt32(controlKey) | UInt32(shiftKey),
                                     display: "⌃⇧Space")
 
     enum CodingKeys: String, CodingKey {
-        case promptFix, promptAgent, language, provider, model, baseURL, restoreClipboard
+        case promptFix, promptAgent, language, provider, model, baseURL, restoreClipboard, showHUD
         case hotkeyToggle, hotkeyAgent
     }
 
@@ -153,6 +154,7 @@ struct Settings: Codable {
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
+        showHUD = try c.decodeIfPresent(Bool.self, forKey: .showHUD) ?? true
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
         hotkeyAgent = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyAgent)
             ?? HotKeySetting(keyCode: 49,
@@ -198,6 +200,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var modelField: NSTextField!
     private var baseURLField: NSTextField!
     private var restoreCheck: NSButton!
+    private var hudCheck: NSButton!
     private var toggleHotkeyButton: NSButton!
     private var agentHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
@@ -213,6 +216,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                             display: "⌃⇧Space")
 
     var onCaptureStateChanged: ((Bool) -> Void)?
+    var onSettingsSaved: (() -> Void)?
 
     private let languages = ["ru", "en", "auto"]
 
@@ -320,6 +324,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
                                 target: nil, action: nil)
+        hudCheck = NSButton(checkboxWithTitle: "Показывать всплывающий бабл статуса",
+                            target: nil, action: nil)
 
         accessLabel = label("Accessibility: проверка…")
         accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
@@ -335,7 +341,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             depStack.addArrangedSubview(depLabel)
         }
 
-        let views: [NSView] = [languageLabel, languagePopup, restoreCheck,
+        let views: [NSView] = [languageLabel, languagePopup, restoreCheck, hudCheck,
                                diagLabel, accessLabel, accessButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -353,7 +359,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             restoreCheck.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 20),
             restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
-            diagLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 24),
+            hudCheck.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 8),
+            hudCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            diagLabel.topAnchor.constraint(equalTo: hudCheck.bottomAnchor, constant: 24),
             diagLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
             accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
@@ -676,6 +685,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         modelField.stringValue = settings.model
         baseURLField.stringValue = settings.baseURL
         restoreCheck.state = settings.restoreClipboard ? .on : .off
+        hudCheck.state = settings.showHUD ? .on : .off
 
         toggleHotkey = settings.hotkeyToggle
         agentHotkey = settings.hotkeyAgent
@@ -702,6 +712,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         default:
             languagePopup.selectItem(at: 0)
             restoreCheck.state = .off
+            hudCheck.state = .on
         }
     }
 
@@ -726,6 +737,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.restoreClipboard = restoreCheck.state == .on
+        settings.showHUD = hudCheck.state == .on
         settings.hotkeyToggle = toggleHotkey
         settings.hotkeyAgent = agentHotkey
 
@@ -740,6 +752,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
 
         SettingsStore.save(settings)
+        onSettingsSaved?()
         Log.write("settings saved")
         window?.close()
     }
@@ -787,6 +800,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeys: [EventHotKeyRef?] = []
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
+    private var hudEnabled = true
     private var toggleItem: NSMenuItem?
     private var agentItem: NSMenuItem?
 
@@ -796,6 +810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
+        hudEnabled = saved.showHUD
         Log.write("settings fix=\(saved.promptFix.count) agent=\(saved.promptAgent.count)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
@@ -903,6 +918,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = SettingsWindow()
             settingsWindow?.onCaptureStateChanged = { [weak self] capturing in
                 if capturing { self?.suspendHotkeys() } else { self?.registerHotkeys() }
+            }
+            settingsWindow?.onSettingsSaved = { [weak self] in
+                guard let self else { return }
+                self.hudEnabled = SettingsStore.load().showHUD
+                if !self.hudEnabled { self.panel?.orderOut(nil) }
             }
         }
         settingsWindow?.show()
@@ -1122,6 +1142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showHUD() {
+        guard hudEnabled else {
+            if panel?.isVisible == true { panel.orderOut(nil) }
+            return
+        }
         if !panel.isVisible {
             placeHUD()
             panel.orderFrontRegardless()
