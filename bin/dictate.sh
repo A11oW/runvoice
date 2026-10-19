@@ -222,7 +222,11 @@ stop_and_insert() {
   local fixed
   if [ -n "${OC_BASE_URL:-}" ]; then
     # прямой OpenAI-совместимый запрос (без OpenCode)
-    local url="${OC_BASE_URL%/}/chat/completions"
+    local url
+    case "$OC_BASE_URL" in
+      */chat/completions) url="$OC_BASE_URL" ;;
+      *) url="${OC_BASE_URL%/}/chat/completions" ;;
+    esac
     local payload; payload="$(jq -cn --arg model "$OC_MODEL_ID" --arg sys "$SYS" --arg raw "$raw" \
       '{model: $model, temperature: 0, messages: [{role: "system", content: $sys}, {role: "user", content: ("<text>" + $raw + "</text>")}]}')"
     log "generate: direct $url model=$OC_MODEL_ID"
@@ -238,7 +242,10 @@ stop_and_insert() {
   else
     fixed="$("${OC_BIN:-opencode}" api post /api/experimental/generate --data "$body" 2>>"$LOG" | jq -r '.data.text // empty')"
   fi
-  [ -z "$fixed" ] && fixed="$raw"
+  if [ -z "$fixed" ]; then
+    log "generate: пустой ответ — подставляю RAW"
+    fixed="$raw"
+  fi
   log "FIXED: $fixed"
 
   if [ "$DRY_RUN" = "1" ]; then printf 'RAW:   %s\nFIXED: %s\n' "$raw" "$fixed"; status info "dry run"; return 0; fi
