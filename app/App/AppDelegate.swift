@@ -25,7 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var toggleItem: NSMenuItem?
     private var agentItem: NSMenuItem?
 
-    private var lastState = ""
+    private var lastStateKey = ""
     private var closeAt: Date?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -448,48 +448,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let closeAt, Date() >= closeAt { hideHUD(); return }
         guard let raw = try? String(contentsOf: Paths.status, encoding: .utf8) else { return }
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard let state = DictationState(raw: raw) else { return }
+        guard state.key != lastStateKey else { return }
 
-        let parts = text.split(separator: "|", maxSplits: 1).map(String.init)
-        let state = parts[0]
-        let msg = parts.count > 1 ? parts[1] : ""
-        guard state != lastState else { return }
-
-        lastState = state
+        lastStateKey = state.key
         closeAt = nil
-        Log.write("state=\(state) msg=\(msg)")
+        Log.write("state=\(state.key) msg=\(state.message)")
+        apply(state)
+    }
 
-        switch state {
-        case "preparing":
-            showHUD(); busy(true); label.stringValue = msg.isEmpty ? "🎤 Готовлю микрофон…" : msg
-            setIcon("mic")
-        case "recording":
-            showHUD(); busy(true); label.stringValue = msg.isEmpty ? "🎤 Слушаю…" : msg
-            setIcon("mic")
-        case "transcribing":
-            showHUD(); busy(true); label.stringValue = msg.isEmpty ? "Распознаю…" : msg
-            setIcon("waveform")
-        case "fixing":
-            showHUD(); busy(true); label.stringValue = msg.isEmpty ? "Исправляю через OpenCode…" : msg
-            setIcon("ellipsis")
-        case "done":
-            postPaste()
-            showHUD(); busy(false); label.stringValue = "✅ " + (msg.isEmpty ? "Готово" : msg)
-            setIcon("checkmark")
-            closeAt = Date().addingTimeInterval(2.0)
-        case "info":
-            showHUD(); busy(false); label.stringValue = "ℹ️ " + (msg.isEmpty ? "Готово" : msg)
-            setIcon("info.circle")
-            closeAt = Date().addingTimeInterval(2.5)
-        case "error":
-            showHUD(); busy(false); label.stringValue = "⚠️ " + (msg.isEmpty ? "Ошибка" : msg)
-            setIcon("exclamationmark.triangle")
-            closeAt = Date().addingTimeInterval(5)
-        case "idle", "quit":
+    private func apply(_ state: DictationState) {
+        guard let hud = state.hud else {
             hideHUD()
-        default:
-            break
+            return
+        }
+
+        if case .done = state { postPaste() }
+
+        showHUD()
+        busy(hud.busy)
+        label.stringValue = hud.text
+        setIcon(hud.icon)
+
+        if let delay = hud.autoHideAfter {
+            closeAt = Date().addingTimeInterval(delay)
         }
     }
 
