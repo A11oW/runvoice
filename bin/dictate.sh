@@ -217,10 +217,12 @@ stop_and_insert() {
 
   status fixing
   local SYS="$PROMPT_FIX"; [ "$mode" = "agent" ] && SYS="$PROMPT_AGENT"
-  local body; body="$(jq -cn --arg sys "$SYS" --arg raw "$raw" --arg prov "$OC_PROVIDER" --arg id "$OC_MODEL_ID" --arg var "$OC_VARIANT" \
-    '{prompt: ($sys + "\n\n<text>" + $raw + "</text>"), model: ({providerID: $prov, id: $id} + (if $var == "" then {} else {variant: $var} end))}')"
   local fixed
-  if [ -n "${OC_BASE_URL:-}" ]; then
+  if [ "${DICTATE_USE_OC:-1}" = "0" ] && [ -z "${OC_BASE_URL:-}" ]; then
+    # OpenCode отключён и своего endpoint нет — без правки
+    log "generate: OpenCode отключён — вставляю RAW"
+    fixed="$raw"
+  elif [ -n "${OC_BASE_URL:-}" ]; then
     # прямой OpenAI-совместимый запрос (без OpenCode)
     local url
     case "$OC_BASE_URL" in
@@ -240,6 +242,8 @@ stop_and_insert() {
         | jq -r '.choices[0].message.content // empty')"
     fi
   else
+    local body; body="$(jq -cn --arg sys "$SYS" --arg raw "$raw" --arg prov "$OC_PROVIDER" --arg id "$OC_MODEL_ID" --arg var "$OC_VARIANT" \
+      '{prompt: ($sys + "\n\n<text>" + $raw + "</text>"), model: ({providerID: $prov, id: $id} + (if $var == "" then {} else {variant: $var} end))}')"
     fixed="$("${OC_BIN:-opencode}" api post /api/experimental/generate --data "$body" 2>>"$LOG" | jq -r '.data.text // empty')"
   fi
   if [ -z "$fixed" ]; then

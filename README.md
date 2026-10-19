@@ -201,10 +201,13 @@ codesign -d -r- /Applications/Runvoice.app
 | Провайдер модели правки | `OC_PROVIDER` |
 | Модель правки | `OC_MODEL_ID` |
 | Базовый URL (OpenAI-compatible) | `OC_BASE_URL` |
+| Использовать OpenCode CLI | `DICTATE_USE_OC` (по умолчанию включено) |
 
-- Пусто — запрос идёт через OpenCode (`/api/experimental/generate`).
-- Если задан — текст отправляется напрямую в `{URL}/chat/completions`
-  (OpenAI-совместимый API). Ключ, если нужен, — переменная `OC_API_KEY`.
+- Базовый URL пуст и OpenCode включён — запрос через OpenCode
+  (`/api/experimental/generate`).
+- Задан базовый URL — текст отправляется напрямую в `{URL}/chat/completions`
+  (OpenAI-совместимый API), OpenCode не нужен. Ключ, если нужен, — `OC_API_KEY`.
+- OpenCode выключен и URL пуст — текст вставляется **без правки** (только Whisper).
 
 **Prompt** (описание модели):
 
@@ -448,6 +451,7 @@ swiftc -O -o bin/dictatehud bin/dictatehud.swift
 | `OC_MODEL_ID` | `deepseek-flash` | идентификатор модели |
 | `OC_VARIANT` | `none` | вариант модели (`none` = без «мышления»; пусто — по умолчанию) |
 | `OC_BASE_URL` | — | OpenAI-совместимый base URL; пусто → через OpenCode |
+| `DICTATE_USE_OC` | `1` | `0` — не использовать OpenCode CLI (без URL вставится RAW) |
 | `OC_API_KEY` | — | Bearer-ключ для прямого запроса к `OC_BASE_URL` |
 | `DICTATE_PROMPT_FIX` | — | промпт режима исправления (перебивает встроенный) |
 | `DICTATE_PROMPT_AGENT` | — | промпт режима «инструкция агенту» |

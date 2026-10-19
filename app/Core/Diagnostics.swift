@@ -19,7 +19,7 @@ enum OpenCodeLocator {
     }
 }
 
-enum Dependency: CaseIterable {
+enum Dependency: CaseIterable, Equatable {
     case ffmpeg, whisperServer, whisperCli, whisperModel, vadModel, opencode
 
     var title: String {

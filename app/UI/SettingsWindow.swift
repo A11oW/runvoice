@@ -12,6 +12,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var providerField: NSTextField!
     private var modelField: NSTextField!
     private var baseURLField: NSTextField!
+    private var useOpenCodeCheck: NSButton!
     private var restoreCheck: NSButton!
     private var hudCheck: NSButton!
     private var toggleHotkeyButton: NSButton!
@@ -198,11 +199,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let providerLabel = label("Провайдер модели правки")
         let modelLabel = label("Модель правки")
         let baseURLLabel = label("Базовый URL (OpenAI-compatible)")
-        let hint = label("Пусто — запрос идёт через OpenCode.\nЕсли задан — напрямую в {URL}/chat/completions.")
+        let hint = label("Пусто — через OpenCode (если включён).\nЕсли задан URL — напрямую в {URL}/chat/completions.\nБез OpenCode и без URL — текст вставится без правки.")
         let note = label("Ключ доступа, если нужен: переменная окружения OC_API_KEY.")
 
         hint.lineBreakMode = .byWordWrapping
-        hint.maximumNumberOfLines = 2
+        hint.maximumNumberOfLines = 3
         note.lineBreakMode = .byWordWrapping
         note.maximumNumberOfLines = 2
 
@@ -212,9 +213,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         modelField.placeholderString = "deepseek-flash"
         baseURLField = NSTextField()
         baseURLField.placeholderString = "https://api.example.com/v1"
+        useOpenCodeCheck = NSButton(checkboxWithTitle: "Использовать OpenCode CLI (если базовый URL не задан)",
+                                    target: nil, action: nil)
 
         let views: [NSView] = [providerLabel, providerField, modelLabel, modelField,
-                               baseURLLabel, baseURLField, hint, note]
+                               baseURLLabel, baseURLField, useOpenCodeCheck, hint, note]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -239,7 +242,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             baseURLField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             baseURLField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
-            hint.topAnchor.constraint(equalTo: baseURLField.bottomAnchor, constant: 12),
+            useOpenCodeCheck.topAnchor.constraint(equalTo: baseURLField.bottomAnchor, constant: 14),
+            useOpenCodeCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            useOpenCodeCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+
+            hint.topAnchor.constraint(equalTo: useOpenCodeCheck.bottomAnchor, constant: 12),
             hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
@@ -473,7 +480,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         accessLabel.textColor = ok ? .systemGreen : .systemOrange
         accessButton.isHidden = ok
 
+        let settings = SettingsStore.load()
         for (index, dependency) in Dependency.allCases.enumerated() where index < depLabels.count {
+            if dependency == .opencode && !settings.useOpenCode {
+                depLabels[index].stringValue = "– OpenCode CLI (не используется)"
+                depLabels[index].textColor = .secondaryLabelColor
+                continue
+            }
+
             let available = dependency.isOK()
             depLabels[index].stringValue = available
                 ? "✓ \(dependency.title)"
@@ -497,6 +511,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         providerField.stringValue = settings.provider
         modelField.stringValue = settings.model
         baseURLField.stringValue = settings.baseURL
+        useOpenCodeCheck.state = settings.useOpenCode ? .on : .off
         restoreCheck.state = settings.restoreClipboard ? .on : .off
         hudCheck.state = settings.showHUD ? .on : .off
 
@@ -522,6 +537,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
             baseURLField.stringValue = ""
+            useOpenCodeCheck.state = .on
         default:
             languagePopup.selectItem(at: 0)
             restoreCheck.state = .off
@@ -549,6 +565,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.useOpenCode = useOpenCodeCheck.state == .on
         settings.restoreClipboard = restoreCheck.state == .on
         settings.showHUD = hudCheck.state == .on
         settings.hotkeyToggle = toggleHotkey

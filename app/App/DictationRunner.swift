@@ -27,6 +27,7 @@ final class DictationRunner {
             ("OC_PROVIDER", settings.provider.isEmpty ? nil : settings.provider),
             ("OC_MODEL_ID", settings.model.isEmpty ? nil : settings.model),
             ("OC_BASE_URL", settings.baseURL.isEmpty ? nil : settings.baseURL),
+            ("DICTATE_USE_OC", settings.useOpenCode ? "1" : "0"),
             ("DICTATE_RESTORE_CLIPBOARD", settings.restoreClipboard ? "1" : nil),
         ]
         for (key, value) in forwarded {

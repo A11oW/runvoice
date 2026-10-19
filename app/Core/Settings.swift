@@ -16,6 +16,7 @@ struct Settings: Codable {
     var provider = "deepseek"
     var model = "deepseek-flash"
     var baseURL = ""
+    var useOpenCode = true
     var restoreClipboard = false
     var showHUD = true
     var hotkeyToggle = HotKeySetting()
@@ -24,7 +25,7 @@ struct Settings: Codable {
                                     display: "⌃⇧Space")
 
     enum CodingKeys: String, CodingKey {
-        case promptFix, promptAgent, language, provider, model, baseURL, restoreClipboard, showHUD
+        case promptFix, promptAgent, language, provider, model, baseURL, useOpenCode, restoreClipboard, showHUD
         case hotkeyToggle, hotkeyAgent
     }
 
@@ -38,6 +39,7 @@ struct Settings: Codable {
         provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+        useOpenCode = try c.decodeIfPresent(Bool.self, forKey: .useOpenCode) ?? true
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
         showHUD = try c.decodeIfPresent(Bool.self, forKey: .showHUD) ?? true
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
