@@ -8,16 +8,12 @@ import CoreGraphics
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
-    private var panel: NSPanel!
-    private var bubble: BubbleView!
-    private var spinner: NSProgressIndicator!
-    private var label: NSTextField!
+    private var hud: HUDController!
     private var timer: Timer?
     private let hotkeys = HotkeyMonitor()
     private let runner = DictationRunner()
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
-    private var hudEnabled = true
     private var toggleItem: NSMenuItem?
     private var agentItem: NSMenuItem?
 
@@ -27,12 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
-        hudEnabled = saved.showHUD
         Log.write("settings fix=\(saved.promptFix.count) agent=\(saved.promptAgent.count)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
-        setupHUD()
+        hud = HUDController(statusItem: statusItem)
+        hud.setEnabled(saved.showHUD)
         hotkeys.onAction = { [weak self] action in
             self?.run(action)
         }
@@ -61,29 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if CommandLine.arguments.contains("--snapshot-hud") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                guard let self else { return }
-                self.showHUD()
-                self.busy(true)
-                self.label.stringValue = "🎤 Слушаю…"
-                self.bubble.needsDisplay = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    if let view = self.panel.contentView,
-                       let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                        view.cacheDisplay(in: view.bounds, to: rep)
-                        let image = NSImage(size: view.bounds.size)
-                        image.lockFocus()
-                        NSColor.windowBackgroundColor.setFill()
-                        view.bounds.fill()
-                        if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
-                            ctx.draw(cg, in: view.bounds)
-                        }
-                        image.unlockFocus()
-                        if let tiff = image.tiffRepresentation,
-                           let bitmap = NSBitmapImageRep(data: tiff),
-                           let png = bitmap.representation(using: .png, properties: [:]) {
-                            try? png.write(to: URL(fileURLWithPath: "/tmp/runvoice-hud.png"))
-                        }
-                    }
+                self?.hud.snapshot(to: "/tmp/runvoice-hud.png") {
                     NSApp.terminate(nil)
                 }
             }
@@ -139,8 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             settingsWindow?.onSettingsSaved = { [weak self] in
                 guard let self else { return }
-                self.hudEnabled = SettingsStore.load().showHUD
-                if !self.hudEnabled { self.panel?.orderOut(nil) }
+                self.hud.setEnabled(SettingsStore.load().showHUD)
                 self.reloadHotkeys()
             }
         }
@@ -248,102 +221,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-    // MARK: - Окно статуса
-
-    private func setupHUD() {
-        let w: CGFloat = 330
-        let body: CGFloat = 64
-        let h: CGFloat = body + 9   // тело + хвостик
-
-        bubble = BubbleView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-        bubble.bodyHeight = body
-
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        panel.isFloatingPanel = true
-        panel.becomesKeyOnlyIfNeeded = true
-        panel.level = .statusBar
-        panel.backgroundColor = .clear
-        panel.isOpaque = false
-        panel.hasShadow = true
-        panel.ignoresMouseEvents = true
-        panel.hidesOnDeactivate = false
-        panel.isMovable = false
-        panel.animationBehavior = .none
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-
-        spinner = NSProgressIndicator(frame: NSRect(x: 18, y: (body - 18) / 2, width: 18, height: 18))
-        spinner.style = .spinning
-        spinner.controlSize = .small
-        spinner.isIndeterminate = true
-        spinner.isDisplayedWhenStopped = false
-
-        let title = NSTextField(labelWithString: "Runvoice")
-        title.frame = NSRect(x: 50, y: body - 26, width: w - 66, height: 16)
-        title.font = .systemFont(ofSize: 11, weight: .medium)
-        title.textColor = NSColor(white: 1, alpha: 0.55)
-
-        label = NSTextField(labelWithString: "")
-        label.frame = NSRect(x: 50, y: 16, width: w - 66, height: 20)
-        label.font = .systemFont(ofSize: 14, weight: .semibold)
-        label.textColor = .white
-        label.lineBreakMode = .byTruncatingTail
-
-        bubble.addSubview(spinner)
-        bubble.addSubview(title)
-        bubble.addSubview(label)
-        panel.contentView = bubble
-    }
-
-    private func showHUD() {
-        guard hudEnabled else {
-            if panel?.isVisible == true { panel.orderOut(nil) }
-            return
-        }
-        if !panel.isVisible {
-            placeHUD()
-            panel.orderFrontRegardless()
-            Log.write("showHUD frame=\(panel.frame) visible=\(panel.isVisible) screen=\(panel.screen?.frame ?? .zero)")
-        }
-    }
-
-    private func placeHUD() {
-        let size = panel.frame.size
-
-        guard let button = statusItem.button, let window = button.window else {
-            let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            panel.setFrameOrigin(NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height))
-            bubble.tailX = size.width / 2
-            bubble.needsDisplay = true
-            return
-        }
-
-        let rectInWindow = button.convert(button.bounds, to: nil)
-        let screenRect = window.convertToScreen(rectInWindow)
-        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
-        let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-
-        var x = screenRect.midX - size.width / 2
-        x = max(vf.minX + 6, min(x, vf.maxX - size.width - 6))
-
-        // хвостик смотрит в иконку, бабл висит сразу под меню-баром
-        panel.setFrameOrigin(NSPoint(x: x, y: vf.maxY - size.height + 2))
-        bubble.tailX = screenRect.midX - x
-        bubble.needsDisplay = true
-    }
-
     private func hideHUD() {
-        panel?.orderOut(nil)
+        hud.dismiss()
         closeAt = nil
         setIcon("waveform")     // после завершения — значок приложения
         Log.write("hideHUD")
-    }
-
-    private func busy(_ on: Bool) {
-        if on { spinner.isHidden = false; spinner.startAnimation(nil) }
-        else { spinner.stopAnimation(nil); spinner.isHidden = true }
     }
 
     private func tick() {
@@ -364,19 +246,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func apply(_ state: DictationState) {
-        guard let hud = state.hud else {
+        guard let content = state.hud else {
             hideHUD()
             return
         }
 
         if case .done = state { postPaste() }
 
-        showHUD()
-        busy(hud.busy)
-        label.stringValue = hud.text
-        setIcon(hud.icon)
+        hud.present(text: content.text, busy: content.busy)
+        setIcon(content.icon)
 
-        if let delay = hud.autoHideAfter {
+        if let delay = content.autoHideAfter {
             closeAt = Date().addingTimeInterval(delay)
         }
     }
