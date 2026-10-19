@@ -130,6 +130,7 @@ struct Settings: Codable {
     var language = "ru"
     var provider = "deepseek"
     var model = "deepseek-flash"
+    var baseURL = ""
     var restoreClipboard = false
     var hotkeyToggle = HotKeySetting()
     var hotkeyAgent = HotKeySetting(keyCode: 49,
@@ -137,7 +138,7 @@ struct Settings: Codable {
                                     display: "⌃⇧Space")
 
     enum CodingKeys: String, CodingKey {
-        case promptFix, promptAgent, language, provider, model, restoreClipboard
+        case promptFix, promptAgent, language, provider, model, baseURL, restoreClipboard
         case hotkeyToggle, hotkeyAgent
     }
 
@@ -150,6 +151,7 @@ struct Settings: Codable {
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
         provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
+        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
         hotkeyAgent = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyAgent)
@@ -194,6 +196,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var languagePopup: NSPopUpButton!
     private var providerField: NSTextField!
     private var modelField: NSTextField!
+    private var baseURLField: NSTextField!
     private var restoreCheck: NSButton!
     private var toggleHotkeyButton: NSButton!
     private var agentHotkeyButton: NSButton!
@@ -265,6 +268,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         general.view = buildGeneral()
         tabView.addTabViewItem(general)
 
+        let ae = NSTabViewItem(identifier: "ae")
+        ae.label = "AE"
+        ae.view = buildAE()
+        tabView.addTabViewItem(ae)
+
         let prompt = NSTabViewItem(identifier: "prompt")
         prompt.label = "Prompt"
         prompt.view = buildPrompt()
@@ -305,17 +313,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildGeneral() -> NSView {
         let view = NSView()
         let languageLabel = label("Язык распознавания")
-        let providerLabel = label("Провайдер модели правки")
-        let modelLabel = label("Модель правки")
         let diagLabel = label("Диагностика", bold: true)
 
         languagePopup = NSPopUpButton()
         languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
-
-        providerField = NSTextField()
-        providerField.placeholderString = "deepseek"
-        modelField = NSTextField()
-        modelField.placeholderString = "deepseek-flash"
 
         restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
                                 target: nil, action: nil)
@@ -334,8 +335,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             depStack.addArrangedSubview(depLabel)
         }
 
-        let views: [NSView] = [languageLabel, languagePopup, providerLabel, providerField,
-                               modelLabel, modelField, restoreCheck,
+        let views: [NSView] = [languageLabel, languagePopup, restoreCheck,
                                diagLabel, accessLabel, accessButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -350,19 +350,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             languagePopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             languagePopup.widthAnchor.constraint(equalToConstant: 200),
 
-            providerLabel.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 16),
-            providerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            providerField.centerYAnchor.constraint(equalTo: providerLabel.centerYAnchor),
-            providerField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            providerField.widthAnchor.constraint(equalToConstant: 260),
-
-            modelLabel.topAnchor.constraint(equalTo: providerLabel.bottomAnchor, constant: 16),
-            modelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            modelField.centerYAnchor.constraint(equalTo: modelLabel.centerYAnchor),
-            modelField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            modelField.widthAnchor.constraint(equalToConstant: 260),
-
-            restoreCheck.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 18),
+            restoreCheck.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 20),
             restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
             diagLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 24),
@@ -376,6 +364,66 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             depStack.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 10),
             depStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             depStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+        ])
+
+        return view
+    }
+
+    // MARK: - AE
+
+    private func buildAE() -> NSView {
+        let view = NSView()
+        let providerLabel = label("Провайдер модели правки")
+        let modelLabel = label("Модель правки")
+        let baseURLLabel = label("Базовый URL (OpenAI-compatible)")
+        let hint = label("Пусто — запрос идёт через OpenCode.\nЕсли задан — напрямую в {URL}/chat/completions.")
+        let note = label("Ключ доступа, если нужен: переменная окружения OC_API_KEY.")
+
+        hint.lineBreakMode = .byWordWrapping
+        hint.maximumNumberOfLines = 2
+        note.lineBreakMode = .byWordWrapping
+        note.maximumNumberOfLines = 2
+
+        providerField = NSTextField()
+        providerField.placeholderString = "deepseek"
+        modelField = NSTextField()
+        modelField.placeholderString = "deepseek-flash"
+        baseURLField = NSTextField()
+        baseURLField.placeholderString = "https://api.example.com/v1"
+
+        let views: [NSView] = [providerLabel, providerField, modelLabel, modelField,
+                               baseURLLabel, baseURLField, hint, note]
+        for v in views {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+        }
+
+        NSLayoutConstraint.activate([
+            providerLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
+            providerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            providerField.topAnchor.constraint(equalTo: providerLabel.bottomAnchor, constant: 6),
+            providerField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            providerField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            modelLabel.topAnchor.constraint(equalTo: providerField.bottomAnchor, constant: 16),
+            modelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            modelField.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 6),
+            modelField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            modelField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            baseURLLabel.topAnchor.constraint(equalTo: modelField.bottomAnchor, constant: 16),
+            baseURLLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            baseURLField.topAnchor.constraint(equalTo: baseURLLabel.bottomAnchor, constant: 6),
+            baseURLField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            baseURLField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            hint.topAnchor.constraint(equalTo: baseURLField.bottomAnchor, constant: 12),
+            hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            note.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 6),
+            note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            note.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -626,6 +674,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
         providerField.stringValue = settings.provider
         modelField.stringValue = settings.model
+        baseURLField.stringValue = settings.baseURL
         restoreCheck.state = settings.restoreClipboard ? .on : .off
 
         toggleHotkey = settings.hotkeyToggle
@@ -646,10 +695,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                         display: "⌃⇧Space")
             toggleHotkeyButton.title = toggleHotkey.display
             agentHotkeyButton.title = agentHotkey.display
-        default:
-            languagePopup.selectItem(at: 0)
+        case "ae":
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
+            baseURLField.stringValue = ""
+        default:
+            languagePopup.selectItem(at: 0)
             restoreCheck.state = .off
         }
     }
@@ -673,9 +724,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
         settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.restoreClipboard = restoreCheck.state == .on
         settings.hotkeyToggle = toggleHotkey
         settings.hotkeyAgent = agentHotkey
+
+        if !settings.baseURL.isEmpty,
+           !settings.baseURL.lowercased().hasPrefix("http://"),
+           !settings.baseURL.lowercased().hasPrefix("https://") {
+            let alert = NSAlert()
+            alert.messageText = "Некорректный базовый URL"
+            alert.informativeText = "URL должен начинаться с http:// или https://"
+            alert.runModal()
+            return
+        }
+
         SettingsStore.save(settings)
         Log.write("settings saved")
         window?.close()
@@ -806,13 +869,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         capture(to: "/tmp/runvoice-settings.png")
-        settingsWindow?.selectTab("prompt")
+        settingsWindow?.selectTab("ae")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            capture(to: "/tmp/runvoice-settings-prompt.png")
-            self.settingsWindow?.selectTab("hotkeys")
+            capture(to: "/tmp/runvoice-settings-ae.png")
+            self.settingsWindow?.selectTab("prompt")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                NSApp.terminate(nil)
+                capture(to: "/tmp/runvoice-settings-prompt.png")
+                self.settingsWindow?.selectTab("hotkeys")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                    NSApp.terminate(nil)
+                }
             }
         }
     }
@@ -855,6 +922,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !settings.language.isEmpty { env["WHISPER_LANG"] = settings.language }
         if !settings.provider.isEmpty { env["OC_PROVIDER"] = settings.provider }
         if !settings.model.isEmpty { env["OC_MODEL_ID"] = settings.model }
+        if !settings.baseURL.isEmpty { env["OC_BASE_URL"] = settings.baseURL }
         if settings.restoreClipboard { env["DICTATE_RESTORE_CLIPBOARD"] = "1" }
         let base = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["PATH"] = base + ":" + (env["PATH"] ?? "")

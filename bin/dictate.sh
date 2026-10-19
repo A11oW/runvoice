@@ -219,7 +219,25 @@ stop_and_insert() {
   local SYS="$PROMPT_FIX"; [ "$mode" = "agent" ] && SYS="$PROMPT_AGENT"
   local body; body="$(jq -cn --arg sys "$SYS" --arg raw "$raw" --arg prov "$OC_PROVIDER" --arg id "$OC_MODEL_ID" --arg var "$OC_VARIANT" \
     '{prompt: ($sys + "\n\n<text>" + $raw + "</text>"), model: ({providerID: $prov, id: $id} + (if $var == "" then {} else {variant: $var} end))}')"
-  local fixed; fixed="$("${OC_BIN:-opencode}" api post /api/experimental/generate --data "$body" 2>>"$LOG" | jq -r '.data.text // empty')"
+  local fixed
+  if [ -n "${OC_BASE_URL:-}" ]; then
+    # прямой OpenAI-совместимый запрос (без OpenCode)
+    local url="${OC_BASE_URL%/}/chat/completions"
+    local payload; payload="$(jq -cn --arg model "$OC_MODEL_ID" --arg sys "$SYS" --arg raw "$raw" \
+      '{model: $model, temperature: 0, messages: [{role: "system", content: $sys}, {role: "user", content: ("<text>" + $raw + "</text>")}]}')"
+    log "generate: direct $url model=$OC_MODEL_ID"
+    if [ -n "${OC_API_KEY:-}" ]; then
+      fixed="$(curl -s --max-time 120 -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer $OC_API_KEY" -d "$payload" "$url" 2>>"$LOG" \
+        | jq -r '.choices[0].message.content // empty')"
+    else
+      fixed="$(curl -s --max-time 120 -H 'Content-Type: application/json' \
+        -d "$payload" "$url" 2>>"$LOG" \
+        | jq -r '.choices[0].message.content // empty')"
+    fi
+  else
+    fixed="$("${OC_BIN:-opencode}" api post /api/experimental/generate --data "$body" 2>>"$LOG" | jq -r '.data.text // empty')"
+  fi
   [ -z "$fixed" ] && fixed="$raw"
   log "FIXED: $fixed"
 

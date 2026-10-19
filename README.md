@@ -163,10 +163,20 @@ codesign -d -r- /Applications/Runvoice.app
 | Поле | Что задаёт |
 |---|---|
 | Язык распознавания | `WHISPER_LANG` (`ru` / `en` / `auto`) |
-| Провайдер модели правки | `OC_PROVIDER` |
-| Модель правки | `OC_MODEL_ID` |
 | Возвращать прежний буфер обмена | `DICTATE_RESTORE_CLIPBOARD` |
 | Диагностика | статус Accessibility и список зависимостей (проверяются автоматически при запуске и при открытии настроек) |
+
+**AE** (модель):
+
+| Поле | Что задаёт |
+|---|---|
+| Провайдер модели правки | `OC_PROVIDER` |
+| Модель правки | `OC_MODEL_ID` |
+| Базовый URL (OpenAI-compatible) | `OC_BASE_URL` |
+
+- Пусто — запрос идёт через OpenCode (`/api/experimental/generate`).
+- Если задан — текст отправляется напрямую в `{URL}/chat/completions`
+  (OpenAI-совместимый API). Ключ, если нужен, — переменная `OC_API_KEY`.
 
 **Prompt** (описание модели):
 
@@ -407,12 +417,17 @@ swiftc -O -o bin/dictatehud bin/dictatehud.swift
 | `OC_PROVIDER` | `deepseek` | провайдер модели правки |
 | `OC_MODEL_ID` | `deepseek-flash` | идентификатор модели |
 | `OC_VARIANT` | `none` | вариант модели (`none` = без «мышления»; пусто — по умолчанию) |
+| `OC_BASE_URL` | — | OpenAI-совместимый base URL; пусто → через OpenCode |
+| `OC_API_KEY` | — | Bearer-ключ для прямого запроса к `OC_BASE_URL` |
 | `DICTATE_PROMPT_FIX` | — | промпт режима исправления (перебивает встроенный) |
 | `DICTATE_PROMPT_AGENT` | — | промпт режима «инструкция агенту» |
 | `OC_BIN` | авто | путь к исполняемому файлу `opencode` (V2) |
 
 > Free-модели OpenCode (`opencode/*-free`) **недоступны** извне приложения (HTTP 503),
 > поэтому нужна модель с собственным ключом (`opencode auth list`).
+
+> Если задан `OC_BASE_URL`, OpenCode не используется — запрос идёт напрямую
+> в OpenAI-совместимый `{URL}/chat/completions` с моделью `OC_MODEL_ID`.
 
 ### Поведение
 
