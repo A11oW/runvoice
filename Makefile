@@ -1,6 +1,6 @@
 REPO := $(CURDIR)
 
-.PHONY: all install app install-app clean reload
+.PHONY: all install app install-app dmg clean reload
 
 all: bin/pastev bin/dictatehud
 
@@ -21,10 +21,13 @@ app:
 install-app: app
 	./scripts/install-app.sh
 
+# Установочный DMG: приложение + Applications + README
+dmg: app
+	./scripts/make-dmg.sh
+
 clean:
 	rm -f bin/pastev bin/dictatehud
 	rm -rf .build dist
 
 reload:
-	skhd --restart-service
-	launchctl kickstart -k gui/$$(id -u)/ai.opencode.whisper-server
+	-pkill -f 'Runvoice.app/Contents/Resources/whisper/bin/whisper-server'

@@ -16,6 +16,7 @@ OpenCode (орфография, пунктуация, заглавные), и в
 - [Структура проекта](#структура-проекта)
 - [Приложение (menu bar)](#приложение-menu-bar)
 - [Требования](#требования)
+- [Установка из DMG](#установка-из-dmg)
 - [Установка с нуля](#установка-с-нуля)
 - [Как это работает](#как-это-работает)
 - [Окно статуса (HUD)](#окно-статуса-hud)
@@ -100,10 +101,12 @@ self/runvoice/
 ├── scripts/
 │   ├── build-app.sh        # сборка .app (все .swift из app/)
 │   ├── install-app.sh      # установка .app
+│   ├── make-dmg.sh         # установочный DMG (app + Applications + README)
+│   ├── bundle-whisper.sh   # статические whisper-бинарники в бандл
 │   ├── make-icon.sh        # генерация .icns
 │   └── genicon.swift
 ├── install.sh              # CLI-режим (skhd)
-├── Makefile                # make / make app / make install-app / make install
+├── Makefile                # make app / install-app / dmg / install
 ├── README.md
 ├── dist/                   # (собирается, в git не попадает)
 └── .gitignore
@@ -306,6 +309,35 @@ OpenCode).
 
 Для CLI-режима дополнительно нужны `skhd`, `cliclick` и LaunchAgent — см. раздел
 «CLI-режим».
+
+---
+
+## Установка из DMG
+
+Собрать установочный образ:
+
+```sh
+make dmg
+open dist/Runvoice-1.0.0.dmg
+```
+
+В образе: `Runvoice.app`, ярлык `Applications` и краткая инструкция.
+
+1. Перетащите `Runvoice.app` в `Applications`.
+2. Запустите приложение.
+3. Разрешите **Accessibility** и **Microphone** в System Settings.
+4. Откройте **Настройки → Распознавание** и скачайте модель Whisper —
+   она не входит в приложение.
+5. При желании включите **«Запускать при входе»** в **Настройки → Основные**.
+
+Рядом с образом создаётся `Runvoice-1.0.0.dmg.sha256`. Образ подписывается тем же
+локальным сертификатом, что и приложение. Для публичного распространения нужен
+Developer ID и нотаризация Apple; иначе Gatekeeper может потребовать
+«Открыть» через контекстное меню или снять quarantine:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Runvoice.app
+```
 
 ---
 
@@ -705,6 +737,9 @@ pkill -f 'rec\.pcm'
 ```sh
 # пересборка и переустановка приложения
 make install-app
+
+# установочный DMG
+make dmg
 
 # перезапуск сервера распознавания
 # (приложение поднимет его снова при следующей диктовке или сохранении настроек)
