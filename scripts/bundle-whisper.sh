@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# bundle-whisper.sh — собирает универсальные (arm64 + x86_64) статические
-# whisper-server/whisper-cli и кладёт их в бандл. Модели сюда не входят.
+# bundle-whisper.sh — собирает статические whisper-server/whisper-cli
+# для одной архитектуры и кладёт их в бандл. Модели сюда не входят.
 #
-# Использование: bundle-whisper.sh <каталог назначения>
-#   например: bundle-whisper.sh dist/Runvoice.app/Contents/Resources/whisper
+# Использование: bundle-whisper.sh <каталог назначения> [arm64|x86_64]
+#   например: bundle-whisper.sh dist/Runvoice-arm64.app/Contents/Resources/whisper arm64
 #
 # Первая сборка требует cmake и сеть (клонируется whisper.cpp v1.9.5).
 # Дальше используется кэш в .build/whisper-src/build*.
 set -euo pipefail
 
 DEST="${1:?укажите каталог назначения}"
+ARCH="${2:-$(uname -m)}"
+case "$ARCH" in
+  arm64|x86_64) ;;
+  *) echo "неизвестная архитектура: $ARCH" >&2; exit 2 ;;
+esac
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$REPO/.build"
 SRC="$BUILD/whisper-src"
@@ -71,24 +76,30 @@ if [ ! -x "$X86_SERVER" ] || [ ! -x "$X86_CLI" ]; then
   cmake --build "$X86_BUILD" --target whisper-server whisper-cli -j "$(sysctl -n hw.ncpu)" >/dev/null
 fi
 
-lipo -create "$ARM_SERVER" "$X86_SERVER" -output "$DEST/bin/whisper-server"
-lipo -create "$ARM_CLI" "$X86_CLI" -output "$DEST/bin/whisper-cli"
+case "$ARCH" in
+  arm64)
+    cp "$ARM_SERVER" "$DEST/bin/whisper-server"
+    cp "$ARM_CLI" "$DEST/bin/whisper-cli"
+    ;;
+  x86_64)
+    cp "$X86_SERVER" "$DEST/bin/whisper-server"
+    cp "$X86_CLI" "$DEST/bin/whisper-cli"
+    ;;
+esac
 chmod +x "$DEST/bin/whisper-server" "$DEST/bin/whisper-cli"
 printf '%s' "$WANT" > "$STAMP"
 
 for f in "$DEST/bin/whisper-server" "$DEST/bin/whisper-cli"; do
-  if ! lipo -info "$f" | grep -q 'x86_64' || ! lipo -info "$f" | grep -q 'arm64'; then
-    echo "бинарник $f не универсальный:" >&2
+  if ! lipo -info "$f" | grep -q "$ARCH"; then
+    echo "бинарник $f не для $ARCH:" >&2
     lipo -info "$f" >&2
     exit 1
   fi
-  for arch in arm64 x86_64; do
-    if otool -arch "$arch" -L "$f" | grep -q '/opt/homebrew'; then
-      echo "бинарник $f ($arch) зависит от Homebrew:" >&2
-      otool -arch "$arch" -L "$f" >&2
-      exit 1
-    fi
-  done
+  if otool -arch "$ARCH" -L "$f" | grep -q '/opt/homebrew'; then
+    echo "бинарник $f зависит от Homebrew:" >&2
+    otool -arch "$ARCH" -L "$f" >&2
+    exit 1
+  fi
 done
 
-echo "    whisper: встроен ($(du -sh "$DEST" | cut -f1), arm64 + x86_64)"
+echo "    whisper: встроен ($(du -sh "$DEST" | cut -f1), $ARCH)"

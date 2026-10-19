@@ -21,7 +21,7 @@ app:
 install-app: app
 	./scripts/install-app.sh
 
-# Установочный DMG: приложение + Applications + README
+# Установочные DMG: отдельно для Apple Silicon и Intel
 dmg: app
 	./scripts/make-dmg.sh
 

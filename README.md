@@ -101,7 +101,7 @@ self/runvoice/
 ├── scripts/
 │   ├── build-app.sh        # сборка .app (все .swift из app/)
 │   ├── install-app.sh      # установка .app
-│   ├── make-dmg.sh         # установочный DMG (app + Applications + README)
+│   ├── make-dmg.sh         # два DMG: Apple Silicon и Intel
 │   ├── bundle-whisper.sh   # статические whisper-бинарники в бандл
 │   ├── make-icon.sh        # генерация .icns
 │   └── genicon.swift
@@ -314,27 +314,35 @@ OpenCode).
 
 ## Установка из DMG
 
-Собрать установочный образ:
+Собрать два установочных образа:
 
 ```sh
 make dmg
-open dist/Runvoice-1.0.0.dmg
 ```
 
-В образе: `Runvoice.app`, ярлык `Applications`, `Установить Runvoice.command`
-и краткая инструкция. Приложение универсальное: **Apple Silicon + Intel**,
-минимальная версия macOS — **13.0**.
+Результат:
+
+```text
+dist/Runvoice-1.0.0-arm64.dmg   # Apple Silicon
+dist/Runvoice-1.0.0-intel.dmg   # Intel
+```
+
+Отправляйте собеседнику тот образ, который соответствует его процессору.
+Внутри обоих — `Runvoice.app`, ярлык `Applications`, `Установить Runvoice.command`
+и краткая инструкция. Минимальная версия macOS — **13.0**.
 
 **Способ 1 — установщик**
 
 Правый клик по `Установить Runvoice.command` → «Открыть». Скрипт скопирует
 приложение в `/Applications`, снимет quarantine и запустит его.
 
-Если macOS не даёт открыть сам скрипт, выполните в Terminal:
+Если macOS не даёт открыть сам скрипт, выполните в Terminal (для arm64-образа):
 
 ```sh
-bash "/Volumes/Runvoice 1.0.0/Установить Runvoice.command"
+bash "/Volumes/Runvoice 1.0.0 arm64/Установить Runvoice.command"
 ```
+
+Для Intel-образа имя тома — `Runvoice 1.0.0 intel`.
 
 **Способ 2 — вручную**
 
@@ -351,10 +359,10 @@ open /Applications/Runvoice.app
 После запуска разрешите **Accessibility** и **Microphone**, затем откройте
 **Настройки → Распознавание** и скачайте модель Whisper.
 
-Рядом с образом создаётся `Runvoice-1.0.0.dmg.sha256`. Образ и приложение
-подписаны локальным сертификатом, а не Developer ID Apple, поэтому Gatekeeper
-на другом Mac требует подтверждения. Для публичного распространения без
-предупреждений нужен Developer ID и нотаризация Apple.
+Рядом с каждым образом создаётся `.sha256`. Образы и приложения подписаны
+локальным сертификатом, а не Developer ID Apple, поэтому Gatekeeper на другом
+Mac требует подтверждения. Для публичного распространения без предупреждений
+нужен Developer ID и нотаризация Apple.
 
 ---
 
