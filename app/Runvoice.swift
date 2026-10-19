@@ -267,10 +267,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         general.view = buildGeneral()
         tabView.addTabViewItem(general)
 
-        let ae = NSTabViewItem(identifier: "ae")
-        ae.label = "AE"
-        ae.view = buildAE()
-        tabView.addTabViewItem(ae)
+        let ai = NSTabViewItem(identifier: "ai")
+        ai.label = "AI"
+        ai.view = buildAI()
+        tabView.addTabViewItem(ai)
 
         let prompt = NSTabViewItem(identifier: "prompt")
         prompt.label = "Prompt"
@@ -373,9 +373,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         return view
     }
 
-    // MARK: - AE
+    // MARK: - AI
 
-    private func buildAE() -> NSView {
+    private func buildAI() -> NSView {
         let view = NSView()
         let providerLabel = label("Провайдер модели правки")
         let modelLabel = label("Модель правки")
@@ -700,7 +700,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                         display: "⌃⇧Space")
             toggleHotkeyButton.title = toggleHotkey.display
             agentHotkeyButton.title = agentHotkey.display
-        case "ae":
+        case "ai":
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
             baseURLField.stringValue = ""
@@ -944,9 +944,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         capture(to: "/tmp/runvoice-settings.png")
-        settingsWindow?.selectTab("ae")
+        settingsWindow?.selectTab("ai")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            capture(to: "/tmp/runvoice-settings-ae.png")
+            capture(to: "/tmp/runvoice-settings-ai.png")
             self.settingsWindow?.selectTab("prompt")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 capture(to: "/tmp/runvoice-settings-prompt.png")
