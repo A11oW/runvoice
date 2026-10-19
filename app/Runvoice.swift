@@ -745,11 +745,42 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 }
 
+// MARK: - Бабл HUD
+
+final class BubbleView: NSView {
+    var bodyHeight: CGFloat = 64
+    var tailX: CGFloat = 0
+
+    private let tailWidth: CGFloat = 18
+    private let tailHeight: CGFloat = 9
+    private let corner: CGFloat = 14
+
+    override func draw(_ dirtyRect: NSRect) {
+        let body = NSRect(x: 0, y: 0, width: bounds.width, height: bodyHeight)
+        let path = NSBezierPath(roundedRect: body, xRadius: corner, yRadius: corner)
+
+        let minX = corner + tailWidth / 2
+        let maxX = max(minX, bounds.width - corner - tailWidth / 2)
+        let centerX = min(max(minX, tailX), maxX)
+
+        let tail = NSBezierPath()
+        tail.move(to: NSPoint(x: centerX - tailWidth / 2, y: bodyHeight - 1))
+        tail.line(to: NSPoint(x: centerX, y: bodyHeight + tailHeight))
+        tail.line(to: NSPoint(x: centerX + tailWidth / 2, y: bodyHeight - 1))
+        tail.close()
+
+        NSColor(calibratedWhite: 0.11, alpha: 0.97).setFill()
+        path.fill()
+        tail.fill()
+    }
+}
+
 // MARK: - Приложение
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
+    private var bubble: BubbleView!
     private var spinner: NSProgressIndicator!
     private var label: NSTextField!
     private var timer: Timer?
@@ -793,6 +824,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        if CommandLine.arguments.contains("--snapshot-hud") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                self.showHUD()
+                self.busy(true)
+                self.label.stringValue = "🎤 Слушаю…"
+                self.bubble.needsDisplay = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    if let view = self.panel.contentView,
+                       let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                        view.cacheDisplay(in: view.bounds, to: rep)
+                        let image = NSImage(size: view.bounds.size)
+                        image.lockFocus()
+                        NSColor.windowBackgroundColor.setFill()
+                        view.bounds.fill()
+                        if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
+                            ctx.draw(cg, in: view.bounds)
+                        }
+                        image.unlockFocus()
+                        if let tiff = image.tiffRepresentation,
+                           let bitmap = NSBitmapImageRep(data: tiff),
+                           let png = bitmap.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: "/tmp/runvoice-hud.png"))
+                        }
+                    }
+                    NSApp.terminate(nil)
+                }
+            }
+        }
         if CommandLine.arguments.contains("--snapshot") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 self?.openSettings()
@@ -1016,7 +1076,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Окно статуса
 
     private func setupHUD() {
-        let w: CGFloat = 330, h: CGFloat = 64
+        let w: CGFloat = 330
+        let body: CGFloat = 64
+        let h: CGFloat = body + 9   // тело + хвостик
+
+        bubble = BubbleView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        bubble.bodyHeight = body
+
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
@@ -1032,25 +1098,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
-        let bg = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-        bg.material = .hudWindow
-        bg.blendingMode = .behindWindow
-        bg.state = .active
-        bg.appearance = NSAppearance(named: .vibrantDark)
-        bg.wantsLayer = true
-        bg.layer?.cornerRadius = 14
-        bg.layer?.masksToBounds = true
-        bg.layer?.borderWidth = 1
-        bg.layer?.borderColor = NSColor(white: 1, alpha: 0.14).cgColor
-
-        spinner = NSProgressIndicator(frame: NSRect(x: 18, y: (h - 18) / 2, width: 18, height: 18))
+        spinner = NSProgressIndicator(frame: NSRect(x: 18, y: (body - 18) / 2, width: 18, height: 18))
         spinner.style = .spinning
         spinner.controlSize = .small
         spinner.isIndeterminate = true
         spinner.isDisplayedWhenStopped = false
 
         let title = NSTextField(labelWithString: "Runvoice")
-        title.frame = NSRect(x: 50, y: h - 26, width: w - 66, height: 16)
+        title.frame = NSRect(x: 50, y: body - 26, width: w - 66, height: 16)
         title.font = .systemFont(ofSize: 11, weight: .medium)
         title.textColor = NSColor(white: 1, alpha: 0.55)
 
@@ -1060,10 +1115,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
 
-        bg.addSubview(spinner)
-        bg.addSubview(title)
-        bg.addSubview(label)
-        panel.contentView = bg
+        bubble.addSubview(spinner)
+        bubble.addSubview(title)
+        bubble.addSubview(label)
+        panel.contentView = bubble
     }
 
     private func showHUD() {
@@ -1075,12 +1130,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func placeHUD() {
-        let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
-            ?? NSScreen.main ?? NSScreen.screens.first
-        guard let vf = screen?.visibleFrame else { return }
-        let sz = panel.frame.size
-        panel.setFrameOrigin(NSPoint(x: vf.midX - sz.width / 2, y: vf.maxY - sz.height - 18))
+        let size = panel.frame.size
+
+        guard let button = statusItem.button, let window = button.window else {
+            let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            panel.setFrameOrigin(NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height))
+            bubble.tailX = size.width / 2
+            bubble.needsDisplay = true
+            return
+        }
+
+        let rectInWindow = button.convert(button.bounds, to: nil)
+        let screenRect = window.convertToScreen(rectInWindow)
+        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
+        let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        var x = screenRect.midX - size.width / 2
+        x = max(vf.minX + 6, min(x, vf.maxX - size.width - 6))
+
+        // хвостик смотрит в иконку, бабл висит сразу под меню-баром
+        panel.setFrameOrigin(NSPoint(x: x, y: vf.maxY - size.height + 2))
+        bubble.tailX = screenRect.midX - x
+        bubble.needsDisplay = true
     }
 
     private func hideHUD() {
