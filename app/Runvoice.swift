@@ -209,7 +209,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                             modifiers: UInt32(controlKey) | UInt32(shiftKey),
                                             display: "⌃⇧Space")
 
-    var onVisibilityChanged: ((Bool) -> Void)?
+    var onCaptureStateChanged: ((Bool) -> Void)?
 
     private let languages = ["ru", "en", "auto"]
 
@@ -241,14 +241,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
             self.refreshDiagnostics()
         }
-        onVisibilityChanged?(true)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func windowWillClose(_ notification: Notification) {
         stopCapture()
-        onVisibilityChanged?(false)
     }
 
     func selectTab(_ identifier: String) {
@@ -513,6 +511,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         stopCapture()
         captureTarget = button
         button.title = "Нажмите сочетание…"
+        onCaptureStateChanged?(true)
         captureMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             self?.handleCapture(event)
             return nil
@@ -526,6 +525,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             button.title = (button === toggleHotkeyButton) ? toggleHotkey.display : agentHotkey.display
         }
         captureTarget = nil
+        onCaptureStateChanged?(false)
     }
 
     private func handleCapture(_ event: NSEvent) {
@@ -778,8 +778,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openSettings() {
         if settingsWindow == nil {
             settingsWindow = SettingsWindow()
-            settingsWindow?.onVisibilityChanged = { [weak self] visible in
-                if visible { self?.suspendHotkeys() } else { self?.registerHotkeys() }
+            settingsWindow?.onCaptureStateChanged = { [weak self] capturing in
+                if capturing { self?.suspendHotkeys() } else { self?.registerHotkeys() }
             }
         }
         settingsWindow?.show()
@@ -935,14 +935,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                          GetApplicationEventTarget(), 0, &ref)
         if status == noErr {
             hotkeys.append(ref)
+            Log.write("hotkey registered id=\(id) key=\(keyCode) mods=\(mods)")
         } else {
             Log.write("hotkey register failed id=\(id) status=\(status)")
         }
     }
 
     fileprivate func hotKey(id: UInt32) {
-        // не перехватываем хоткей, пока открыто окно настроек
-        if settingsWindow?.window?.isKeyWindow == true { return }
         run(id == 2 ? "agent" : "toggle")
     }
 
