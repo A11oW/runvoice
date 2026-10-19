@@ -159,10 +159,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         depStack.alignment = .leading
         depStack.spacing = 4
         depStack.translatesAutoresizingMaskIntoConstraints = false
-        depLabels = Dependency.allCases.map { _ in label("") }
+        depLabels = Dependency.allCases.map { _ in
+            let field = label("")
+            field.lineBreakMode = .byTruncatingMiddle
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            return field
+        }
         for depLabel in depLabels {
             depLabel.translatesAutoresizingMaskIntoConstraints = false
             depStack.addArrangedSubview(depLabel)
+            depLabel.widthAnchor.constraint(equalTo: depStack.widthAnchor).isActive = true
         }
 
         let views: [NSView] = [languageLabel, languagePopup, restoreCheck, hudCheck,
@@ -196,7 +202,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
             depStack.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 10),
             depStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            depStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            depStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -837,17 +843,66 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let settings = SettingsStore.load()
         for (index, dependency) in Dependency.allCases.enumerated() where index < depLabels.count {
-            if dependency == .opencode && !settings.useOpenCode {
-                depLabels[index].stringValue = "– OpenCode CLI (не используется)"
-                depLabels[index].textColor = .secondaryLabelColor
-                continue
-            }
+            let line = diagnosticLine(dependency, settings: settings)
+            depLabels[index].stringValue = line.text
+            depLabels[index].textColor = line.color
+            depLabels[index].toolTip = line.text
+        }
+    }
 
-            let available = dependency.isOK()
-            depLabels[index].stringValue = available
-                ? "✓ \(dependency.title)"
-                : "⚠️ \(dependency.title) — \(dependency.expected)"
-            depLabels[index].textColor = available ? .systemGreen : .systemOrange
+    private func diagnosticLine(
+        _ dependency: Dependency,
+        settings: Settings
+    ) -> (text: String, color: NSColor) {
+        let fm = FileManager.default
+        switch dependency {
+        case .ffmpeg:
+            if fm.isExecutableFile(atPath: "/opt/homebrew/bin/ffmpeg") {
+                return ("✓ ffmpeg", .systemGreen)
+            }
+            return ("⚠️ ffmpeg — не найден (brew install ffmpeg)", .systemOrange)
+
+        case .whisperServer:
+            if let path = WhisperModelStore.bundledServer?.path,
+               fm.isExecutableFile(atPath: path) {
+                return ("✓ whisper-server (встроенный)", .systemGreen)
+            }
+            return ("⚠️ whisper-server — не найден в бандле", .systemOrange)
+
+        case .whisperCli:
+            if let path = WhisperModelStore.bundledCLI?.path,
+               fm.isExecutableFile(atPath: path) {
+                return ("✓ whisper-cli (встроенный)", .systemGreen)
+            }
+            return ("⚠️ whisper-cli — не найден в бандле", .systemOrange)
+
+        case .whisperModel:
+            if let model = WhisperModelStore.activeModel(settings: settings) {
+                let title = WhisperModelCatalog.models
+                    .first { $0.fileName == model.fileName }?.title ?? model.fileName
+                let source = model.isManaged ? "скачана приложением" : model.directory
+                return ("✓ Модель Whisper: \(title) · \(model.sizeText) — \(source)", .systemGreen)
+            }
+            if settings.whisperModelPath.isEmpty {
+                return ("⚠️ Модель Whisper не выбрана — Настройки → Модели", .systemOrange)
+            }
+            return ("⚠️ Модель Whisper недоступна: \(settings.whisperModelPath)", .systemOrange)
+
+        case .vadModel:
+            if let path = WhisperModelStore.bundledVAD?.path,
+               fm.fileExists(atPath: path) {
+                return ("✓ VAD-модель (встроенная)", .systemGreen)
+            }
+            return ("⚠️ VAD-модель — не найдена в бандле", .systemOrange)
+
+        case .opencode:
+            if !settings.useOpenCode {
+                return ("– OpenCode CLI (не используется)", .secondaryLabelColor)
+            }
+            if let path = OpenCodeLocator.find() {
+                return ("✓ OpenCode CLI — \(path)", .systemGreen)
+            }
+            return ("⚠️ OpenCode CLI — не найден", .systemOrange)
         }
     }
 
