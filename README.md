@@ -62,7 +62,22 @@ OpenCode (орфография, пунктуация, заглавные), и в
 ```
 self/runvoice/
 ├── app/
-│   ├── Runvoice.swift      # menu bar приложение (Swift/AppKit)
+│   ├── main.swift          # точка входа NSApplication
+│   ├── Core/               # модель и утилиты без UI
+│   │   ├── Paths.swift     # пути приложения
+│   │   ├── Log.swift       # app.log
+│   │   ├── Settings.swift  # Settings, HotKeySetting, SettingsStore, промпты
+│   │   ├── Diagnostics.swift  # проверка зависимостей
+│   │   ├── DictationState.swift  # состояния HUD
+│   │   └── DictationAction.swift # toggle / agent
+│   ├── App/                # логика приложения
+│   │   ├── AppDelegate.swift     # меню, состояния, вставка
+│   │   ├── HotkeyMonitor.swift   # глобальные хоткеи (CGEventTap)
+│   │   └── DictationRunner.swift # запуск dictate.sh
+│   ├── UI/                 # визуальные компоненты
+│   │   ├── BubbleView.swift      # форма бабла
+│   │   ├── HUDController.swift   # окно статуса
+│   │   └── SettingsWindow.swift  # окно настроек (General/AI/Prompt/Hotkeys)
 │   └── Info.plist
 ├── bin/
 │   ├── dictate.sh          # пайплайн (используют и приложение, и CLI)
@@ -74,7 +89,7 @@ self/runvoice/
 │   ├── skhdrc.tmpl         # шаблон хоткеев → ~/.skhdrc
 │   └── whisper-server.plist.tmpl   # шаблон LaunchAgent
 ├── scripts/
-│   ├── build-app.sh        # сборка .app
+│   ├── build-app.sh        # сборка .app (все .swift из app/)
 │   ├── install-app.sh      # установка .app
 │   ├── make-icon.sh        # генерация .icns
 │   └── genicon.swift
@@ -84,6 +99,18 @@ self/runvoice/
 ├── dist/                   # (собирается, в git не попадает)
 └── .gitignore
 ```
+
+### Архитектура приложения
+
+- **Core** — модель и утилиты без UI: `Settings` (настройки, промпты, хоткеи),
+  `Paths`, `Log`, `Diagnostics` (зависимости), `DictationState`/`DictationAction`.
+- **App** — `AppDelegate` (меню, состояния, вставка ⌘V), `HotkeyMonitor`
+  (глобальные хоткеи через CGEventTap), `DictationRunner` (запуск `dictate.sh`).
+- **UI** — `HUDController` (бабл и его позиционирование), `BubbleView` (форма),
+  `SettingsWindow` (вкладки General / AI / Prompt / Hotkeys).
+
+Сборка (`scripts/build-app.sh`) компилирует все `.swift` из `app/`, точка входа —
+`app/main.swift`.
 
 Скрипт находит своих помощников относительно собственного расположения
 (`SCRIPT_DIR`), поэтому каталог проекта можно перемещать.
