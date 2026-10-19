@@ -20,7 +20,9 @@ echo "==> иконка"
 cp "$BUILD/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 echo "==> приложение"
-swiftc -O -o "$APP/Contents/MacOS/Runvoice" "$REPO/app/Runvoice.swift"
+SWIFT_SOURCES=()
+while IFS= read -r file; do SWIFT_SOURCES+=("$file"); done < <(find "$REPO/app" -name '*.swift' -print | sort)
+swiftc -O -o "$APP/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
 
 echo "==> ресурсы"
 cp "$REPO/app/Info.plist" "$APP/Contents/Info.plist"
