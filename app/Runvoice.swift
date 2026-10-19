@@ -290,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func hideHUD() {
         panel?.orderOut(nil)
         closeAt = nil
+        setIcon("mic")          // после завершения — снова микрофон
         Log.write("hideHUD")
     }
 
@@ -349,6 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Runvoice")
         image?.isTemplate = true
         statusItem.button?.image = image
+        Log.write("icon=\(name)")
     }
 
     // MARK: - Разрешения
