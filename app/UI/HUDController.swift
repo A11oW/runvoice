@@ -7,7 +7,10 @@ final class HUDController {
     private var bubble: BubbleView!
     private var spinner: NSProgressIndicator!
     private var label: NSTextField!
+    private var timerLabel: NSTextField!
     private var levelBar: LevelBarView!
+    private var clockTimer: Timer?
+    private var startedAt: Date?
     private var enabled = true
 
     init(statusItem: NSStatusItem) {
@@ -36,6 +39,12 @@ final class HUDController {
         levelBar.isHidden = !showLevel
         if !showLevel { levelBar.level = 0 }
 
+        if showLevel {
+            if startedAt == nil { startClock() }
+        } else {
+            stopClock()
+        }
+
         if busy {
             spinner.isHidden = false
             spinner.startAnimation(nil)
@@ -49,13 +58,42 @@ final class HUDController {
         levelBar.level = level
     }
 
+    private func startClock() {
+        startedAt = Date()
+        timerLabel.stringValue = "00:00"
+        timerLabel.isHidden = false
+        clockTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.updateClock()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        clockTimer = timer
+    }
+
+    private func stopClock() {
+        clockTimer?.invalidate()
+        clockTimer = nil
+        startedAt = nil
+        timerLabel.stringValue = ""
+        timerLabel.isHidden = true
+    }
+
+    private func updateClock() {
+        guard let startedAt else { return }
+        let seconds = Int(Date().timeIntervalSince(startedAt))
+        timerLabel.stringValue = String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+
     func dismiss() {
+        stopClock()
         panel?.orderOut(nil)
     }
 
     /// Отладочный режим: отрисовать бабл в PNG.
     func snapshot(to path: String, completion: @escaping () -> Void) {
         label.stringValue = "🎤 Слушаю…"
+        timerLabel.isHidden = false
+        timerLabel.stringValue = "00:07"
         levelBar.isHidden = false
         levelBar.level = 0.65
         spinner.isHidden = false
@@ -114,23 +152,24 @@ final class HUDController {
         spinner.isIndeterminate = true
         spinner.isDisplayedWhenStopped = false
 
-        let title = NSTextField(labelWithString: "Runvoice")
-        title.frame = NSRect(x: 50, y: body - 26, width: w - 66, height: 16)
-        title.font = .systemFont(ofSize: 11, weight: .medium)
-        title.textColor = NSColor(white: 1, alpha: 0.55)
-
         label = NSTextField(labelWithString: "")
-        label.frame = NSRect(x: 50, y: 16, width: w - 66, height: 20)
+        label.frame = NSRect(x: 50, y: 28, width: w - 66, height: 20)
         label.font = .systemFont(ofSize: 14, weight: .semibold)
         label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
 
-        levelBar = LevelBarView(frame: NSRect(x: 50, y: 5, width: w - 66, height: 4))
+        timerLabel = NSTextField(labelWithString: "")
+        timerLabel.frame = NSRect(x: 50, y: 8, width: 44, height: 12)
+        timerLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        timerLabel.textColor = NSColor(white: 1, alpha: 0.6)
+        timerLabel.isHidden = true
+
+        levelBar = LevelBarView(frame: NSRect(x: 100, y: 7, width: w - 116, height: 4))
         levelBar.isHidden = true
 
         bubble.addSubview(spinner)
-        bubble.addSubview(title)
         bubble.addSubview(label)
+        bubble.addSubview(timerLabel)
         bubble.addSubview(levelBar)
         panel.contentView = bubble
     }
