@@ -48,7 +48,7 @@ DRY_RUN="${DICTATE_DRY_RUN:-0}"
 W_MS="${DICTATE_DEBOUNCE_MS:-500}"
 
 _STATE_ROOT="${TMPDIR:-/tmp}"; _STATE_ROOT="${_STATE_ROOT%/}"
-STATE="$_STATE_ROOT/opencode-dictate"
+STATE="${DICTATE_STATE_DIR:-$_STATE_ROOT/opencode-dictate}"
 mkdir -p "$STATE"
 PCM="$STATE/rec.pcm"
 WAV="$STATE/rec.wav"

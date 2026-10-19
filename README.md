@@ -13,6 +13,7 @@ OpenCode (орфография, пунктуация, заглавные), и в
 - [Возможности](#возможности)
 - [Быстрый старт](#быстрый-старт)
 - [Структура проекта](#структура-проекта)
+- [Приложение (menu bar)](#приложение-menu-bar)
 - [Требования](#требования)
 - [Установка с нуля](#установка-с-нуля)
 - [Как это работает](#как-это-работает)
@@ -45,6 +46,8 @@ OpenCode (орфография, пунктуация, заглавные), и в
 | **⌥ Space** | начать запись / остановить и вставить (обычный текст) |
 | **⌃ ⇧ Space** | остановить и вставить как инструкцию/команду для агента |
 
+Хоткеи одинаковые для приложения `Runvoice` и для CLI-режима.
+
 Порядок:
 
 1. Поставить курсор в нужное поле.
@@ -58,23 +61,102 @@ OpenCode (орфография, пунктуация, заглавные), и в
 
 ```
 self/runvoice/
+├── app/
+│   ├── Runvoice.swift      # menu bar приложение (Swift/AppKit)
+│   └── Info.plist
 ├── bin/
-│   ├── dictate.sh          # основной сценарий
-│   ├── pastev.c            # исходник помощника вставки ⌘V
-│   ├── dictatehud.swift    # исходник окна статуса
+│   ├── dictate.sh          # пайплайн (используют и приложение, и CLI)
+│   ├── pastev.c            # ⌘V по коду клавиши
+│   ├── dictatehud.swift    # HUD для CLI-режима
 │   ├── pastev              # (собирается, в git не попадает)
 │   └── dictatehud          # (собирается, в git не попадает)
 ├── config/
 │   ├── skhdrc.tmpl         # шаблон хоткеев → ~/.skhdrc
 │   └── whisper-server.plist.tmpl   # шаблон LaunchAgent
-├── install.sh              # сборка + установка конфигов
-├── Makefile                # make / make install / make clean
+├── scripts/
+│   ├── build-app.sh        # сборка .app
+│   ├── install-app.sh      # установка .app
+│   ├── make-icon.sh        # генерация .icns
+│   └── genicon.swift
+├── install.sh              # CLI-режим (skhd)
+├── Makefile                # make / make app / make install-app / make install
 ├── README.md
+├── dist/                   # (собирается, в git не попадает)
 └── .gitignore
 ```
 
 Скрипт находит своих помощников относительно собственного расположения
 (`SCRIPT_DIR`), поэтому каталог проекта можно перемещать.
+
+## Приложение (menu bar)
+
+Проект работает в двух режимах с одинаковыми хоткеями:
+
+| | Приложение `Runvoice.app` | CLI |
+|---|---|---|
+| Запуск | значок в строке меню | скрипт + `skhd` |
+| Хоткеи | регистрирует сам (Carbon) | через `skhd` |
+| Окно статуса | внутри приложения | отдельный `dictatehud` |
+| Данные | `~/Library/Application Support/Runvoice/` | `${TMPDIR}/opencode-dictate/` |
+| Разрешения | у `Runvoice` | у `skhd` |
+
+### Сборка и установка
+
+```sh
+make install-app        # собрать и установить в /Applications
+```
+
+или:
+
+```sh
+./scripts/install-app.sh
+```
+
+Скрипт собирает `dist/Runvoice.app` (иконка + ad-hoc подпись), копирует его в
+`/Applications` (или `~/Applications`, если нет прав), **останавливает `skhd`**
+(хоткеи теперь у приложения) и запускает.
+
+Только собрать: `make app` → `dist/Runvoice.app`.
+
+### Меню
+
+- **Диктовка** ⌥Space
+- **Инструкция агенту** ⌃⇧Space
+- Открыть лог
+- Открыть папку данных
+- Проверить зависимости…
+- Выход
+
+Значок в строке меню отражает состояние: микрофон → волна (запись/распознавание) →
+многоточие (правка) → галочка или предупреждение.
+
+### Разрешения
+
+- **Accessibility** → `Runvoice` (вставка ⌘V через `pastev`).
+- **Microphone** → `Runvoice` (запись).
+
+Приложение само показывает системные запросы при запуске.
+
+> Подпись ad-hoc: после пересборки macOS может попросить выдать Accessibility заново.
+
+### Данные и логи
+
+```
+~/Library/Application Support/Runvoice/
+├── app.log                 # журнал приложения
+└── state/
+    ├── status              # текущее состояние (читает окно статуса)
+    ├── dictate.log         # журнал пайплайна (RAW/FIXED/paste)
+    ├── mic_index           # кэш индекса микрофона
+    └── rec.pcm / rec.wav
+```
+
+### Вернуться к CLI-режиму
+
+```sh
+make install            # восстановить ~/.skhdrc и LaunchAgent
+skhd --start-service
+```
 
 ## Требования
 
@@ -439,6 +521,9 @@ pkill -f 'rec\.pcm'
 ## Обслуживание
 
 ```sh
+# пересборка и переустановка приложения
+make install-app
+
 # перезапуск хоткеев после правки ~/.skhdrc
 skhd --restart-service
 
@@ -475,7 +560,11 @@ bash -n bin/dictate.sh
 ## Удаление
 
 ```sh
-# хоткеи
+# приложение
+rm -rf /Applications/Runvoice.app
+rm -rf ~/Library/Application\ Support/Runvoice
+
+# хоткеи (CLI-режим)
 rm ~/.skhdrc && skhd --restart-service
 
 # сервер распознавания

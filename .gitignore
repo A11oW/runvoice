@@ -2,6 +2,10 @@
 bin/pastev
 bin/dictatehud
 
+# Артефакты сборки приложения
+dist/
+.build/
+
 # Не относится к инструменту
 .opencode/
 qr/
