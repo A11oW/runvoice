@@ -14,11 +14,34 @@ final class DictationRunner {
         guard let model = WhisperModelStore.activeModel(settings: settings) else {
             throw Failure.missingModel(path: settings.whisperModelPath.isEmpty ? nil : settings.whisperModelPath)
         }
+        try launch(script: script, action: "toggle", model: model, settings: settings)
+    }
 
+    /// Прогрев whisper-server после сохранения настроек.
+    /// Не блокирует UI: скрипт запускается в фоне и сам ждёт готовности сервера.
+    func warmUp() {
+        guard let script = Paths.script else { return }
+        let settings = SettingsStore.load()
+        guard let model = WhisperModelStore.activeModel(settings: settings) else { return }
+        do {
+            try launch(script: script, action: "warmup", model: model, settings: settings)
+            Log.write("warmup: запущен")
+        } catch {
+            Log.write("warmup: не удалось запустить (\(error.localizedDescription))")
+        }
+    }
+
+    private func launch(script: URL, action: String, model: WhisperModelFile, settings: Settings) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path, "toggle"]
+        process.arguments = [script.path, action]
+        process.environment = makeEnvironment(model: model, settings: settings)
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
 
+    private func makeEnvironment(model: WhisperModelFile, settings: Settings) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["DICTATE_STATE_DIR"] = Paths.state.path
         environment["HUD_BIN"] = "/nonexistent"   // окно рисует само приложение
@@ -51,10 +74,6 @@ final class DictationRunner {
 
         let base = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["PATH"] = base + ":" + (environment["PATH"] ?? "")
-        process.environment = environment
-
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
+        return environment
     }
 }

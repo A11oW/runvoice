@@ -165,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.hud.setEnabled(SettingsStore.load().showHUD)
                 self.reloadHotkeys()
+                self.runner.warmUp()
             }
         }
         settingsWindow?.show()

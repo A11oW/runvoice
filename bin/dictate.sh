@@ -158,6 +158,17 @@ whisper_stop_server() {
 }
 
 whisper_ensure() {
+  # Если сервер уже стартует (pid есть, HTTP ещё не отвечает) — подождать его,
+  # чтобы не запустить второй процесс на тот же порт.
+  local starting; starting="$(whisper_server_pid)"
+  if [ -n "$starting" ] && kill -0 "$starting" 2>/dev/null; then
+    for _ in $(seq 1 80); do
+      whisper_up && break
+      kill -0 "$starting" 2>/dev/null || break
+      sleep 0.25
+    done
+  fi
+
   if whisper_up; then
     if whisper_server_matches; then return 0; fi
 
@@ -358,6 +369,35 @@ stop_and_insert() {
   [ "$RESTORE_CLIPBOARD" = "1" ] && printf '%s' "$old" | pbcopy
   status done
 }
+
+# =========================================================
+# 0) прогрев сервера после сохранения настроек.
+# Не трогает запись, статус, HUD и буфер обмена.
+if [ "$ACTION" = "warmup" ]; then
+  if [ ! -f "$WHISPER_MODEL" ]; then
+    log "warmup: модель не найдена: $WHISPER_MODEL"
+    exit 0
+  fi
+  if [ -d "$LOCK" ]; then
+    log "warmup: идёт диктовка — пропуск"
+    exit 0
+  fi
+  WARM_LOCK="$STATE/warmup.lock"
+  if ! mkdir "$WARM_LOCK" 2>/dev/null; then
+    wp="$(cat "$WARM_LOCK/pid" 2>/dev/null || true)"
+    if [ -n "$wp" ] && kill -0 "$wp" 2>/dev/null; then exit 0; fi
+    rm -rf "$WARM_LOCK"; mkdir "$WARM_LOCK" 2>/dev/null || exit 0
+  fi
+  echo $$ > "$WARM_LOCK/pid"
+  trap 'rm -rf "$WARM_LOCK"' EXIT
+  log "warmup: $WHISPER_MODEL"
+  if whisper_ensure; then
+    log "warmup: готов"
+  else
+    log "warmup: не удалось запустить сервер"
+  fi
+  exit 0
+fi
 
 # =========================================================
 # 1) подавление авто-повтора: обновляем метку на КАЖДОМ вызове
