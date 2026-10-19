@@ -2,9 +2,15 @@ import Foundation
 
 /// Что показывать в HUD для конкретного состояния.
 struct HUDContent {
+    enum Accent {
+        case neutral, success, info, warning
+    }
+
     let text: String
     let busy: Bool
     let icon: String
+    let hudIcon: String
+    let accent: Accent
     let autoHideAfter: TimeInterval?
     var showLevel = false
 }
@@ -66,22 +72,30 @@ enum DictationState: Equatable {
     var hud: HUDContent? {
         switch self {
         case .preparing:
-            return HUDContent(text: "🎤 Готовлю микрофон…", busy: true, icon: "mic", autoHideAfter: nil)
+            return HUDContent(text: "Готовлю микрофон…", busy: true, icon: "mic",
+                              hudIcon: "mic", accent: .neutral, autoHideAfter: nil)
         case .recording:
-            return HUDContent(text: "🎤 Слушаю…", busy: true, icon: "mic", autoHideAfter: nil, showLevel: true)
+            return HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                              hudIcon: "mic", accent: .neutral, autoHideAfter: nil, showLevel: true)
         case .transcribing:
-            return HUDContent(text: "Распознаю…", busy: true, icon: "waveform", autoHideAfter: nil)
+            return HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
+                              hudIcon: "waveform", accent: .neutral, autoHideAfter: nil)
         case .fixing:
-            return HUDContent(text: "Исправляю через OpenCode…", busy: true, icon: "ellipsis", autoHideAfter: nil)
+            return HUDContent(text: "Обрабатываю текст…", busy: true, icon: "ellipsis",
+                              hudIcon: "ellipsis", accent: .neutral, autoHideAfter: nil)
         case .done(let message):
-            return HUDContent(text: "✅ " + (message.isEmpty ? "Готово" : message),
-                              busy: false, icon: "checkmark", autoHideAfter: 2.0)
+            return HUDContent(text: message.isEmpty ? "Готово" : message,
+                              busy: false, icon: "checkmark", hudIcon: "checkmark.circle.fill",
+                              accent: .success, autoHideAfter: 2.0)
         case .info(let message):
-            return HUDContent(text: "ℹ️ " + (message.isEmpty ? "Готово" : message),
-                              busy: false, icon: "info.circle", autoHideAfter: 2.5)
+            return HUDContent(text: message.isEmpty ? "Готово" : message,
+                              busy: false, icon: "info.circle", hudIcon: "info.circle.fill",
+                              accent: .info, autoHideAfter: 2.5)
         case .error(let message):
-            return HUDContent(text: "⚠️ " + (message.isEmpty ? "Ошибка" : message),
-                              busy: false, icon: "exclamationmark.triangle", autoHideAfter: 5.0)
+            return HUDContent(text: message.isEmpty ? "Ошибка" : message,
+                              busy: false, icon: "exclamationmark.triangle",
+                              hudIcon: "exclamationmark.triangle.fill",
+                              accent: .warning, autoHideAfter: 5.0)
         case .idle:
             return nil
         }

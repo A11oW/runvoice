@@ -61,7 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if CommandLine.arguments.contains("--snapshot-hud") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.hud.snapshot(to: "/tmp/runvoice-hud.png") {
+                let content = HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                         hudIcon: "mic", accent: .neutral,
+                                         autoHideAfter: nil, showLevel: true)
+                self?.hud.snapshot(to: "/tmp/runvoice-hud.png", content: content,
+                                   timer: "00:07", level: 0.65) {
                     NSApp.terminate(nil)
                 }
             }
@@ -167,14 +171,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func snapshotStates() {
-        let states: [(name: String, text: String, busy: Bool, showLevel: Bool, timer: String?, level: CGFloat)] = [
-            ("preparing", "🎤 Готовлю микрофон…", true, false, nil, 0),
-            ("recording", "🎤 Слушаю…", true, true, "00:12", 0.62),
-            ("transcribing", "Распознаю…", true, false, nil, 0),
-            ("fixing", "Исправляю через OpenCode…", true, false, nil, 0),
-            ("done", "✅ Готово", false, false, nil, 0),
-            ("info", "ℹ️ запись не идёт", false, false, nil, 0),
-            ("error", "⚠️ речь не распознана (тишина?)", false, false, nil, 0),
+        let states: [(name: String, content: HUDContent, timer: String?, level: CGFloat)] = [
+            ("preparing", HUDContent(text: "Готовлю микрофон…", busy: true, icon: "mic",
+                                     hudIcon: "mic", accent: .neutral, autoHideAfter: nil), nil, 0),
+            ("recording", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                     hudIcon: "mic", accent: .neutral,
+                                     autoHideAfter: nil, showLevel: true), "00:12", 0.62),
+            ("transcribing", HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
+                                        hudIcon: "waveform", accent: .neutral,
+                                        autoHideAfter: nil), nil, 0),
+            ("fixing", HUDContent(text: "Обрабатываю текст…", busy: true, icon: "ellipsis",
+                                  hudIcon: "ellipsis", accent: .neutral,
+                                  autoHideAfter: nil), nil, 0),
+            ("done", HUDContent(text: "Готово", busy: false, icon: "checkmark",
+                                hudIcon: "checkmark.circle.fill",
+                                accent: .success, autoHideAfter: nil), nil, 0),
+            ("info", HUDContent(text: "запись не идёт", busy: false, icon: "info.circle",
+                                hudIcon: "info.circle.fill",
+                                accent: .info, autoHideAfter: nil), nil, 0),
+            ("error", HUDContent(text: "речь не распознана (тишина?)", busy: false,
+                                 icon: "exclamationmark.triangle",
+                                 hudIcon: "exclamationmark.triangle.fill",
+                                 accent: .warning, autoHideAfter: nil), nil, 0),
         ]
 
         func capture(_ index: Int) {
@@ -184,9 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let state = states[index]
             hud.snapshot(to: "/tmp/runvoice-state-\(state.name).png",
-                         text: state.text,
-                         busy: state.busy,
-                         showLevel: state.showLevel,
+                         content: state.content,
                          timer: state.timer,
                          level: state.level) {
                 capture(index + 1)
@@ -337,7 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             micLevel.stop()
         }
 
-        hud.present(text: content.text, busy: content.busy, showLevel: content.showLevel)
+        hud.present(content)
         setIcon(content.icon)
 
         if let delay = content.autoHideAfter {

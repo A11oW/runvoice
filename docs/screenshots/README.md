@@ -10,10 +10,10 @@
 | ![](hud-preparing.png) | `preparing` — «Готовлю микрофон…» |
 | ![](hud-recording.png) | `recording` — «Слушаю…», таймер и уровень микрофона |
 | ![](hud-transcribing.png) | `transcribing` — «Распознаю…» |
-| ![](hud-fixing.png) | `fixing` — «Исправляю через OpenCode…» |
-| ![](hud-done.png) | `done` — «✅ Готово» |
-| ![](hud-info.png) | `info` — «ℹ️ запись не идёт» |
-| ![](hud-error.png) | `error` — «⚠️ речь не распознана (тишина?)» |
+| ![](hud-fixing.png) | `fixing` — «Обрабатываю текст…» |
+| ![](hud-done.png) | `done` — «Готово», зелёная галочка |
+| ![](hud-info.png) | `info` — «запись не идёт», синяя иконка |
+| ![](hud-error.png) | `error` — «речь не распознана (тишина?)», оранжевая иконка |
 
 ## Настройки
 
