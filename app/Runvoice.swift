@@ -54,8 +54,28 @@ enum Log {
 // MARK: - Настройки
 
 struct Settings: Codable {
-    var promptFix: String = ""
-    var promptAgent: String = ""
+    var promptFix = ""
+    var promptAgent = ""
+    var language = "ru"
+    var provider = "deepseek"
+    var model = "deepseek-flash"
+    var restoreClipboard = false
+
+    enum CodingKeys: String, CodingKey {
+        case promptFix, promptAgent, language, provider, model, restoreClipboard
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        promptFix = try c.decodeIfPresent(String.self, forKey: .promptFix) ?? ""
+        promptAgent = try c.decodeIfPresent(String.self, forKey: .promptAgent) ?? ""
+        language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
+        restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
+    }
 }
 
 enum DefaultPrompts {
@@ -89,13 +109,20 @@ enum SettingsStore {
 final class SettingsWindow: NSWindowController {
     private let fixText = NSTextView()
     private let agentText = NSTextView()
+    private var tabView: NSTabView!
+    private var languagePopup: NSPopUpButton!
+    private var providerField: NSTextField!
+    private var modelField: NSTextField!
+    private var restoreCheck: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var depsLabel: NSTextField!
     private var refreshTimer: Timer?
 
+    private let languages = ["ru", "en", "auto"]
+
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 660),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 620),
                               styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Runvoice — Настройки"
@@ -125,80 +152,42 @@ final class SettingsWindow: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func selectTab(_ identifier: String) {
+        tabView.selectTabViewItem(withIdentifier: identifier)
+    }
+
     private func build() {
         guard let content = window?.contentView else { return }
 
-        let fixLabel = label("Промпт для исправления текста  (⌥Space)", bold: true)
-        let fixHint = label("«Сбросить» вернёт встроенный текст. Изменения применяются после «Сохранить».")
-        let agentLabel = label("Промпт для режима «инструкция агенту»  (⌃⇧Space)", bold: true)
-        let agentHint = label("Пустое поле — используется встроенный промпт.")
-        let diagLabel = label("Диагностика", bold: true)
+        tabView = NSTabView()
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(tabView)
 
-        accessLabel = label("Accessibility: проверка…")
-        depsLabel = label("")
+        let general = NSTabViewItem(identifier: "general")
+        general.label = "General"
+        general.view = buildGeneral()
+        tabView.addTabViewItem(general)
 
-        let fixScroll = makeScroll(fixText)
-        let agentScroll = makeScroll(agentText)
-
-        accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
-        let depsButton = NSButton(title: "Проверить зависимости", target: self, action: #selector(checkDependencies))
+        let prompt = NSTabViewItem(identifier: "prompt")
+        prompt.label = "Prompt"
+        prompt.view = buildPrompt()
+        tabView.addTabViewItem(prompt)
 
         let reset = NSButton(title: "Сбросить", target: self, action: #selector(resetDefaults))
         let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancel))
         let save = NSButton(title: "Сохранить", target: self, action: #selector(saveSettings))
         save.keyEquivalent = "\r"
 
-        let views: [NSView] = [fixLabel, fixHint, agentLabel, agentHint, diagLabel,
-                               accessLabel, accessButton, depsLabel, depsButton,
-                               reset, cancel, save]
-        for view in views {
+        for view in [reset, cancel, save] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
-        content.addSubview(fixScroll)
-        content.addSubview(agentScroll)
 
         NSLayoutConstraint.activate([
-            fixLabel.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
-            fixLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            fixLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            fixScroll.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 6),
-            fixScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            fixScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            fixScroll.heightAnchor.constraint(equalToConstant: 165),
-
-            fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 4),
-            fixHint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            fixHint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            agentLabel.topAnchor.constraint(equalTo: fixHint.bottomAnchor, constant: 14),
-            agentLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            agentLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            agentScroll.topAnchor.constraint(equalTo: agentLabel.bottomAnchor, constant: 6),
-            agentScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            agentScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            agentScroll.heightAnchor.constraint(equalToConstant: 165),
-
-            agentHint.topAnchor.constraint(equalTo: agentScroll.bottomAnchor, constant: 4),
-            agentHint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            agentHint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            diagLabel.topAnchor.constraint(equalTo: agentHint.bottomAnchor, constant: 18),
-            diagLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            diagLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
-            accessLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            accessButton.topAnchor.constraint(equalTo: diagLabel.bottomAnchor, constant: 8),
-            accessButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-
-            depsButton.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 8),
-            depsButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            depsLabel.centerYAnchor.constraint(equalTo: depsButton.centerYAnchor),
-            depsLabel.leadingAnchor.constraint(equalTo: depsButton.trailingAnchor, constant: 10),
-            depsLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -16),
+            tabView.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            tabView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            tabView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            tabView.bottomAnchor.constraint(equalTo: save.topAnchor, constant: -12),
 
             reset.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             reset.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
@@ -207,6 +196,130 @@ final class SettingsWindow: NSWindowController {
             cancel.trailingAnchor.constraint(equalTo: save.leadingAnchor, constant: -8),
             cancel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
         ])
+    }
+
+    // MARK: - General
+
+    private func buildGeneral() -> NSView {
+        let view = NSView()
+        let languageLabel = label("Язык распознавания")
+        let providerLabel = label("Провайдер модели правки")
+        let modelLabel = label("Модель правки")
+        let diagLabel = label("Диагностика", bold: true)
+
+        languagePopup = NSPopUpButton()
+        languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
+
+        providerField = NSTextField()
+        providerField.placeholderString = "deepseek"
+        modelField = NSTextField()
+        modelField.placeholderString = "deepseek-flash"
+
+        restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
+                                target: nil, action: nil)
+
+        accessLabel = label("Accessibility: проверка…")
+        accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
+        depsLabel = label("")
+        let depsButton = NSButton(title: "Проверить зависимости", target: self, action: #selector(checkDependencies))
+
+        let views: [NSView] = [languageLabel, languagePopup, providerLabel, providerField,
+                               modelLabel, modelField, restoreCheck, diagLabel,
+                               accessLabel, accessButton, depsLabel, depsButton]
+        for v in views {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+        }
+
+        NSLayoutConstraint.activate([
+            languageLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            languageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            languagePopup.centerYAnchor.constraint(equalTo: languageLabel.centerYAnchor),
+            languagePopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            languagePopup.widthAnchor.constraint(equalToConstant: 200),
+
+            providerLabel.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 16),
+            providerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            providerField.centerYAnchor.constraint(equalTo: providerLabel.centerYAnchor),
+            providerField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            providerField.widthAnchor.constraint(equalToConstant: 260),
+
+            modelLabel.topAnchor.constraint(equalTo: providerLabel.bottomAnchor, constant: 16),
+            modelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            modelField.centerYAnchor.constraint(equalTo: modelLabel.centerYAnchor),
+            modelField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            modelField.widthAnchor.constraint(equalToConstant: 260),
+
+            restoreCheck.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 18),
+            restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            diagLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 24),
+            diagLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
+            accessLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            accessButton.topAnchor.constraint(equalTo: diagLabel.bottomAnchor, constant: 8),
+            accessButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            depsButton.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 8),
+            depsButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            depsLabel.centerYAnchor.constraint(equalTo: depsButton.centerYAnchor),
+            depsLabel.leadingAnchor.constraint(equalTo: depsButton.trailingAnchor, constant: 10),
+            depsLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+        ])
+
+        return view
+    }
+
+    // MARK: - Prompt
+
+    private func buildPrompt() -> NSView {
+        let view = NSView()
+        let fixLabel = label("Промпт для исправления текста  (⌥Space)", bold: true)
+        let fixHint = label("«Сбросить» вернёт встроенный текст. Изменения применяются после «Сохранить».")
+        let agentLabel = label("Промпт для режима «инструкция агенту»  (⌃⇧Space)", bold: true)
+        let agentHint = label("Пустое поле — используется встроенный промпт.")
+
+        let fixScroll = makeScroll(fixText)
+        let agentScroll = makeScroll(agentText)
+
+        let views: [NSView] = [fixLabel, fixHint, agentLabel, agentHint]
+        for v in views {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+        }
+        view.addSubview(fixScroll)
+        view.addSubview(agentScroll)
+
+        NSLayoutConstraint.activate([
+            fixLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            fixLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            fixLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            fixScroll.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 6),
+            fixScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            fixScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            fixScroll.heightAnchor.constraint(equalToConstant: 175),
+
+            fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 4),
+            fixHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            fixHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            agentLabel.topAnchor.constraint(equalTo: fixHint.bottomAnchor, constant: 14),
+            agentLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            agentLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            agentScroll.topAnchor.constraint(equalTo: agentLabel.bottomAnchor, constant: 6),
+            agentScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            agentScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            agentScroll.heightAnchor.constraint(equalToConstant: 175),
+
+            agentHint.topAnchor.constraint(equalTo: agentScroll.bottomAnchor, constant: 4),
+            agentHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            agentHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+        ])
+
+        return view
     }
 
     private func label(_ text: String, bold: Bool = false) -> NSTextField {
@@ -283,11 +396,24 @@ final class SettingsWindow: NSWindowController {
         let settings = SettingsStore.load()
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
         agentText.string = settings.promptAgent.isEmpty ? DefaultPrompts.agent : settings.promptAgent
+
+        languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
+        providerField.stringValue = settings.provider
+        modelField.stringValue = settings.model
+        restoreCheck.state = settings.restoreClipboard ? .on : .off
     }
 
     @objc private func resetDefaults() {
-        fixText.string = DefaultPrompts.fix
-        agentText.string = DefaultPrompts.agent
+        let tab = tabView.selectedTabViewItem?.identifier as? String
+        if tab == "prompt" {
+            fixText.string = DefaultPrompts.fix
+            agentText.string = DefaultPrompts.agent
+        } else {
+            languagePopup.selectItem(at: 0)
+            providerField.stringValue = "deepseek"
+            modelField.stringValue = "deepseek-flash"
+            restoreCheck.state = .off
+        }
     }
 
     @objc private func cancel() {
@@ -295,7 +421,14 @@ final class SettingsWindow: NSWindowController {
     }
 
     @objc private func saveSettings() {
-        SettingsStore.save(Settings(promptFix: fixText.string, promptAgent: agentText.string))
+        var settings = SettingsStore.load()
+        settings.promptFix = fixText.string
+        settings.promptAgent = agentText.string
+        settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
+        settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.restoreClipboard = restoreCheck.state == .on
+        SettingsStore.save(settings)
         Log.write("settings saved")
         window?.close()
     }
@@ -345,6 +478,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.openSettings()
             }
         }
+
+        if CommandLine.arguments.contains("--snapshot") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.openSettings()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    self?.snapshotSettings()
+                }
+            }
+        }
     }
 
     // MARK: - Меню в строке состояния
@@ -385,6 +527,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.show()
     }
 
+    private func snapshotSettings() {
+        func capture(to path: String) {
+            guard let view = settingsWindow?.window?.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let image = NSImage(size: view.bounds.size)
+            image.lockFocus()
+            NSColor.windowBackgroundColor.setFill()
+            view.bounds.fill()
+            if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
+                ctx.draw(cg, in: view.bounds)
+            }
+            image.unlockFocus()
+            if let tiff = image.tiffRepresentation,
+               let bitmap = NSBitmapImageRep(data: tiff),
+               let png = bitmap.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: path))
+            }
+        }
+
+        capture(to: "/tmp/runvoice-settings.png")
+        settingsWindow?.selectTab("prompt")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            capture(to: "/tmp/runvoice-settings-prompt.png")
+            NSApp.terminate(nil)
+        }
+    }
+
     @objc private func openAccessibility() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
@@ -420,6 +590,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = SettingsStore.load()
         if !settings.promptFix.isEmpty { env["DICTATE_PROMPT_FIX"] = settings.promptFix }
         if !settings.promptAgent.isEmpty { env["DICTATE_PROMPT_AGENT"] = settings.promptAgent }
+        if !settings.language.isEmpty { env["WHISPER_LANG"] = settings.language }
+        if !settings.provider.isEmpty { env["OC_PROVIDER"] = settings.provider }
+        if !settings.model.isEmpty { env["OC_MODEL_ID"] = settings.model }
+        if settings.restoreClipboard { env["DICTATE_RESTORE_CLIPBOARD"] = "1" }
         let base = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["PATH"] = base + ":" + (env["PATH"] ?? "")
         p.environment = env
