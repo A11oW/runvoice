@@ -54,7 +54,7 @@ enum OpenCodeLocator {
 }
 
 enum Dependency: CaseIterable {
-    case ffmpeg, whisperServer, whisperCli, whisperModel, vadModel, script, opencode
+    case ffmpeg, whisperServer, whisperCli, whisperModel, vadModel, opencode
 
     var title: String {
         switch self {
@@ -63,7 +63,6 @@ enum Dependency: CaseIterable {
         case .whisperCli: return "whisper-cli"
         case .whisperModel: return "Модель Whisper"
         case .vadModel: return "VAD-модель"
-        case .script: return "dictate.sh"
         case .opencode: return "OpenCode CLI"
         }
     }
@@ -78,7 +77,6 @@ enum Dependency: CaseIterable {
             return home.appendingPathComponent(".local/share/whisper/ggml-large-v3-turbo-q5_0.bin").path
         case .vadModel:
             return home.appendingPathComponent(".local/share/whisper/ggml-silero-v5.1.2.bin").path
-        case .script: return Paths.script?.path ?? "dictate.sh"
         case .opencode: return "npx-кэш или /opt/homebrew/bin/opencode"
         }
     }
@@ -90,9 +88,6 @@ enum Dependency: CaseIterable {
             return fm.isExecutableFile(atPath: expected)
         case .whisperModel, .vadModel:
             return fm.fileExists(atPath: expected)
-        case .script:
-            guard let url = Paths.script else { return false }
-            return fm.isExecutableFile(atPath: url.path)
         case .opencode:
             return OpenCodeLocator.find() != nil
         }
