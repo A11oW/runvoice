@@ -5,13 +5,10 @@ import CoreGraphics
 /// Глобальные хоткеи через активный CGEventTap.
 /// Сравнивает код клавиши и модификаторы, совпавшие сочетания потребляет.
 final class HotkeyMonitor {
-    var onAction: ((DictationAction) -> Void)?
+    var onAction: (() -> Void)?
 
     private var tap: CFMachPort?
     private var toggleHotkey = HotKeySetting()
-    private var agentHotkey = HotKeySetting(keyCode: 49,
-                                            modifiers: UInt32(controlKey) | UInt32(shiftKey),
-                                            display: "⌃⇧Space")
     private var suspended = false
 
     func start(settings: Settings) {
@@ -21,7 +18,6 @@ final class HotkeyMonitor {
 
     func update(settings: Settings) {
         toggleHotkey = settings.hotkeyToggle
-        agentHotkey = settings.hotkeyAgent
     }
 
     func setSuspended(_ value: Bool) {
@@ -80,18 +76,10 @@ final class HotkeyMonitor {
                 && flags.contains(.maskCommand) == wantCommand
         }
 
-        if matches(agentHotkey) {
-            if !isRepeat {
-                Log.write("hotkey fired: agent")
-                DispatchQueue.main.async { self.onAction?(.agent) }
-            }
-            return true
-        }
-
         if matches(toggleHotkey) {
             if !isRepeat {
                 Log.write("hotkey fired: toggle")
-                DispatchQueue.main.async { self.onAction?(.toggle) }
+                DispatchQueue.main.async { self.onAction?() }
             }
             return true
         }

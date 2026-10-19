@@ -9,7 +9,6 @@
 |---|---|
 | ![](hud-preparing.png) | `preparing` — «Готовлю микрофон…» |
 | ![](hud-recording.png) | `recording` — «Слушаю…», таймер и уровень микрофона |
-| ![](hud-recording-agent.png) | `recording_agent` — «Слушаю… · инструкция агенту» |
 | ![](hud-transcribing.png) | `transcribing` — «Распознаю…» |
 | ![](hud-fixing.png) | `fixing` — «Обрабатываю текст…» |
 | ![](hud-done.png) | `done` — «Готово», зелёная галочка |
@@ -22,8 +21,8 @@
 |---|---|
 | General (язык, буфер, бабл, диагностика) | [settings-general.png](settings-general.png) |
 | AI (провайдер, модель, URL, OpenCode) | [settings-ai.png](settings-ai.png) |
-| Prompt (промпты fix/agent) | [settings-prompt.png](settings-prompt.png) |
-| Hotkeys (диктовка, инструкция агенту) | [settings-hotkeys.png](settings-hotkeys.png) |
+| Prompt (промпт исправления) | [settings-prompt.png](settings-prompt.png) |
+| Hotkeys (хоткей диктовки) | [settings-hotkeys.png](settings-hotkeys.png) |
 
 ## Как переснять
 

@@ -6,12 +6,12 @@ final class DictationRunner {
         case missingScript
     }
 
-    func run(_ action: DictationAction) throws {
+    func run() throws {
         guard let script = Paths.script else { throw Failure.missingScript }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path, action.rawValue]
+        process.arguments = [script.path, "toggle"]
 
         var environment = ProcessInfo.processInfo.environment
         environment["DICTATE_STATE_DIR"] = Paths.state.path
@@ -22,7 +22,6 @@ final class DictationRunner {
         let settings = SettingsStore.load()
         let forwarded: [(String, String?)] = [
             ("DICTATE_PROMPT_FIX", settings.promptFix.isEmpty ? nil : settings.promptFix),
-            ("DICTATE_PROMPT_AGENT", settings.promptAgent.isEmpty ? nil : settings.promptAgent),
             ("WHISPER_LANG", settings.language.isEmpty ? nil : settings.language),
             ("OC_PROVIDER", settings.provider.isEmpty ? nil : settings.provider),
             ("OC_MODEL_ID", settings.model.isEmpty ? nil : settings.model),

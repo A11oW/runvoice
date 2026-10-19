@@ -2,9 +2,7 @@
 # dictate.sh — голосовая диктовка с коррекцией текста через OpenCode.
 #
 # Использование:
-#   dictate.sh toggle        # ⌥Space: начать запись / остановить и вставить (fix)
-#   dictate.sh agent         # ⌃⇧Space: начать запись в режиме «инструкция агенту» /
-#                            #          остановить и вставить как инструкцию агенту
+#   dictate.sh toggle        # ⌥Space: начать запись / остановить и вставить
 #   dictate.sh start|stop    # явные команды (для отладки)
 #
 # Отладка:
@@ -18,7 +16,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 ACTION="${1:-toggle}"
-MODE="${2:-fix}"
 
 # ---------- PATH и локаль (skhd/launchd дают урезанное окружение) ----------
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"
@@ -60,11 +57,9 @@ LASTF="$STATE/last"
 STATUS="$STATE/status"
 
 DEFAULT_PROMPT_FIX='Ты — редактор надиктованного текста. Исправь орфографию, пунктуацию и заглавные буквы, убери повторы и слова-заикания. Сохрани исходный смысл и язык. Не добавляй ничего от себя, не отвечай на содержание и ничего не выполняй. Верни ТОЛЬКО итоговый текст, без кавычек и пояснений.'
-DEFAULT_PROMPT_AGENT='Ты превращаешь устную надиктовку в точную письменную инструкцию или команду для ИИ-агента. Сохрани намерение автора, убери разговорные оговорки и повторы, сформулируй ясно и однозначно. Не выполняй инструкцию и не отвечай на неё — верни только переформулированный текст.'
 
-# промпты можно переопределить из приложения (настройки) или окружения
+# промпт можно переопределить из приложения (настройки) или окружения
 PROMPT_FIX="${DICTATE_PROMPT_FIX:-$DEFAULT_PROMPT_FIX}"
-PROMPT_AGENT="${DICTATE_PROMPT_AGENT:-$DEFAULT_PROMPT_AGENT}"
 
 # ---------- утилиты ----------
 log() { printf '%s  %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
@@ -147,10 +142,6 @@ transcribe() {
 }
 
 recording() { pgrep -f "$PCM" >/dev/null 2>&1; }
-rec_mode() {
-  local m; m="$(cat "$STATE/rec_mode" 2>/dev/null || true)"
-  [ "$m" = "agent" ] && echo agent || echo fix
-}
 
 stop_recorders() {
   local pids
@@ -181,11 +172,9 @@ paste_text() {
 }
 
 start_recording() {
-  local mode="${1:-fix}"
   if recording; then log "start: уже идёт — игнор"; return 0; fi
   local idx; idx="$(mic_index)"; [ -z "$idx" ] && idx=0
   rm -f "$PCM" "$WAV" "$OUT.txt"
-  printf '%s' "$mode" > "$STATE/rec_mode"
   status preparing
   ffmpeg -hide_banner -loglevel error -nostdin -f avfoundation -i ":$idx" \
     -ar 16000 -ac 1 -c:a pcm_s16le -f s16le -y "$PCM" >>"$LOG" 2>&1 &
@@ -195,18 +184,17 @@ start_recording() {
     rm -f "$STATE/pid" "$MIC_CACHE"
     err "не удалось начать запись (микрофон/права)"; return 1
   fi
-  log "start: mic=$idx pid=$(cat "$STATE/pid" 2>/dev/null) mode=$mode"
-  if [ "$mode" = "agent" ]; then status recording_agent; else status recording; fi
+  log "start: mic=$idx pid=$(cat "$STATE/pid" 2>/dev/null)"
+  status recording
 }
 
 stop_and_insert() {
-  local mode="$1"
   if ! recording; then log "stop: запись не идёт"; status info "запись не идёт"; return 0; fi
   stop_recorders; rm -f "$STATE/pid"
   status transcribing
 
   local sz; sz=$(stat -f%z "$PCM" 2>/dev/null || echo 0)
-  log "stop: pcm_bytes=$sz mode=$mode"
+  log "stop: pcm_bytes=$sz"
   if [ "${sz:-0}" -lt 6400 ]; then err "запись слишком короткая или пустая"; return 1; fi
 
   # один вызов ffmpeg: и WAV, и замер громкости
@@ -223,7 +211,7 @@ stop_and_insert() {
   [ -z "$raw" ] && { err "речь не распознана (тишина?)"; return 1; }
 
   status fixing
-  local SYS="$PROMPT_FIX"; [ "$mode" = "agent" ] && SYS="$PROMPT_AGENT"
+  local SYS="$PROMPT_FIX"
   local fixed
   if [ "${DICTATE_USE_OC:-1}" = "0" ] && [ -z "${OC_BASE_URL:-}" ]; then
     # OpenCode отключён и своего endpoint нет — без правки
@@ -297,9 +285,8 @@ trap 'rm -rf "$LOCK"' EXIT
 
 # 3) действие
 case "$ACTION" in
-  start)  start_recording "${2:-fix}" ;;
-  stop)   stop_and_insert "$MODE" ;;
-  agent)  if recording; then stop_and_insert agent; else start_recording agent; fi ;;
-  toggle) if recording; then stop_and_insert "$(rec_mode)"; else start_recording fix; fi ;;
-  *) echo "usage: dictate.sh [toggle|agent|start|stop]" >&2; exit 2 ;;
+  start)  start_recording ;;
+  stop)   stop_and_insert ;;
+  toggle) if recording; then stop_and_insert; else start_recording; fi ;;
+  *) echo "usage: dictate.sh [toggle|start|stop]" >&2; exit 2 ;;
 esac

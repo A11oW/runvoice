@@ -106,7 +106,6 @@ final class HUD: NSObject, NSApplicationDelegate {
             switch state {
             case "preparing":    busy(true,  msg.isEmpty ? "🎤 Готовлю микрофон…" : msg)
             case "recording":    busy(true,  msg.isEmpty ? "🎤 Слушаю…" : msg)
-            case "recording_agent": busy(true, "🎤 Слушаю… (инструкция агенту)")
             case "transcribing": busy(true,  msg.isEmpty ? "Распознаю…" : msg)
             case "fixing":       busy(true,  msg.isEmpty ? "Исправляю через OpenCode…" : msg)
             case "done":         busy(false, "✅ " + (msg.isEmpty ? "Готово" : msg)); closeAt = Date().addingTimeInterval(1.5)

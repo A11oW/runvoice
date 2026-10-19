@@ -6,7 +6,6 @@ import ApplicationServices
 
 final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let fixText = NSTextView()
-    private let agentText = NSTextView()
     private var tabView: NSTabView!
     private var languagePopup: NSPopUpButton!
     private var providerField: NSTextField!
@@ -16,7 +15,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var restoreCheck: NSButton!
     private var hudCheck: NSButton!
     private var toggleHotkeyButton: NSButton!
-    private var agentHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var depStack: NSStackView!
@@ -25,9 +23,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var captureMonitor: Any?
     private var captureTarget: NSButton?
     private var toggleHotkey = HotKeySetting()
-    private var agentHotkey = HotKeySetting(keyCode: 49,
-                                            modifiers: UInt32(controlKey) | UInt32(shiftKey),
-                                            display: "⌃⇧Space")
 
     var onCaptureStateChanged: ((Bool) -> Void)?
     var onSettingsSaved: (() -> Void)?
@@ -264,19 +259,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let view = NSView()
         let fixLabel = label("Промпт для исправления текста  (⌥Space)", bold: true)
         let fixHint = label("«Сбросить» вернёт встроенный текст. Изменения применяются после «Сохранить».")
-        let agentLabel = label("Промпт для режима «инструкция агенту»  (⌃⇧Space)", bold: true)
-        let agentHint = label("Пустое поле — используется встроенный промпт.")
 
         let fixScroll = makeScroll(fixText)
-        let agentScroll = makeScroll(agentText)
 
-        let views: [NSView] = [fixLabel, fixHint, agentLabel, agentHint]
-        for v in views {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(v)
-        }
+        fixLabel.translatesAutoresizingMaskIntoConstraints = false
+        fixHint.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(fixLabel)
         view.addSubview(fixScroll)
-        view.addSubview(agentScroll)
+        view.addSubview(fixHint)
 
         NSLayoutConstraint.activate([
             fixLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
@@ -286,24 +276,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             fixScroll.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 6),
             fixScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             fixScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            fixScroll.heightAnchor.constraint(equalToConstant: 175),
+            fixScroll.heightAnchor.constraint(equalToConstant: 330),
 
-            fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 4),
+            fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 6),
             fixHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             fixHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            agentLabel.topAnchor.constraint(equalTo: fixHint.bottomAnchor, constant: 14),
-            agentLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            agentLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            agentScroll.topAnchor.constraint(equalTo: agentLabel.bottomAnchor, constant: 6),
-            agentScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            agentScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            agentScroll.heightAnchor.constraint(equalToConstant: 175),
-
-            agentHint.topAnchor.constraint(equalTo: agentScroll.bottomAnchor, constant: 4),
-            agentHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            agentHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -342,16 +319,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildHotkeys() -> NSView {
         let view = NSView()
         let toggleLabel = label("Диктовка")
-        let agentLabel = label("Инструкция агенту (старт/стоп)")
         let hint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
         let note = label("Нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
 
         toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
         toggleHotkeyButton.bezelStyle = .rounded
-        agentHotkeyButton = NSButton(title: agentHotkey.display, target: self, action: #selector(captureAgent))
-        agentHotkeyButton.bezelStyle = .rounded
 
-        let views: [NSView] = [toggleLabel, agentLabel, hint, note, toggleHotkeyButton, agentHotkeyButton]
+        let views: [NSView] = [toggleLabel, hint, note, toggleHotkeyButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -364,13 +338,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             toggleHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
 
-            agentLabel.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 18),
-            agentLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            agentHotkeyButton.centerYAnchor.constraint(equalTo: agentLabel.centerYAnchor),
-            agentHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            agentHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
-
-            hint.topAnchor.constraint(equalTo: agentLabel.bottomAnchor, constant: 22),
+            hint.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 22),
             hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             note.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 4),
             note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -382,7 +350,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     // MARK: - Горячие клавиши
 
     @objc private func captureToggle() { startCapture(button: toggleHotkeyButton) }
-    @objc private func captureAgent() { startCapture(button: agentHotkeyButton) }
 
     private func startCapture(button: NSButton) {
         stopCapture()
@@ -399,7 +366,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         if let monitor = captureMonitor { NSEvent.removeMonitor(monitor) }
         captureMonitor = nil
         if let button = captureTarget {
-            button.title = (button === toggleHotkeyButton) ? toggleHotkey.display : agentHotkey.display
+            button.title = toggleHotkey.display
         }
         captureTarget = nil
         onCaptureStateChanged?(false)
@@ -426,8 +393,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                                            characters: event.charactersIgnoringModifiers))
         if captureTarget === toggleHotkeyButton {
             toggleHotkey = setting
-        } else {
-            agentHotkey = setting
         }
         stopCapture()
     }
@@ -505,7 +470,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func loadValues() {
         let settings = SettingsStore.load()
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
-        agentText.string = settings.promptAgent.isEmpty ? DefaultPrompts.agent : settings.promptAgent
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
         providerField.stringValue = settings.provider
@@ -516,23 +480,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         hudCheck.state = settings.showHUD ? .on : .off
 
         toggleHotkey = settings.hotkeyToggle
-        agentHotkey = settings.hotkeyAgent
         toggleHotkeyButton.title = toggleHotkey.display
-        agentHotkeyButton.title = agentHotkey.display
     }
 
     @objc private func resetDefaults() {
         switch tabView.selectedTabViewItem?.identifier as? String {
         case "prompt":
             fixText.string = DefaultPrompts.fix
-            agentText.string = DefaultPrompts.agent
         case "hotkeys":
             toggleHotkey = HotKeySetting()
-            agentHotkey = HotKeySetting(keyCode: 49,
-                                        modifiers: UInt32(controlKey) | UInt32(shiftKey),
-                                        display: "⌃⇧Space")
             toggleHotkeyButton.title = toggleHotkey.display
-            agentHotkeyButton.title = agentHotkey.display
         case "ai":
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
@@ -550,17 +507,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func saveSettings() {
-        if toggleHotkey.keyCode == agentHotkey.keyCode && toggleHotkey.modifiers == agentHotkey.modifiers {
-            let alert = NSAlert()
-            alert.messageText = "Сочетания совпадают"
-            alert.informativeText = "Задайте разные комбинации для диктовки и инструкции агенту."
-            alert.runModal()
-            return
-        }
-
         var settings = SettingsStore.load()
         settings.promptFix = fixText.string
-        settings.promptAgent = agentText.string
         settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
         settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
@@ -569,7 +517,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.restoreClipboard = restoreCheck.state == .on
         settings.showHUD = hudCheck.state == .on
         settings.hotkeyToggle = toggleHotkey
-        settings.hotkeyAgent = agentHotkey
 
         if !settings.baseURL.isEmpty,
            !settings.baseURL.lowercased().hasPrefix("http://"),

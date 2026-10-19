@@ -16,7 +16,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
-    private var agentItem: NSMenuItem?
 
     private var lastStateKey = ""
     private var closeAt: Date?
@@ -24,14 +23,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
-        Log.write("settings fix=\(saved.promptFix.count) agent=\(saved.promptAgent.count)")
+        Log.write("settings fix=\(saved.promptFix.count)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
         hud = HUDController(statusItem: statusItem)
         hud.setEnabled(saved.showHUD)
-        hotkeys.onAction = { [weak self] action in
-            self?.run(action)
+        hotkeys.onAction = { [weak self] in
+            self?.run()
         }
         hotkeys.start(settings: saved)
         updateHotkeyTitles(saved)
@@ -132,7 +131,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
         toggleItem = add(menu, "Диктовка", #selector(toggleDictation))
-        agentItem = add(menu, "Инструкция агенту", #selector(agentDictation))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
         menu.addItem(.separator())
@@ -151,8 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    @objc private func toggleDictation() { run(.toggle) }
-    @objc private func agentDictation() { run(.agent) }
+    @objc private func toggleDictation() { run() }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func openSettings() {
@@ -177,10 +174,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("recording", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                                      hudIcon: "mic", accent: .neutral,
                                      autoHideAfter: nil, showLevel: true), "00:12", 0.62),
-            ("recording-agent", HUDContent(text: "Слушаю… · инструкция агенту", busy: true,
-                                           icon: "text.bubble", hudIcon: "text.bubble",
-                                           accent: .neutral, autoHideAfter: nil,
-                                           showLevel: true), "00:05", 0.48),
             ("transcribing", HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
                                         hudIcon: "waveform", accent: .neutral,
                                         autoHideAfter: nil), nil, 0),
@@ -269,9 +262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Запуск пайплайна
 
-    private func run(_ action: DictationAction) {
+    private func run() {
         do {
-            try runner.run(action)
+            try runner.run()
         } catch DictationRunner.Failure.missingScript {
             showAlert("В ресурсах приложения не найден dictate.sh")
         } catch {
@@ -313,7 +306,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateHotkeyTitles(_ settings: Settings) {
         toggleItem?.title = "Диктовка   \(settings.hotkeyToggle.display)"
-        agentItem?.title = "Инструкция агенту   \(settings.hotkeyAgent.display)"
     }
 
 
