@@ -6,6 +6,7 @@ struct HUDContent {
     let busy: Bool
     let icon: String
     let autoHideAfter: TimeInterval?
+    var showLevel = false
 }
 
 /// Состояние диктовки, которое приложение читает из файла status.
@@ -67,7 +68,7 @@ enum DictationState: Equatable {
         case .preparing:
             return HUDContent(text: "🎤 Готовлю микрофон…", busy: true, icon: "mic", autoHideAfter: nil)
         case .recording:
-            return HUDContent(text: "🎤 Слушаю…", busy: true, icon: "mic", autoHideAfter: nil)
+            return HUDContent(text: "🎤 Слушаю…", busy: true, icon: "mic", autoHideAfter: nil, showLevel: true)
         case .transcribing:
             return HUDContent(text: "Распознаю…", busy: true, icon: "waveform", autoHideAfter: nil)
         case .fixing:

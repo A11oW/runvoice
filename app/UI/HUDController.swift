@@ -7,6 +7,7 @@ final class HUDController {
     private var bubble: BubbleView!
     private var spinner: NSProgressIndicator!
     private var label: NSTextField!
+    private var levelBar: LevelBarView!
     private var enabled = true
 
     init(statusItem: NSStatusItem) {
@@ -19,7 +20,7 @@ final class HUDController {
         if !value { panel?.orderOut(nil) }
     }
 
-    func present(text: String, busy: Bool) {
+    func present(text: String, busy: Bool, showLevel: Bool = false) {
         guard enabled else {
             panel?.orderOut(nil)
             return
@@ -32,6 +33,9 @@ final class HUDController {
         }
 
         label.stringValue = text
+        levelBar.isHidden = !showLevel
+        if !showLevel { levelBar.level = 0 }
+
         if busy {
             spinner.isHidden = false
             spinner.startAnimation(nil)
@@ -41,6 +45,10 @@ final class HUDController {
         }
     }
 
+    func setLevel(_ level: CGFloat) {
+        levelBar.level = level
+    }
+
     func dismiss() {
         panel?.orderOut(nil)
     }
@@ -48,6 +56,8 @@ final class HUDController {
     /// Отладочный режим: отрисовать бабл в PNG.
     func snapshot(to path: String, completion: @escaping () -> Void) {
         label.stringValue = "🎤 Слушаю…"
+        levelBar.isHidden = false
+        levelBar.level = 0.65
         spinner.isHidden = false
         spinner.startAnimation(nil)
         place()
@@ -115,9 +125,13 @@ final class HUDController {
         label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
 
+        levelBar = LevelBarView(frame: NSRect(x: 50, y: 5, width: w - 66, height: 4))
+        levelBar.isHidden = true
+
         bubble.addSubview(spinner)
         bubble.addSubview(title)
         bubble.addSubview(label)
+        bubble.addSubview(levelBar)
         panel.contentView = bubble
     }
 

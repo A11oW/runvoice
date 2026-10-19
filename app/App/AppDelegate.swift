@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var timer: Timer?
     private let hotkeys = HotkeyMonitor()
     private let runner = DictationRunner()
+    private let micLevel = MicLevelMonitor()
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
@@ -34,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hotkeys.start(settings: saved)
         updateHotkeyTitles(saved)
+        micLevel.onLevel = { [weak self] level in
+            self?.hud.setLevel(level)
+        }
         requestPermissions()
 
         if !AXIsProcessTrusted() {
@@ -259,6 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 
     private func hideHUD() {
+        micLevel.stop()
         hud.dismiss()
         closeAt = nil
         setIcon("waveform")     // после завершения — значок приложения
@@ -284,13 +289,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(_ state: DictationState) {
         guard let content = state.hud else {
+            micLevel.stop()
             hideHUD()
             return
         }
 
         if case .done = state { postPaste() }
 
-        hud.present(text: content.text, busy: content.busy)
+        if content.showLevel {
+            micLevel.start()
+        } else {
+            micLevel.stop()
+        }
+
+        hud.present(text: content.text, busy: content.busy, showLevel: content.showLevel)
         setIcon(content.icon)
 
         if let delay = content.autoHideAfter {
