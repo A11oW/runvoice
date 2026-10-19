@@ -13,6 +13,7 @@ struct Settings: Codable {
     var promptFix = ""
     var whisperModelPath = ""
     var whisperModelDirs: [String] = []
+    var hiddenModelPaths: [String] = []
     var language = "ru"
     var provider = "deepseek"
     var model = "deepseek-flash"
@@ -23,7 +24,7 @@ struct Settings: Codable {
     var hotkeyToggle = HotKeySetting()
 
     enum CodingKeys: String, CodingKey {
-        case promptFix, whisperModelPath, whisperModelDirs, language, provider, model
+        case promptFix, whisperModelPath, whisperModelDirs, hiddenModelPaths, language, provider, model
         case baseURL, useOpenCode, restoreClipboard, showHUD
         case hotkeyToggle
     }
@@ -35,6 +36,7 @@ struct Settings: Codable {
         promptFix = try c.decodeIfPresent(String.self, forKey: .promptFix) ?? ""
         whisperModelPath = try c.decodeIfPresent(String.self, forKey: .whisperModelPath) ?? ""
         whisperModelDirs = try c.decodeIfPresent([String].self, forKey: .whisperModelDirs) ?? []
+        hiddenModelPaths = try c.decodeIfPresent([String].self, forKey: .hiddenModelPaths) ?? []
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
         provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"

@@ -21,6 +21,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var modelsStack: NSStackView!
     private var modelsDiskLabel: NSTextField!
     private var modelDirs: [String] = []
+    private var hiddenModelPaths: [String] = []
     private var selectedModelPath = ""
     private var downloads: [String: ModelDownloader] = [:]
     private var downloadProgress: [String: Double] = [:]
@@ -319,7 +320,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         downloadPercents.removeAll()
 
         let active = WhisperModelStore.file(at: selectedModelPath)
-        var found = WhisperModelStore.foundModels(extraDirectories: modelDirs)
+        var found = WhisperModelStore.foundModels(extraDirectories: modelDirs,
+                                                  excluding: hiddenModelPaths)
         if let active, !found.contains(where: { $0.path == active.path }) {
             found.insert(active, at: 0)
         }
@@ -437,6 +439,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             delete.bezelStyle = .inline
             delete.identifier = NSUserInterfaceItemIdentifier(model.path)
             row.addArrangedSubview(delete)
+        } else {
+            let hide = NSButton(title: "Скрыть", target: self, action: #selector(hideModel(_:)))
+            hide.bezelStyle = .inline
+            hide.identifier = NSUserInterfaceItemIdentifier(model.path)
+            row.addArrangedSubview(hide)
         }
         return row
     }
@@ -598,6 +605,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         refreshModels()
     }
 
+    @objc private func hideModel(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        if !hiddenModelPaths.contains(path) { hiddenModelPaths.append(path) }
+        if selectedModelPath == path { selectedModelPath = "" }
+        refreshModels()
+    }
+
     @objc private func addModelFile() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -614,6 +628,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         let dir = url.deletingLastPathComponent().path
         if !modelDirs.contains(dir) { modelDirs.append(dir) }
+        hiddenModelPaths.removeAll { $0 == url.standardized.path }
         selectedModelPath = url.standardized.path
         refreshModels()
     }
@@ -858,6 +873,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         toggleHotkeyButton.title = toggleHotkey.display
 
         modelDirs = settings.whisperModelDirs
+        hiddenModelPaths = settings.hiddenModelPaths
         selectedModelPath = settings.whisperModelPath
         if selectedModelPath.isEmpty,
            let auto = WhisperModelStore.activeModel(settings: settings) {
@@ -880,6 +896,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             useOpenCodeCheck.state = .on
         case "models":
             modelDirs = []
+            hiddenModelPaths = []
             selectedModelPath = WhisperModelStore.autoSelect(
                 from: WhisperModelStore.foundModels())?.path ?? ""
             refreshModels()
@@ -907,6 +924,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.hotkeyToggle = toggleHotkey
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
+        settings.hiddenModelPaths = hiddenModelPaths
 
         if !settings.baseURL.isEmpty,
            !settings.baseURL.lowercased().hasPrefix("http://"),

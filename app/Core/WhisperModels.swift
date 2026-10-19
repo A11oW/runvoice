@@ -173,7 +173,8 @@ enum WhisperModelStore {
     }
 
     /// Модели в стандартных папках + дополнительные каталоги пользователя.
-    static func foundModels(extraDirectories: [String] = []) -> [WhisperModelFile] {
+    static func foundModels(extraDirectories: [String] = [],
+                            excluding: [String] = []) -> [WhisperModelFile] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         var directories = [
             modelsDirectory.path,
@@ -181,6 +182,7 @@ enum WhisperModelStore {
             home.appendingPathComponent("whisper.cpp/models").path,
         ]
         directories.append(contentsOf: extraDirectories)
+        let hidden = Set(excluding.map { URL(fileURLWithPath: $0).standardized.path })
 
         var byName: [String: WhisperModelFile] = [:]
         for directory in directories {
@@ -192,7 +194,7 @@ enum WhisperModelStore {
                 guard name.hasPrefix("ggml-"),
                       !name.contains("silero"),
                       !name.contains("vad") else { continue }
-                guard let model = file(at: url.path) else { continue }
+                guard let model = file(at: url.path), !hidden.contains(model.path) else { continue }
                 // Одинаковые имена: предпочитаем модель, скачанную приложением.
                 if let existing = byName[name], !model.isManaged && existing.isManaged { continue }
                 byName[name] = model
@@ -208,7 +210,8 @@ enum WhisperModelStore {
             // Явно выбранная модель пропала — не подменяем её молча.
             return file(at: selected)
         }
-        return autoSelect(from: foundModels(extraDirectories: settings.whisperModelDirs))
+        return autoSelect(from: foundModels(extraDirectories: settings.whisperModelDirs,
+                                            excluding: settings.hiddenModelPaths))
     }
 
     static func autoSelect(from models: [WhisperModelFile]) -> WhisperModelFile? {
