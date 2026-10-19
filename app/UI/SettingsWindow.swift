@@ -159,7 +159,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         depStack.alignment = .leading
         depStack.spacing = 4
         depStack.translatesAutoresizingMaskIntoConstraints = false
-        depLabels = Dependency.allCases.map { _ in
+        depLabels = Dependency.diagnosticsCases.map { _ in
             let field = label("")
             field.lineBreakMode = .byTruncatingMiddle
             field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -842,7 +842,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         accessButton.isHidden = ok
 
         let settings = SettingsStore.load()
-        for (index, dependency) in Dependency.allCases.enumerated() where index < depLabels.count {
+        for (index, dependency) in Dependency.diagnosticsCases.enumerated() where index < depLabels.count {
             let line = diagnosticLine(dependency, settings: settings)
             depLabels[index].stringValue = line.text
             depLabels[index].textColor = line.color

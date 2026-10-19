@@ -22,6 +22,10 @@ enum OpenCodeLocator {
 enum Dependency: CaseIterable, Equatable {
     case ffmpeg, whisperServer, whisperCli, whisperModel, vadModel, opencode
 
+    /// Что показываем в «Диагностике». Встроенные компоненты (whisper-server,
+    /// whisper-cli, VAD) не выводим — они всегда часть бандла.
+    static let diagnosticsCases: [Dependency] = [.ffmpeg, .whisperModel, .opencode]
+
     var title: String {
         switch self {
         case .ffmpeg: return "ffmpeg"
