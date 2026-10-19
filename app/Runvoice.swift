@@ -330,7 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "done":
             showHUD(); busy(false); label.stringValue = "✅ " + (msg.isEmpty ? "Готово" : msg)
             setIcon("checkmark")
-            closeAt = Date().addingTimeInterval(1.5)
+            closeAt = Date().addingTimeInterval(2.0)
         case "info":
             showHUD(); busy(false); label.stringValue = "ℹ️ " + (msg.isEmpty ? "Готово" : msg)
             setIcon("info.circle")
