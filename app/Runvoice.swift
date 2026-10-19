@@ -53,6 +53,12 @@ enum Log {
 
 // MARK: - Настройки
 
+struct HotKeySetting: Codable, Equatable {
+    var keyCode: UInt32 = 49                       // space
+    var modifiers: UInt32 = UInt32(optionKey)      // ⌥
+    var display: String = "⌥Space"
+}
+
 struct Settings: Codable {
     var promptFix = ""
     var promptAgent = ""
@@ -60,9 +66,14 @@ struct Settings: Codable {
     var provider = "deepseek"
     var model = "deepseek-flash"
     var restoreClipboard = false
+    var hotkeyToggle = HotKeySetting()
+    var hotkeyAgent = HotKeySetting(keyCode: 49,
+                                    modifiers: UInt32(optionKey) | UInt32(controlKey),
+                                    display: "⌃⌥Space")
 
     enum CodingKeys: String, CodingKey {
         case promptFix, promptAgent, language, provider, model, restoreClipboard
+        case hotkeyToggle, hotkeyAgent
     }
 
     init() {}
@@ -75,6 +86,11 @@ struct Settings: Codable {
         provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
+        hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
+        hotkeyAgent = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyAgent)
+            ?? HotKeySetting(keyCode: 49,
+                             modifiers: UInt32(optionKey) | UInt32(controlKey),
+                             display: "⌃⌥Space")
     }
 }
 
@@ -106,7 +122,7 @@ enum SettingsStore {
 
 // MARK: - Окно настроек
 
-final class SettingsWindow: NSWindowController {
+final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let fixText = NSTextView()
     private let agentText = NSTextView()
     private var tabView: NSTabView!
@@ -114,10 +130,20 @@ final class SettingsWindow: NSWindowController {
     private var providerField: NSTextField!
     private var modelField: NSTextField!
     private var restoreCheck: NSButton!
+    private var toggleHotkeyButton: NSButton!
+    private var agentHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var depsLabel: NSTextField!
     private var refreshTimer: Timer?
+    private var captureMonitor: Any?
+    private var captureTarget: NSButton?
+    private var toggleHotkey = HotKeySetting()
+    private var agentHotkey = HotKeySetting(keyCode: 49,
+                                            modifiers: UInt32(optionKey) | UInt32(controlKey),
+                                            display: "⌃⌥Space")
+
+    var onVisibilityChanged: ((Bool) -> Void)?
 
     private let languages = ["ru", "en", "auto"]
 
@@ -129,6 +155,7 @@ final class SettingsWindow: NSWindowController {
         window.isReleasedWhenClosed = false
         window.center()
         self.init(window: window)
+        window.delegate = self
         build()
     }
 
@@ -148,8 +175,14 @@ final class SettingsWindow: NSWindowController {
             guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
             self.refreshDiagnostics()
         }
+        onVisibilityChanged?(true)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        stopCapture()
+        onVisibilityChanged?(false)
     }
 
     func selectTab(_ identifier: String) {
@@ -218,14 +251,26 @@ final class SettingsWindow: NSWindowController {
         restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
                                 target: nil, action: nil)
 
+        let hotkeysLabel = label("Горячие клавиши", bold: true)
+        let toggleLabel = label("Диктовка")
+        let hotkeyAgentLabel = label("Инструкция агенту")
+        let hotkeysHint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
+
+        toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
+        toggleHotkeyButton.bezelStyle = .rounded
+        agentHotkeyButton = NSButton(title: agentHotkey.display, target: self, action: #selector(captureAgent))
+        agentHotkeyButton.bezelStyle = .rounded
+
         accessLabel = label("Accessibility: проверка…")
         accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
         depsLabel = label("")
         let depsButton = NSButton(title: "Проверить зависимости", target: self, action: #selector(checkDependencies))
 
         let views: [NSView] = [languageLabel, languagePopup, providerLabel, providerField,
-                               modelLabel, modelField, restoreCheck, diagLabel,
-                               accessLabel, accessButton, depsLabel, depsButton]
+                               modelLabel, modelField, restoreCheck,
+                               hotkeysLabel, toggleLabel, toggleHotkeyButton,
+                               hotkeyAgentLabel, agentHotkeyButton, hotkeysHint,
+                               diagLabel, accessLabel, accessButton, depsLabel, depsButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -253,7 +298,25 @@ final class SettingsWindow: NSWindowController {
             restoreCheck.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 18),
             restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
-            diagLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 24),
+            hotkeysLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 22),
+            hotkeysLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            toggleLabel.centerYAnchor.constraint(equalTo: toggleHotkeyButton.centerYAnchor),
+            toggleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            toggleHotkeyButton.topAnchor.constraint(equalTo: hotkeysLabel.bottomAnchor, constant: 8),
+            toggleHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 170),
+
+            hotkeyAgentLabel.centerYAnchor.constraint(equalTo: agentHotkeyButton.centerYAnchor),
+            hotkeyAgentLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            agentHotkeyButton.topAnchor.constraint(equalTo: toggleHotkeyButton.bottomAnchor, constant: 8),
+            agentHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            agentHotkeyButton.widthAnchor.constraint(equalToConstant: 170),
+
+            hotkeysHint.topAnchor.constraint(equalTo: agentHotkeyButton.bottomAnchor, constant: 6),
+            hotkeysHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            diagLabel.topAnchor.constraint(equalTo: hotkeysHint.bottomAnchor, constant: 18),
             diagLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
             accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
@@ -350,6 +413,97 @@ final class SettingsWindow: NSWindowController {
         return scroll
     }
 
+    // MARK: - Горячие клавиши
+
+    @objc private func captureToggle() { startCapture(button: toggleHotkeyButton) }
+    @objc private func captureAgent() { startCapture(button: agentHotkeyButton) }
+
+    private func startCapture(button: NSButton) {
+        stopCapture()
+        captureTarget = button
+        button.title = "Нажмите сочетание…"
+        captureMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleCapture(event)
+            return nil
+        }
+    }
+
+    private func stopCapture() {
+        if let monitor = captureMonitor { NSEvent.removeMonitor(monitor) }
+        captureMonitor = nil
+        if let button = captureTarget {
+            button.title = (button === toggleHotkeyButton) ? toggleHotkey.display : agentHotkey.display
+        }
+        captureTarget = nil
+    }
+
+    private func handleCapture(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
+        if event.keyCode == UInt16(kVK_Escape) && flags.isEmpty {
+            stopCapture()
+            return
+        }
+
+        let mods = carbonModifiers(flags)
+        if mods & (UInt32(controlKey) | UInt32(optionKey) | UInt32(cmdKey)) == 0 {
+            NSSound.beep()
+            return
+        }
+
+        let setting = HotKeySetting(keyCode: UInt32(event.keyCode),
+                                    modifiers: mods,
+                                    display: displayString(keyCode: event.keyCode,
+                                                           flags: flags,
+                                                           characters: event.charactersIgnoringModifiers))
+        if captureTarget === toggleHotkeyButton {
+            toggleHotkey = setting
+        } else {
+            agentHotkey = setting
+        }
+        stopCapture()
+    }
+
+    private func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32 {
+        var mods: UInt32 = 0
+        if flags.contains(.command) { mods |= UInt32(cmdKey) }
+        if flags.contains(.option) { mods |= UInt32(optionKey) }
+        if flags.contains(.control) { mods |= UInt32(controlKey) }
+        if flags.contains(.shift) { mods |= UInt32(shiftKey) }
+        return mods
+    }
+
+    private func displayString(keyCode: UInt16, flags: NSEvent.ModifierFlags, characters: String?) -> String {
+        var text = ""
+        if flags.contains(.control) { text += "⌃" }
+        if flags.contains(.option) { text += "⌥" }
+        if flags.contains(.shift) { text += "⇧" }
+        if flags.contains(.command) { text += "⌘" }
+
+        switch Int(keyCode) {
+        case kVK_Space: text += "Space"
+        case kVK_Return: text += "Return"
+        case kVK_Tab: text += "Tab"
+        case kVK_Delete: text += "Delete"
+        case kVK_ForwardDelete: text += "FwdDel"
+        case kVK_LeftArrow: text += "←"
+        case kVK_RightArrow: text += "→"
+        case kVK_UpArrow: text += "↑"
+        case kVK_DownArrow: text += "↓"
+        case kVK_Home: text += "Home"
+        case kVK_End: text += "End"
+        case kVK_PageUp: text += "PgUp"
+        case kVK_PageDown: text += "PgDn"
+        default:
+            if let chars = characters?.uppercased(), !chars.isEmpty, chars != " " {
+                text += chars
+            } else {
+                text += "Key\(keyCode)"
+            }
+        }
+        return text
+    }
+
     // MARK: - Диагностика
 
     private func refreshDiagnostics() {
@@ -401,6 +555,11 @@ final class SettingsWindow: NSWindowController {
         providerField.stringValue = settings.provider
         modelField.stringValue = settings.model
         restoreCheck.state = settings.restoreClipboard ? .on : .off
+
+        toggleHotkey = settings.hotkeyToggle
+        agentHotkey = settings.hotkeyAgent
+        toggleHotkeyButton.title = toggleHotkey.display
+        agentHotkeyButton.title = agentHotkey.display
     }
 
     @objc private func resetDefaults() {
@@ -413,6 +572,12 @@ final class SettingsWindow: NSWindowController {
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
             restoreCheck.state = .off
+            toggleHotkey = HotKeySetting()
+            agentHotkey = HotKeySetting(keyCode: 49,
+                                        modifiers: UInt32(optionKey) | UInt32(controlKey),
+                                        display: "⌃⌥Space")
+            toggleHotkeyButton.title = toggleHotkey.display
+            agentHotkeyButton.title = agentHotkey.display
         }
     }
 
@@ -421,6 +586,14 @@ final class SettingsWindow: NSWindowController {
     }
 
     @objc private func saveSettings() {
+        if toggleHotkey.keyCode == agentHotkey.keyCode && toggleHotkey.modifiers == agentHotkey.modifiers {
+            let alert = NSAlert()
+            alert.messageText = "Сочетания совпадают"
+            alert.informativeText = "Задайте разные комбинации для диктовки и инструкции агенту."
+            alert.runModal()
+            return
+        }
+
         var settings = SettingsStore.load()
         settings.promptFix = fixText.string
         settings.promptAgent = agentText.string
@@ -428,6 +601,8 @@ final class SettingsWindow: NSWindowController {
         settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
         settings.restoreClipboard = restoreCheck.state == .on
+        settings.hotkeyToggle = toggleHotkey
+        settings.hotkeyAgent = agentHotkey
         SettingsStore.save(settings)
         Log.write("settings saved")
         window?.close()
@@ -445,6 +620,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeys: [EventHotKeyRef?] = []
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
+    private var toggleItem: NSMenuItem?
+    private var agentItem: NSMenuItem?
 
     private var lastState = ""
     private var closeAt: Date?
@@ -500,8 +677,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
-        add(menu, "Диктовка   ⌥Space", #selector(toggleDictation))
-        add(menu, "Инструкция агенту   ⌃⇧Space", #selector(agentDictation))
+        toggleItem = add(menu, "Диктовка", #selector(toggleDictation))
+        agentItem = add(menu, "Инструкция агенту", #selector(agentDictation))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
         menu.addItem(.separator())
@@ -512,10 +689,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    private func add(_ menu: NSMenu, _ title: String, _ action: Selector) {
+    @discardableResult
+    private func add(_ menu: NSMenu, _ title: String, _ action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         menu.addItem(item)
+        return item
     }
 
     @objc private func toggleDictation() { run("toggle") }
@@ -523,7 +702,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func openSettings() {
-        if settingsWindow == nil { settingsWindow = SettingsWindow() }
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindow()
+            settingsWindow?.onVisibilityChanged = { [weak self] visible in
+                if visible { self?.suspendHotkeys() } else { self?.registerHotkeys() }
+            }
+        }
         settingsWindow?.show()
     }
 
@@ -653,16 +837,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func registerHotkeys() {
-        register(id: 1, mods: UInt32(optionKey))
-        register(id: 2, mods: UInt32(optionKey) | UInt32(controlKey))
+        suspendHotkeys()
+        let settings = SettingsStore.load()
+        register(id: 1, keyCode: settings.hotkeyToggle.keyCode, mods: settings.hotkeyToggle.modifiers)
+        register(id: 2, keyCode: settings.hotkeyAgent.keyCode, mods: settings.hotkeyAgent.modifiers)
+        toggleItem?.title = "Диктовка   \(settings.hotkeyToggle.display)"
+        agentItem?.title = "Инструкция агенту   \(settings.hotkeyAgent.display)"
     }
 
-    private func register(id: UInt32, mods: UInt32) {
+    private func suspendHotkeys() {
+        for ref in hotkeys { if let ref { UnregisterEventHotKey(ref) } }
+        hotkeys.removeAll()
+    }
+
+    private func register(id: UInt32, keyCode: UInt32, mods: UInt32) {
         var ref: EventHotKeyRef?
         let hkID = EventHotKeyID(signature: OSType(0x52564F49), id: id) // 'RVOI'
-        let status = RegisterEventHotKey(UInt32(kVK_Space), mods, hkID,
+        let status = RegisterEventHotKey(keyCode, mods, hkID,
                                          GetApplicationEventTarget(), 0, &ref)
-        if status == noErr { hotkeys.append(ref) }
+        if status == noErr {
+            hotkeys.append(ref)
+        } else {
+            Log.write("hotkey register failed id=\(id) status=\(status)")
+        }
     }
 
     fileprivate func hotKey(id: UInt32) {
