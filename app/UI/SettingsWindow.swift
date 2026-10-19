@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import ApplicationServices
+import UniformTypeIdentifiers
 
 // MARK: - Окно настроек
 
@@ -17,6 +18,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var toggleHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
+    private var modelsStack: NSStackView!
+    private var modelsDiskLabel: NSTextField!
+    private var modelDirs: [String] = []
+    private var selectedModelPath = ""
+    private var downloads: [String: ModelDownloader] = [:]
+    private var downloadProgress: [String: Double] = [:]
+    private var downloadBars: [String: NSProgressIndicator] = [:]
+    private var downloadPercents: [String: NSTextField] = [:]
     private var depStack: NSStackView!
     private var depLabels: [NSTextField] = []
     private var refreshTimer: Timer?
@@ -85,6 +94,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         ai.label = "AI"
         ai.view = buildAI()
         tabView.addTabViewItem(ai)
+
+        let models = NSTabViewItem(identifier: "models")
+        models.label = "Модели"
+        models.view = buildModels()
+        tabView.addTabViewItem(models)
 
         let prompt = NSTabViewItem(identifier: "prompt")
         prompt.label = "Prompt"
@@ -251,6 +265,367 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         ])
 
         return view
+    }
+
+    // MARK: - Модели
+
+    private func buildModels() -> NSView {
+        let view = NSView()
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        view.addSubview(scroll)
+
+        let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+
+        modelsStack = NSStackView()
+        modelsStack.orientation = .vertical
+        modelsStack.alignment = .leading
+        modelsStack.spacing = 10
+        modelsStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        modelsStack.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(modelsStack)
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            modelsStack.topAnchor.constraint(equalTo: doc.topAnchor),
+            modelsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            modelsStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            modelsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
+        ])
+
+        return view
+    }
+
+    private func refreshModels() {
+        guard modelsStack != nil else { return }
+
+        for sub in modelsStack.arrangedSubviews {
+            modelsStack.removeArrangedSubview(sub)
+            sub.removeFromSuperview()
+        }
+        downloadBars.removeAll()
+        downloadPercents.removeAll()
+
+        let active = WhisperModelStore.file(at: selectedModelPath)
+        var found = WhisperModelStore.foundModels(extraDirectories: modelDirs)
+        if let active, !found.contains(where: { $0.path == active.path }) {
+            found.insert(active, at: 0)
+        }
+
+        // Баннер состояния
+        let banner = NSTextField(wrappingLabelWithString: "")
+        banner.font = .systemFont(ofSize: 12)
+        if selectedModelPath.isEmpty {
+            banner.stringValue = "Модель не выбрана. Скачайте модель или добавьте уже скачанную."
+            banner.textColor = .systemOrange
+        } else if let active {
+            banner.stringValue = "Активная модель: \(active.fileName) · \(active.sizeText)"
+            banner.textColor = .secondaryLabelColor
+        } else {
+            banner.stringValue = "Выбранная модель недоступна: \(selectedModelPath)"
+            banner.textColor = .systemOrange
+        }
+        addRow(banner)
+
+        addRow(sectionLabel("Найдены на компьютере"))
+        if found.isEmpty {
+            let empty = NSTextField(labelWithString: "Модели ggml-*.bin не найдены.")
+            empty.font = .systemFont(ofSize: 11)
+            empty.textColor = .secondaryLabelColor
+            addRow(empty)
+        } else {
+            for model in found { addRow(modelRow(model)) }
+        }
+
+        let buttons = NSStackView()
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        let addFile = NSButton(title: "Добавить файл…", target: self, action: #selector(addModelFile))
+        addFile.bezelStyle = .rounded
+        let addFolder = NSButton(title: "Добавить папку…", target: self, action: #selector(addModelFolder))
+        addFolder.bezelStyle = .rounded
+        buttons.addArrangedSubview(addFile)
+        buttons.addArrangedSubview(addFolder)
+        addRow(buttons)
+
+        let missing = WhisperModelCatalog.models.filter { model in
+            !found.contains(where: { $0.fileName == model.fileName })
+        }
+        if !missing.isEmpty {
+            addRow(sectionLabel("Скачать"))
+            for model in missing { addRow(downloadRow(model)) }
+        }
+
+        addRow(sectionLabel("Хранилище"))
+        modelsDiskLabel = NSTextField(labelWithString: "")
+        modelsDiskLabel.font = .systemFont(ofSize: 11)
+        modelsDiskLabel.textColor = .secondaryLabelColor
+        updateDiskLabel()
+        addRow(modelsDiskLabel)
+    }
+
+    private func addRow(_ view: NSView) {
+        modelsStack.addArrangedSubview(view)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalTo: modelsStack.widthAnchor, constant: -32).isActive = true
+    }
+
+    private func sectionLabel(_ text: String) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: 12, weight: .bold)
+        field.textColor = .secondaryLabelColor
+        return field
+    }
+
+    private func modelRow(_ model: WhisperModelFile) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+
+        let radio = NSButton(radioButtonWithTitle: "", target: self, action: #selector(selectModel(_:)))
+        radio.identifier = NSUserInterfaceItemIdentifier(model.path)
+        radio.state = (model.path == selectedModelPath) ? .on : .off
+        radio.setContentHuggingPriority(.required, for: .horizontal)
+
+        let title: NSTextField
+        if let catalog = WhisperModelCatalog.models.first(where: { $0.fileName == model.fileName }) {
+            title = NSTextField(labelWithString: catalog.title)
+        } else {
+            title = NSTextField(labelWithString: model.fileName)
+        }
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+
+        let subtitle = NSTextField(labelWithString: "\(model.sizeText) · \(model.directory)")
+        subtitle.font = .systemFont(ofSize: 10)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.lineBreakMode = .byTruncatingMiddle
+
+        let text = NSStackView(views: [title, subtitle])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        text.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+
+        let reveal = NSButton(title: "Показать", target: self, action: #selector(revealModel(_:)))
+        reveal.bezelStyle = .inline
+        reveal.identifier = NSUserInterfaceItemIdentifier(model.path)
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        row.addArrangedSubview(radio)
+        row.addArrangedSubview(text)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(reveal)
+
+        if model.isManaged {
+            let delete = NSButton(title: "Удалить", target: self, action: #selector(deleteModel(_:)))
+            delete.bezelStyle = .inline
+            delete.identifier = NSUserInterfaceItemIdentifier(model.path)
+            row.addArrangedSubview(delete)
+        }
+        return row
+    }
+
+    private func downloadRow(_ model: WhisperModel) -> NSView {
+        let container = NSStackView()
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 4
+
+        let header = NSStackView()
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 10
+
+        let title = NSTextField(labelWithString: model.title)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        let subtitle = NSTextField(labelWithString: model.sizeText + (model.recommended ? " · рекомендуется" : ""))
+        subtitle.font = .systemFont(ofSize: 10)
+        subtitle.textColor = .secondaryLabelColor
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let percent = NSTextField(labelWithString: "")
+        percent.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        percent.textColor = .secondaryLabelColor
+        percent.isHidden = downloads[model.id] == nil
+        if let value = downloadProgress[model.id] {
+            percent.stringValue = "\(Int(value * 100))%"
+        }
+
+        let button = NSButton(title: downloads[model.id] == nil ? "Скачать" : "Отмена",
+                              target: self, action: #selector(downloadModel(_:)))
+        button.bezelStyle = .rounded
+        button.identifier = NSUserInterfaceItemIdentifier(model.id)
+
+        header.addArrangedSubview(title)
+        header.addArrangedSubview(subtitle)
+        header.addArrangedSubview(spacer)
+        header.addArrangedSubview(percent)
+        header.addArrangedSubview(button)
+
+        let note = NSTextField(wrappingLabelWithString: model.note)
+        note.font = .systemFont(ofSize: 10)
+        note.textColor = .secondaryLabelColor
+
+        let bar = NSProgressIndicator()
+        bar.style = .bar
+        bar.isIndeterminate = false
+        bar.minValue = 0
+        bar.maxValue = 1
+        bar.doubleValue = downloadProgress[model.id] ?? 0
+        bar.isHidden = downloads[model.id] == nil
+        bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
+
+        container.addArrangedSubview(header)
+        container.addArrangedSubview(note)
+        container.addArrangedSubview(bar)
+
+        header.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+        note.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+        bar.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+
+        downloadBars[model.id] = bar
+        downloadPercents[model.id] = percent
+        return container
+    }
+
+    @objc private func downloadModel(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue,
+              let model = WhisperModelCatalog.models.first(where: { $0.id == id }) else { return }
+
+        if let active = downloads[id] {
+            active.cancel()
+            downloads[id] = nil
+            downloadProgress[id] = nil
+            refreshModels()
+            return
+        }
+
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+        let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        if free < model.sizeBytes + 200 * 1024 * 1024 {
+            let alert = NSAlert()
+            alert.messageText = "Недостаточно места"
+            alert.informativeText = "Для загрузки нужно \(model.sizeText) плюс запас 200 МБ."
+            alert.runModal()
+            return
+        }
+
+        let downloader = ModelDownloader(model: model)
+        downloads[id] = downloader
+        downloadProgress[id] = 0
+
+        downloader.onProgress = { [weak self] value in
+            guard let self else { return }
+            self.downloadProgress[id] = value
+            self.downloadBars[id]?.doubleValue = value
+            self.downloadPercents[id]?.stringValue = "\(Int(value * 100))%"
+            self.downloadPercents[id]?.isHidden = false
+        }
+        downloader.onFinish = { [weak self] result in
+            guard let self else { return }
+            self.downloads[id] = nil
+            self.downloadProgress[id] = nil
+            switch result {
+            case .success(let url):
+                if self.selectedModelPath.isEmpty { self.selectedModelPath = url.path }
+                self.refreshModels()
+                Log.write("model: скачана \(url.lastPathComponent)")
+            case .failure(let error):
+                self.refreshModels()
+                Log.write("model: ошибка загрузки \(model.id): \(error.localizedDescription)")
+                let alert = NSAlert()
+                alert.messageText = "Не удалось скачать модель"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+            }
+        }
+        downloader.start()
+        refreshModels()
+    }
+
+    private func updateDiskLabel() {
+        guard let modelsDiskLabel else { return }
+        let fm = FileManager.default
+        let managed = WhisperModelStore.foundModels()
+            .filter { $0.isManaged }
+            .reduce(Int64(0)) { $0 + $1.sizeBytes }
+        let attrs = try? fm.attributesOfFileSystem(forPath: NSHomeDirectory())
+        let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        modelsDiskLabel.stringValue =
+            "Скачанные приложением: \(WhisperSize.text(managed))"
+            + " · свободно: \(WhisperSize.text(free))"
+    }
+
+    @objc private func selectModel(_ sender: NSButton) {
+        selectedModelPath = sender.identifier?.rawValue ?? ""
+        refreshModels()
+    }
+
+    @objc private func revealModel(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    }
+
+    @objc private func deleteModel(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue, WhisperModelStore.isManaged(path: path) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Удалить модель?"
+        alert.informativeText = "Файл будет удалён с диска. Это действие нельзя отменить."
+        alert.addButton(withTitle: "Удалить")
+        alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        try? FileManager.default.removeItem(atPath: path)
+        if selectedModelPath == path { selectedModelPath = "" }
+        refreshModels()
+    }
+
+    @objc private func addModelFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [UTType(filenameExtension: "bin") ?? .data]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard WhisperModelStore.isWhisperModel(at: url) else {
+            let alert = NSAlert()
+            alert.messageText = "Это не модель Whisper"
+            alert.informativeText = "Нужен файл ggml-*.bin от whisper.cpp."
+            alert.runModal()
+            return
+        }
+        let dir = url.deletingLastPathComponent().path
+        if !modelDirs.contains(dir) { modelDirs.append(dir) }
+        selectedModelPath = url.standardized.path
+        refreshModels()
+    }
+
+    @objc private func addModelFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if !modelDirs.contains(url.path) { modelDirs.append(url.path) }
+        refreshModels()
     }
 
     // MARK: - Prompt
@@ -481,6 +856,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         toggleHotkey = settings.hotkeyToggle
         toggleHotkeyButton.title = toggleHotkey.display
+
+        modelDirs = settings.whisperModelDirs
+        selectedModelPath = settings.whisperModelPath
+        if selectedModelPath.isEmpty,
+           let auto = WhisperModelStore.activeModel(settings: settings) {
+            selectedModelPath = auto.path
+        }
+        refreshModels()
     }
 
     @objc private func resetDefaults() {
@@ -495,6 +878,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             modelField.stringValue = "deepseek-flash"
             baseURLField.stringValue = ""
             useOpenCodeCheck.state = .on
+        case "models":
+            modelDirs = []
+            selectedModelPath = WhisperModelStore.autoSelect(
+                from: WhisperModelStore.foundModels())?.path ?? ""
+            refreshModels()
         default:
             languagePopup.selectItem(at: 0)
             restoreCheck.state = .off
@@ -517,6 +905,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.restoreClipboard = restoreCheck.state == .on
         settings.showHUD = hudCheck.state == .on
         settings.hotkeyToggle = toggleHotkey
+        settings.whisperModelPath = selectedModelPath
+        settings.whisperModelDirs = modelDirs
 
         if !settings.baseURL.isEmpty,
            !settings.baseURL.lowercased().hasPrefix("http://"),
@@ -533,4 +923,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         Log.write("settings saved")
         window?.close()
     }
+}
+
+/// Документ NSScrollView с началом координат сверху — иначе контент
+/// прижимается к нижнему краю окна.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
 }

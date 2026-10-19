@@ -34,7 +34,9 @@ OpenCode (орфография, пунктуация, заглавные), и в
 ## Возможности
 
 - **Работает в любом приложении** — текст вставляется через ⌘V в активное окно.
-- **Локальное распознавание** — Whisper (`large-v3-turbo`) с VAD, без облака.
+- **Локальное распознавание** — Whisper (`large-v3-turbo` и другие модели) с VAD, без облака.
+- **Whisper внутри приложения** — `whisper-server` уже в бандле, Homebrew не нужен.
+- **Менеджер моделей** — скачивание из каталога, выбор уже скачанных `ggml-*.bin`, свои папки.
 - **Постобработка через OpenCode** — исправление ошибок, пунктуации, формулировок.
 - **Один режим** — распознать речь и исправить текст перед вставкой.
 - **Плавающее окно статуса** — видно всё время обработки, не забирает фокус.
@@ -110,11 +112,12 @@ self/runvoice/
 ### Архитектура приложения
 
 - **Core** — модель и утилиты без UI: `Settings` (настройки, промпты, хоткеи),
-  `Paths`, `Log`, `Diagnostics` (зависимости), `DictationState`/`DictationAction`.
+  `Paths`, `Log`, `Diagnostics` (зависимости), `DictationState`,
+  `WhisperModels` (каталог/поиск моделей), `ModelDownloader` (загрузка с SHA-256).
 - **App** — `AppDelegate` (меню, состояния, вставка ⌘V), `HotkeyMonitor`
   (глобальные хоткеи через CGEventTap), `DictationRunner` (запуск `dictate.sh`).
 - **UI** — `HUDController` (бабл и его позиционирование), `BubbleView` (форма),
-  `SettingsWindow` (вкладки General / AI / Prompt / Hotkeys).
+  `SettingsWindow` (вкладки General / AI / Модели / Prompt / Hotkeys).
 
 Сборка (`scripts/build-app.sh`) компилирует все `.swift` из `app/`, точка входа —
 `app/main.swift`.
@@ -193,7 +196,7 @@ codesign -d -r- /Applications/Runvoice.app
 
 ### Настройки
 
-Меню → **Настройки…** (или запуск приложения с `--settings`). Три вкладки.
+Меню → **Настройки…** (или запуск приложения с `--settings`). Пять вкладок.
 
 **General** (основные):
 
@@ -218,6 +221,18 @@ codesign -d -r- /Applications/Runvoice.app
 - Задан базовый URL — текст отправляется напрямую в `{URL}/chat/completions`
   (OpenAI-совместимый API), OpenCode не нужен. Ключ, если нужен, — `OC_API_KEY`.
 - OpenCode выключен и URL пуст — текст вставляется **без правки** (только Whisper).
+
+**Модели** (распознавание):
+
+- Список уже найденных моделей: `~/Library/Application Support/Runvoice/models/`,
+  `~/.local/share/whisper/`, `~/whisper.cpp/models/` и добавленные вручную папки.
+- Можно скачать `tiny`, `base`, `small`, `large-v3-turbo-q5_0`, `large-v3-turbo`,
+  `large-v3` из Hugging Face. После загрузки проверяется SHA-256.
+- Активная модель применяется к следующей диктовке; `whisper-server`
+  перезапускается автоматически при смене модели.
+- «Добавить файл…» — выбрать любой `ggml-*.bin`; «Добавить папку…» — добавить
+  каталог с моделями. Внешние файлы приложение не удаляет.
+- Если выбранная модель пропала с диска, диктовка блокируется до выбора другой.
 
 **Prompt** (описание модели):
 
@@ -264,86 +279,79 @@ skhd --start-service
 | Компонент | Версия в этой установке | Зачем |
 |---|---|---|
 | macOS | 15.7.3 (Apple Silicon) | |
-| Homebrew | 7.x | установка пакетов |
-| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) | 1.9.5 | распознавание речи (`whisper-cli`, `whisper-server`) |
 | ffmpeg | 9.0.2 | запись с микрофона |
-| [skhd](https://github.com/koekeishiya/skhd) | 0.3.9 | глобальные хоткеи |
-| cliclick | 5.1 | резервная вставка ⌘V |
+| OpenCode | 2.0.27 | постобработка текста (опционально) |
 | jq, curl | системные/brew | работа с JSON и HTTP |
-| OpenCode | 2.0.27 | постобработка текста |
-| swiftc (Command Line Tools) | — | сборка окна статуса |
+| swiftc (Command Line Tools) | — | сборка приложения |
+
+`whisper-server` и `whisper-cli` **входят в бандл** (статическая сборка 1.9.5).
+Модель распознавания скачивается в **Настройки → Модели** или выбирается из уже
+скачанных `ggml-*.bin`. Homebrew нужен только для `ffmpeg` (и, при желании,
+OpenCode).
+
+Для CLI-режима дополнительно нужны `skhd`, `cliclick` и LaunchAgent — см. раздел
+«CLI-режим».
 
 ---
 
 ## Установка с нуля
 
-### 1. Пакеты и модели
+### 1. Зависимости
 
 ```sh
-brew install whisper-cpp ffmpeg cliclick
-brew install koekeishiya/formulae/skhd
-
-mkdir -p ~/.local/share/whisper
-# модель распознавания (русский, быстрая и точная; ~574 МБ)
-curl -L -o ~/.local/share/whisper/ggml-large-v3-turbo-q5_0.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin
-# VAD-модель (отсекает тишину и галлюцинации; ~865 КБ)
-curl -L -o ~/.local/share/whisper/ggml-silero-v5.1.2.bin \
-  https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+brew install ffmpeg
+# опционально, для постобработки:
+# brew install opencode
 ```
 
-### 2. Сборка помощников
+`whisper.cpp` устанавливать не нужно — он собирается и кладётся в бандл
+автоматически при первой сборке (нужен `cmake`, `brew install cmake`).
+
+### 2. Сборка и установка
 
 ```sh
-./install.sh      # сборка + установка хоткеев и LaunchAgent
+make install-app
 ```
 
-Или только сборка:
+Скрипт `scripts/install-app.sh`:
 
-```sh
-make
-```
+- собирает статические `whisper-server`/`whisper-cli` и кладёт их в
+  `Runvoice.app/Contents/Resources/whisper/bin/`;
+- собирает и подписывает приложение;
+- устанавливает его в `/Applications` (или `~/Applications`);
+- останавливает `skhd` и удаляет старый LaunchAgent `whisper-server` —
+  приложение само управляет сервером распознавания.
 
-| Файл | Назначение |
-|---|---|
-| `bin/dictate.sh` | основной сценарий (запись → распознавание → правка → вставка) |
-| `bin/pastev.c` / `bin/pastev` | посылает ⌘V **по коду клавиши** (не зависит от раскладки) |
-| `bin/dictatehud.swift` / `bin/dictatehud` | плавающее окно статуса |
+Только собрать: `make app` → `dist/Runvoice.app`.
 
-### 3. Хоткеи (`~/.skhdrc`)
+### 3. Модель распознавания
 
-`install.sh` генерирует файл из `config/skhdrc.tmpl`:
+Модель в бандл не входит. После первого запуска:
 
-```
-alt - space          : /Users/a11ow/Projects/self/runvoice/bin/dictate.sh toggle
-```
+- если на компьютере уже есть `ggml-*.bin` в `~/.local/share/whisper/`,
+  `~/whisper.cpp/models/` или `~/Library/Application Support/Runvoice/models/`,
+  приложение найдёт и предложит её;
+- иначе откройте **Настройки → Модели** и скачайте рекомендуемую
+  `large-v3-turbo-q5_0` (≈574 МБ). Можно выбрать `small`, `base`, `tiny`
+  или другую модель, а также указать свой файл/папку.
 
-```sh
-skhd --restart-service
-```
-
-### 4. Постоянный сервер распознавания (LaunchAgent)
-
-`install.sh` рендерит `config/whisper-server.plist.tmpl` в
-`~/Library/LaunchAgents/ai.opencode.whisper-server.plist` и загружает его.
-Сервер держит модель в памяти, чтобы не загружать её на каждую диктовку.
-
-```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.opencode.whisper-server.plist
-```
-
-> Если сервер не поднят, `bin/dictate.sh` запустит его сам при первой диктовке и,
-> если не получится, откатится на разовый `whisper-cli`.
-
-### 5. Разрешения macOS
+### 4. Разрешения macOS
 
 **System Settings → Privacy & Security →**
 
-- **Accessibility** → добавьте `/opt/homebrew/bin/skhd`
-  (нужно и для перехвата хоткеев, и для вставки ⌘V);
-- **Microphone** → `skhd` (запрос появится при первой записи).
+- **Accessibility** → `Runvoice` (глобальный хоткей и вставка ⌘V);
+- **Microphone** → `Runvoice` (запрос появится при первой записи).
 
-После выдачи прав: `skhd --restart-service`.
+### CLI-режим (опционально)
+
+Старый режим через `skhd` остаётся в репозитории:
+
+```sh
+./install.sh   # ~/.skhdrc + LaunchAgent whisper-server
+```
+
+Не используйте его одновременно с приложением: `make install-app` останавливает
+`skhd` и удаляет LaunchAgent, чтобы не запускались два сервера распознавания.
 
 ---
 
@@ -392,10 +400,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.opencode.whisper-serv
 | Вставка ⌘V | `bin/pastev` (+ `bin/pastev.c`) |
 | Окно статуса | `bin/dictatehud` (+ `bin/dictatehud.swift`) |
 | Хоткеи | `~/.skhdrc` |
-| Сервер распознавания | LaunchAgent `ai.opencode.whisper-server` (порт `8799`) |
-| Модели Whisper | `~/.local/share/whisper/` |
-| Состояние и логи | `${TMPDIR%/}/opencode-dictate/` (обычно `/var/folders/…/T/opencode-dictate/`) |
-| Лог сервера | `~/Library/Logs/whisper-server.log` |
+| Сервер распознавания | запускается приложением, `127.0.0.1:8799` |
+| Модели Whisper | `~/Library/Application Support/Runvoice/models/`, `~/.local/share/whisper/`, выбранные вручную |
+| Состояние и логи | `~/Library/Application Support/Runvoice/state/` |
+| Лог сервера | `~/Library/Application Support/Runvoice/state/whisper-server.log` |
 
 В каталоге состояния лежат: `mic_index` (кэш), `last` (дебаунс), `lock`, `status`,
 `rec.pcm`, `rec.wav`, `out.txt`, `dictate.log`, `whisper-server.log`.
@@ -448,11 +456,11 @@ scripts/build-app.sh
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
 | `WHISPER_LANG` | `ru` | язык распознавания (`auto` — автоопределение) |
-| `WHISPER_MODEL` | `…/ggml-large-v3-turbo-q5_0.bin` | модель Whisper (ggml) |
-| `WHISPER_VAD_MODEL` | `…/ggml-silero-v5.1.2.bin` | VAD-модель |
+| `WHISPER_MODEL` | выбранная в настройках | модель Whisper (ggml); в CLI — `~/.local/share/whisper/…` |
+| `WHISPER_VAD_MODEL` | встроенная `ggml-silero-v5.1.2.bin` | VAD-модель |
 | `WHISPER_THREADS` | `8` | число потоков CPU |
-| `WHISPER_BIN` | `whisper-cli` | разовый распознаватель (резерв) |
-| `WHISPER_SERVER_BIN` | `whisper-server` | постоянный сервер |
+| `WHISPER_CLI_BIN` | встроенный `whisper-cli` | разовый распознаватель (резерв) |
+| `WHISPER_SERVER_BIN` | встроенный `whisper-server` | постоянный сервер |
 | `WHISPER_SERVER_PORT` | `8799` | порт сервера |
 | `MIC_NAME` | `MacBook Pro Microphone` | имя устройства ввода |
 | `MIC_INDEX` | — | прямое указание индекса (перебивает автоопределение и кэш) |

@@ -4,10 +4,16 @@ import Foundation
 final class DictationRunner {
     enum Failure: Swift.Error {
         case missingScript
+        case missingModel(path: String?)
     }
 
     func run() throws {
         guard let script = Paths.script else { throw Failure.missingScript }
+
+        let settings = SettingsStore.load()
+        guard let model = WhisperModelStore.activeModel(settings: settings) else {
+            throw Failure.missingModel(path: settings.whisperModelPath.isEmpty ? nil : settings.whisperModelPath)
+        }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -18,8 +24,18 @@ final class DictationRunner {
         environment["HUD_BIN"] = "/nonexistent"   // окно рисует само приложение
         environment["DICTATE_NOTIFY"] = "0"
         environment["DICTATE_NO_PASTE"] = "1"     // ⌘V отправляет само приложение
+        environment["WHISPER_MODEL"] = model.path
 
-        let settings = SettingsStore.load()
+        if let server = WhisperModelStore.bundledServer {
+            environment["WHISPER_SERVER_BIN"] = server.path
+        }
+        if let cli = WhisperModelStore.bundledCLI {
+            environment["WHISPER_CLI_BIN"] = cli.path
+        }
+        if let vad = WhisperModelStore.bundledVAD {
+            environment["WHISPER_VAD_MODEL"] = vad.path
+        }
+
         let forwarded: [(String, String?)] = [
             ("DICTATE_PROMPT_FIX", settings.promptFix.isEmpty ? nil : settings.promptFix),
             ("WHISPER_LANG", settings.language.isEmpty ? nil : settings.language),

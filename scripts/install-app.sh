@@ -30,7 +30,9 @@ cat <<EOF
 Дальше:
   1. Разрешите Runvoice доступ к Микрофону (запрос появится при запуске).
   2. Разрешите Accessibility: System Settings → Privacy & Security → Accessibility → Runvoice.
+  3. Откройте «Настройки» → «Модели» и скачайте модель (или выберите уже скачанную).
 
 skhd остановлен — его хоткеи теперь не нужны.
-Вернуть CLI-режим: skhd --start-service
+Старый LaunchAgent whisper-server удалён: приложение запускает сервер само.
+Вернуть CLI-режим: ./install.sh && skhd --start-service
 EOF

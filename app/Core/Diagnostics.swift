@@ -37,12 +37,16 @@ enum Dependency: CaseIterable, Equatable {
         let home = FileManager.default.homeDirectoryForCurrentUser
         switch self {
         case .ffmpeg: return "/opt/homebrew/bin/ffmpeg"
-        case .whisperServer: return "/opt/homebrew/bin/whisper-server"
-        case .whisperCli: return "/opt/homebrew/bin/whisper-cli"
+        case .whisperServer:
+            return WhisperModelStore.bundledServer?.path ?? "/opt/homebrew/bin/whisper-server"
+        case .whisperCli:
+            return WhisperModelStore.bundledCLI?.path ?? "/opt/homebrew/bin/whisper-cli"
         case .whisperModel:
-            return home.appendingPathComponent(".local/share/whisper/ggml-large-v3-turbo-q5_0.bin").path
+            return WhisperModelStore.activeModel(settings: SettingsStore.load())?.path
+                ?? "не выбрана — Настройки → Модели"
         case .vadModel:
-            return home.appendingPathComponent(".local/share/whisper/ggml-silero-v5.1.2.bin").path
+            return WhisperModelStore.bundledVAD?.path
+                ?? home.appendingPathComponent(".local/share/whisper/ggml-silero-v5.1.2.bin").path
         case .opencode: return "npx-кэш или /opt/homebrew/bin/opencode"
         }
     }
@@ -50,9 +54,15 @@ enum Dependency: CaseIterable, Equatable {
     func isOK() -> Bool {
         let fm = FileManager.default
         switch self {
-        case .ffmpeg, .whisperServer, .whisperCli:
+        case .ffmpeg:
+            return fm.isExecutableFile(atPath: "/opt/homebrew/bin/ffmpeg")
+        case .whisperServer:
             return fm.isExecutableFile(atPath: expected)
-        case .whisperModel, .vadModel:
+        case .whisperCli:
+            return fm.isExecutableFile(atPath: expected)
+        case .whisperModel:
+            return WhisperModelStore.activeModel(settings: SettingsStore.load()) != nil
+        case .vadModel:
             return fm.fileExists(atPath: expected)
         case .opencode:
             return OpenCodeLocator.find() != nil

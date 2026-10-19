@@ -21,6 +21,7 @@
 |---|---|
 | General (язык, буфер, бабл, диагностика) | [settings-general.png](settings-general.png) |
 | AI (провайдер, модель, URL, OpenCode) | [settings-ai.png](settings-ai.png) |
+| Модели (скачивание, выбор, папки) | [settings-models.png](settings-models.png) |
 | Prompt (промпт исправления) | [settings-prompt.png](settings-prompt.png) |
 | Hotkeys (хоткей диктовки) | [settings-hotkeys.png](settings-hotkeys.png) |
 

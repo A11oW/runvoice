@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
+        WhisperModelStore.cleanupPartialDownloads()
         Log.write("settings fix=\(saved.promptFix.count)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
@@ -152,7 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleDictation() { run() }
     @objc private func quit() { NSApp.terminate(nil) }
 
-    @objc private func openSettings() {
+    @objc private func openSettings() { showSettings(tab: nil) }
+
+    private func showSettings(tab: String?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindow()
             settingsWindow?.onCaptureStateChanged = { [weak self] capturing in
@@ -165,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         settingsWindow?.show()
+        if let tab { settingsWindow?.selectTab(tab) }
     }
 
     private func snapshotStates() {
@@ -233,13 +237,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.selectTab("ai")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             capture(to: "/tmp/runvoice-settings-ai.png")
-            self.settingsWindow?.selectTab("prompt")
+            self.settingsWindow?.selectTab("models")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                capture(to: "/tmp/runvoice-settings-prompt.png")
-                self.settingsWindow?.selectTab("hotkeys")
+                capture(to: "/tmp/runvoice-settings-models.png")
+                self.settingsWindow?.selectTab("prompt")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                    NSApp.terminate(nil)
+                    capture(to: "/tmp/runvoice-settings-prompt.png")
+                    self.settingsWindow?.selectTab("hotkeys")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                        NSApp.terminate(nil)
+                    }
                 }
             }
         }
@@ -267,8 +275,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try runner.run()
         } catch DictationRunner.Failure.missingScript {
             showAlert("В ресурсах приложения не найден dictate.sh")
+        } catch DictationRunner.Failure.missingModel(let path) {
+            showMissingModel(path: path)
         } catch {
             showAlert("Не удалось запустить dictate.sh: \(error.localizedDescription)")
+        }
+    }
+
+    private func showMissingModel(path: String?) {
+        let alert = NSAlert()
+        if let path {
+            alert.messageText = "Модель Whisper недоступна"
+            alert.informativeText = "Файл \(path) не найден или повреждён.\nВыберите другую модель в «Настройки» → «Модели»."
+        } else {
+            alert.messageText = "Модель Whisper не выбрана"
+            alert.informativeText = "Откройте «Настройки» → «Модели», скачайте модель или выберите уже скачанную."
+        }
+        alert.addButton(withTitle: "Открыть настройки")
+        alert.addButton(withTitle: "Отмена")
+        if alert.runModal() == .alertFirstButtonReturn {
+            showSettings(tab: "models")
         }
     }
 
