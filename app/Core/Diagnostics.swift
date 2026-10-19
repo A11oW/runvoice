@@ -26,6 +26,19 @@ enum Dependency: CaseIterable, Equatable {
     /// whisper-cli, VAD) не выводим — они всегда часть бандла.
     static let diagnosticsCases: [Dependency] = [.ffmpeg, .whisperModel, .opencode]
 
+    /// Поиск исполняемого файла в PATH и типовых каталогах Homebrew.
+    static func locateExecutable(_ name: String) -> String? {
+        var directories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        directories.append(contentsOf: ["/opt/homebrew/bin", "/usr/local/bin"])
+        for directory in directories where !directory.isEmpty {
+            let path = URL(fileURLWithPath: directory).appendingPathComponent(name).path
+            if FileManager.default.isExecutableFile(atPath: path) { return path }
+        }
+        return nil
+    }
+
     var title: String {
         switch self {
         case .ffmpeg: return "ffmpeg"
@@ -40,7 +53,7 @@ enum Dependency: CaseIterable, Equatable {
     var expected: String {
         let home = FileManager.default.homeDirectoryForCurrentUser
         switch self {
-        case .ffmpeg: return "/opt/homebrew/bin/ffmpeg"
+        case .ffmpeg: return Dependency.locateExecutable("ffmpeg") ?? "/opt/homebrew/bin/ffmpeg"
         case .whisperServer:
             return WhisperModelStore.bundledServer?.path ?? "/opt/homebrew/bin/whisper-server"
         case .whisperCli:
@@ -59,7 +72,7 @@ enum Dependency: CaseIterable, Equatable {
         let fm = FileManager.default
         switch self {
         case .ffmpeg:
-            return fm.isExecutableFile(atPath: "/opt/homebrew/bin/ffmpeg")
+            return Dependency.locateExecutable("ffmpeg") != nil
         case .whisperServer:
             return fm.isExecutableFile(atPath: expected)
         case .whisperCli:

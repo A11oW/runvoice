@@ -1,0 +1,177 @@
+import Foundation
+
+/// Одноразовая проверка настройки постобработки: отправляет тестовую фразу
+/// тем же способом, которым пользуется dictate.sh, и возвращает ответ модели.
+enum CorrectionTester {
+    enum TestError: LocalizedError {
+        case noBaseURL
+        case noOpenCode
+        case badResponse(String)
+        case emptyAnswer
+
+        var errorDescription: String? {
+            switch self {
+            case .noBaseURL: return "Не задан базовый URL для своего API"
+            case .noOpenCode: return "OpenCode CLI не найден"
+            case .badResponse(let text): return "Некорректный ответ: \(text)"
+            case .emptyAnswer: return "Модель вернула пустой ответ"
+            }
+        }
+    }
+
+    private static let sample = "это проверка связи с моделью, проверка связи"
+
+    static func test(settings: Settings,
+                     prompt: String,
+                     apiKey: String? = nil,
+                     completion: @escaping (Result<String, Error>) -> Void) {
+        let system = prompt.isEmpty ? DefaultPrompts.fix : prompt
+        let mode = settings.processingMode
+
+        if mode == "off" {
+            finish(.success("Постобработка выключена — текст вставляется без правки."), completion)
+            return
+        }
+
+        if mode == "direct" {
+            let base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !base.isEmpty else {
+                finish(.failure(TestError.noBaseURL), completion)
+                return
+            }
+            directTest(settings: settings, system: system, baseURL: base,
+                       apiKey: apiKey, completion: completion)
+            return
+        }
+
+        guard let opencode = OpenCodeLocator.find() else {
+            finish(.failure(TestError.noOpenCode), completion)
+            return
+        }
+        openCodeTest(settings: settings, system: system, binary: opencode, completion: completion)
+    }
+
+    private static func directTest(settings: Settings,
+                                   system: String,
+                                   baseURL: String,
+                                   apiKey: String?,
+                                   completion: @escaping (Result<String, Error>) -> Void) {
+        let urlString: String
+        if baseURL.hasSuffix("/chat/completions") {
+            urlString = baseURL
+        } else {
+            urlString = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions"
+        }
+        guard let url = URL(string: urlString) else {
+            finish(.failure(TestError.badResponse("некорректный URL \(urlString)")), completion)
+            return
+        }
+
+        let payload: [String: Any] = [
+            "model": settings.model.isEmpty ? "deepseek-flash" : settings.model,
+            "temperature": 0,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": "<text>\(sample)</text>"],
+            ],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            finish(.failure(TestError.badResponse("не удалось собрать JSON")), completion)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        } else if let key = Keychain.value(for: Keychain.directAPIKeyAccount), !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        } else if let key = ProcessInfo.processInfo.environment["OC_API_KEY"], !key.isEmpty {
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = data
+
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            if let error {
+                finish(.failure(error), completion)
+                return
+            }
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let text = message["content"] as? String,
+                  !text.isEmpty else {
+                let raw = data.flatMap { String(data: $0, encoding: .utf8) } ?? "пусто"
+                finish(.failure(TestError.badResponse(String(raw.prefix(200)))), completion)
+                return
+            }
+            finish(.success(text), completion)
+        }.resume()
+    }
+
+    private static func openCodeTest(settings: Settings,
+                                     system: String,
+                                     binary: String,
+                                     completion: @escaping (Result<String, Error>) -> Void) {
+        let prompt = system + "\n\n<text>" + sample + "</text>"
+        let payload: [String: Any] = [
+            "prompt": prompt,
+            "model": [
+                "providerID": settings.provider.isEmpty ? "deepseek" : settings.provider,
+                "id": settings.model.isEmpty ? "deepseek-flash" : settings.model,
+                "variant": "none",
+            ],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let body = String(data: data, encoding: .utf8) else {
+            finish(.failure(TestError.badResponse("не удалось собрать JSON")), completion)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: binary)
+            process.arguments = ["api", "post", "/api/experimental/generate", "--data", body]
+            var environment = ProcessInfo.processInfo.environment
+            environment["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:"
+                + (environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
+            process.environment = environment
+            let out = Pipe()
+            let err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {
+                finish(.failure(error), completion)
+                return
+            }
+
+            let output = out.fileHandleForReading.readDataToEndOfFile()
+            let errorData = err.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0 else {
+                let text = String(data: errorData, encoding: .utf8) ?? ""
+                finish(.failure(TestError.badResponse(String(text.prefix(300)))), completion)
+                return
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: output) as? [String: Any],
+                  let dataObject = json["data"] as? [String: Any],
+                  let text = dataObject["text"] as? String,
+                  !text.isEmpty else {
+                let text = String(data: output, encoding: .utf8) ?? "пусто"
+                finish(.failure(TestError.badResponse(String(text.prefix(300)))), completion)
+                return
+            }
+            finish(.success(text), completion)
+        }
+    }
+
+    private static func finish(_ result: Result<String, Error>,
+                               _ completion: @escaping (Result<String, Error>) -> Void) {
+        DispatchQueue.main.async { completion(result) }
+    }
+}

@@ -58,6 +58,12 @@ final class DictationRunner {
         if let vad = WhisperModelStore.bundledVAD {
             environment["WHISPER_VAD_MODEL"] = vad.path
         }
+        if !settings.microphone.isEmpty {
+            environment["MIC_NAME"] = settings.microphone
+        }
+        if let key = Keychain.value(for: Keychain.directAPIKeyAccount), !key.isEmpty {
+            environment["OC_API_KEY"] = key
+        }
 
         let forwarded: [(String, String?)] = [
             ("DICTATE_PROMPT_FIX", settings.promptFix.isEmpty ? nil : settings.promptFix),

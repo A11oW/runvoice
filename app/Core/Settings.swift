@@ -9,23 +9,26 @@ struct HotKeySetting: Codable, Equatable {
     var display: String = "⌥Space"
 }
 
-struct Settings: Codable {
+struct Settings: Codable, Equatable {
     var promptFix = ""
     var whisperModelPath = ""
     var whisperModelDirs: [String] = []
     var hiddenModelPaths: [String] = []
     var language = "ru"
+    var microphone = ""
     var provider = "deepseek"
     var model = "deepseek-flash"
     var baseURL = ""
+    var processingMode = "opencode"   // opencode | direct | off
     var useOpenCode = true
     var restoreClipboard = false
     var showHUD = true
     var hotkeyToggle = HotKeySetting()
 
     enum CodingKeys: String, CodingKey {
-        case promptFix, whisperModelPath, whisperModelDirs, hiddenModelPaths, language, provider, model
-        case baseURL, useOpenCode, restoreClipboard, showHUD
+        case promptFix, whisperModelPath, whisperModelDirs, hiddenModelPaths
+        case language, microphone, provider, model, baseURL, processingMode
+        case useOpenCode, restoreClipboard, showHUD
         case hotkeyToggle
     }
 
@@ -38,10 +41,20 @@ struct Settings: Codable {
         whisperModelDirs = try c.decodeIfPresent([String].self, forKey: .whisperModelDirs) ?? []
         hiddenModelPaths = try c.decodeIfPresent([String].self, forKey: .hiddenModelPaths) ?? []
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
+        microphone = try c.decodeIfPresent(String.self, forKey: .microphone) ?? ""
         provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
         useOpenCode = try c.decodeIfPresent(Bool.self, forKey: .useOpenCode) ?? true
+        if let mode = try c.decodeIfPresent(String.self, forKey: .processingMode) {
+            processingMode = mode
+        } else if !baseURL.isEmpty {
+            processingMode = "direct"
+        } else if useOpenCode {
+            processingMode = "opencode"
+        } else {
+            processingMode = "off"
+        }
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
         showHUD = try c.decodeIfPresent(Bool.self, forKey: .showHUD) ?? true
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()

@@ -49,7 +49,7 @@ fi
 
 WHISPER_LANG="${WHISPER_LANG:-ru}"
 WHISPER_THREADS="${WHISPER_THREADS:-8}"
-MIC_NAME="${MIC_NAME:-MacBook Pro Microphone}"
+MIC_NAME="${MIC_NAME:-}"
 
 OC_PROVIDER="${OC_PROVIDER:-deepseek}"
 OC_MODEL_ID="${OC_MODEL_ID:-deepseek-flash}"
@@ -126,15 +126,22 @@ fi
 
 # индекс микрофона кэшируем: `ffmpeg -list_devices` стоит ~0.4 с
 MIC_CACHE="$STATE/mic_index"
+MIC_CACHE_NAME="$STATE/mic_name"
 mic_index() {
   if [ -n "${MIC_INDEX:-}" ]; then echo "$MIC_INDEX"; return; fi
-  if [ -s "$MIC_CACHE" ]; then cat "$MIC_CACHE"; return; fi
+  if [ -z "${MIC_NAME:-}" ]; then echo 0; return; fi
+  if [ -s "$MIC_CACHE" ] && [ "$(cat "$MIC_CACHE_NAME" 2>/dev/null)" = "$MIC_NAME" ]; then
+    cat "$MIC_CACHE"; return
+  fi
   local i
   i="$(ffmpeg -hide_banner -f avfoundation -list_devices true -i "" 2>&1 \
        | sed -n '/AVFoundation audio devices/,$p' \
        | grep -F "] $MIC_NAME" | head -1 \
        | grep -oE '\[[0-9]+\]' | tr -d '[]')"
-  [ -n "$i" ] && printf '%s' "$i" > "$MIC_CACHE"
+  if [ -n "$i" ]; then
+    printf '%s' "$i" > "$MIC_CACHE"
+    printf '%s' "$MIC_NAME" > "$MIC_CACHE_NAME"
+  fi
   echo "$i"
 }
 
@@ -271,7 +278,11 @@ start_recording() {
     err "модель Whisper не найдена — выберите её в настройках"
     return 1
   fi
-  local idx; idx="$(mic_index)"; [ -z "$idx" ] && idx=0
+  local idx; idx="$(mic_index)"
+  if [ -z "$idx" ]; then
+    err "микрофон не найден: ${MIC_NAME:-устройство по умолчанию}"
+    return 1
+  fi
   rm -f "$PCM" "$WAV" "$OUT.txt"
   status preparing
   ffmpeg -hide_banner -loglevel error -nostdin -f avfoundation -i ":$idx" \
@@ -369,6 +380,19 @@ stop_and_insert() {
   [ "$RESTORE_CLIPBOARD" = "1" ] && printf '%s' "$old" | pbcopy
   status done
 }
+
+# =========================================================
+# 0) тест микрофона: 1 секунда записи, печатает index/level.
+if [ "$ACTION" = "mic-test" ]; then
+  if [ -d "$LOCK" ]; then echo "error=busy"; exit 0; fi
+  idx="$(mic_index)"
+  if [ -z "$idx" ]; then echo "error=notfound"; exit 0; fi
+  out="$(ffmpeg -hide_banner -f avfoundation -i ":$idx" -t 1 -af volumedetect -f null - 2>&1)"
+  level="$(printf '%s' "$out" | sed -n 's/.*max_volume: \([^ ]*\) dB.*/\1/p' | tail -1)"
+  echo "index=$idx"
+  echo "level=${level:-unknown}"
+  exit 0
+fi
 
 # =========================================================
 # 0) прогрев сервера после сохранения настроек.

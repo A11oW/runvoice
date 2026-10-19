@@ -19,11 +19,11 @@
 
 | Вкладка | Файл |
 |---|---|
-| General (язык, буфер, бабл, диагностика) | [settings-general.png](settings-general.png) |
-| AI (провайдер, модель, URL, OpenCode) | [settings-ai.png](settings-ai.png) |
-| Модели (скачивание, выбор, папки) | [settings-models.png](settings-models.png) |
-| Prompt (промпт исправления) | [settings-prompt.png](settings-prompt.png) |
-| Hotkeys (хоткей диктовки) | [settings-hotkeys.png](settings-hotkeys.png) |
+| Основные (язык, микрофон, автозапуск, HUD, диагностика) | [settings-general.png](settings-general.png) |
+| Распознавание (модели Whisper, скачивание, папки) | [settings-models.png](settings-models.png) |
+| Постобработка (OpenCode / свой API, проверка) | [settings-ai.png](settings-ai.png) |
+| Промпт (редактор, сброс, проверка) | [settings-prompt.png](settings-prompt.png) |
+| Хоткеи (диктовка, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
 
 ## Как переснять
 

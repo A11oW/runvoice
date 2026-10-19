@@ -1,20 +1,38 @@
 import AppKit
+import AVFoundation
 import Carbon.HIToolbox
 import ApplicationServices
+import ServiceManagement
 import UniformTypeIdentifiers
 
 // MARK: - Окно настроек
 
 final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let fixText = NSTextView()
+    private var promptTestLabel: NSTextField!
     private var tabView: NSTabView!
     private var languagePopup: NSPopUpButton!
+    private var micPopup: NSPopUpButton!
+    private var micTestButton: NSButton!
+    private var micTestLabel: NSTextField!
+    private var launchCheck: NSButton!
+    private var launchNote: NSTextField!
     private var providerField: NSTextField!
     private var modelField: NSTextField!
     private var baseURLField: NSTextField!
-    private var useOpenCodeCheck: NSButton!
+    private var apiKeyField: NSSecureTextField!
+    private var modeControl: NSSegmentedControl!
+    private var testButton: NSButton!
+    private var testResultLabel: NSTextField!
+    private var aiHint: NSTextField!
+    private var providerGroup: NSStackView!
+    private var modelGroup: NSStackView!
+    private var baseURLGroup: NSStackView!
+    private var apiKeyGroup: NSStackView!
     private var restoreCheck: NSButton!
     private var hudCheck: NSButton!
+    private var resetButton: NSButton!
+    private var versionLabel: NSTextField!
     private var toggleHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
@@ -27,12 +45,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var downloadProgress: [String: Double] = [:]
     private var downloadBars: [String: NSProgressIndicator] = [:]
     private var downloadPercents: [String: NSTextField] = [:]
+    private var downloadSpeedLabels: [String: NSTextField] = [:]
+    private var downloadSpeeds: [String: Double] = [:]
     private var depStack: NSStackView!
     private var depLabels: [NSTextField] = []
     private var refreshTimer: Timer?
+    private var lastDependencyRefresh = Date.distantPast
     private var captureMonitor: Any?
     private var captureTarget: NSButton?
     private var toggleHotkey = HotKeySetting()
+
+    private var loadedSettings = Settings()
+    private var loadedLaunchAtLogin = false
+    private var loadedAPIKey = ""
+    private var allowClose = false
 
     var onCaptureStateChanged: ((Bool) -> Void)?
     var onSettingsSaved: (() -> Void)?
@@ -60,12 +86,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     func show() {
+        allowClose = false
         loadValues()
-        refreshDiagnostics()
+        refreshDiagnostics(force: true)
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
-            self.refreshDiagnostics()
+            self.refreshDiagnostics(force: false)
         }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -73,6 +100,25 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopCapture()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if allowClose || !hasUnsavedChanges() { return true }
+        let alert = NSAlert()
+        alert.messageText = "Сохранить изменения?"
+        alert.informativeText = "В настройках есть несохранённые изменения."
+        alert.addButton(withTitle: "Сохранить")
+        alert.addButton(withTitle: "Не сохранять")
+        alert.addButton(withTitle: "Отмена")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            saveSettings()
+            return false
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
     }
 
     func selectTab(_ identifier: String) {
@@ -87,36 +133,56 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         content.addSubview(tabView)
 
         let general = NSTabViewItem(identifier: "general")
-        general.label = "General"
+        general.label = "Основные"
         general.view = buildGeneral()
         tabView.addTabViewItem(general)
 
-        let ai = NSTabViewItem(identifier: "ai")
-        ai.label = "AI"
-        ai.view = buildAI()
-        tabView.addTabViewItem(ai)
-
         let models = NSTabViewItem(identifier: "models")
-        models.label = "Модели"
+        models.label = "Распознавание"
         models.view = buildModels()
         tabView.addTabViewItem(models)
 
+        let ai = NSTabViewItem(identifier: "ai")
+        ai.label = "Постобработка"
+        ai.view = buildAI()
+        tabView.addTabViewItem(ai)
+
         let prompt = NSTabViewItem(identifier: "prompt")
-        prompt.label = "Prompt"
+        prompt.label = "Промпт"
         prompt.view = buildPrompt()
         tabView.addTabViewItem(prompt)
 
         let hotkeys = NSTabViewItem(identifier: "hotkeys")
-        hotkeys.label = "Hotkeys"
+        hotkeys.label = "Хоткеи"
         hotkeys.view = buildHotkeys()
         tabView.addTabViewItem(hotkeys)
 
-        let reset = NSButton(title: "Сбросить", target: self, action: #selector(resetDefaults))
+        resetButton = NSButton(title: "Сбросить вкладку", target: self, action: #selector(resetDefaults))
+        let logButton = NSButton(title: "Лог", target: self, action: #selector(openLog))
+        let dataButton = NSButton(title: "Данные", target: self, action: #selector(openData))
+        logButton.bezelStyle = .inline
+        dataButton.bezelStyle = .inline
+
+        versionLabel = NSTextField(labelWithString: "")
+        versionLabel.font = .systemFont(ofSize: 10)
+        versionLabel.textColor = .secondaryLabelColor
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
+        versionLabel.stringValue = (build.isEmpty || build == version) ? "v\(version)" : "v\(version) (\(build))"
+
+        let footer = NSStackView(views: [resetButton, logButton, dataButton, versionLabel])
+        footer.orientation = .horizontal
+        footer.alignment = .centerY
+        footer.spacing = 10
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(footer)
+
         let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancel))
+        cancel.keyEquivalent = "\u{1b}"
         let save = NSButton(title: "Сохранить", target: self, action: #selector(saveSettings))
         save.keyEquivalent = "\r"
 
-        for view in [reset, cancel, save] as [NSView] {
+        for view in [cancel, save] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -125,10 +191,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             tabView.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
             tabView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             tabView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            tabView.bottomAnchor.constraint(equalTo: save.topAnchor, constant: -12),
+            tabView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
 
-            reset.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            reset.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+
             save.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
             save.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
             cancel.trailingAnchor.constraint(equalTo: save.leadingAnchor, constant: -8),
@@ -141,13 +208,32 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildGeneral() -> NSView {
         let view = NSView()
         let languageLabel = label("Язык распознавания")
+        let micLabel = label("Микрофон")
         let diagLabel = label("Диагностика", bold: true)
 
         languagePopup = NSPopUpButton()
         languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
 
+        micPopup = NSPopUpButton()
+        micPopup.widthAnchor.constraint(equalToConstant: 230).isActive = true
+        micTestButton = NSButton(title: "Проверить", target: self, action: #selector(testMicrophone))
+        micTestButton.bezelStyle = .rounded
+        micTestLabel = label("")
+        micTestLabel.lineBreakMode = .byTruncatingTail
+
+        let micRow = NSStackView(views: [micLabel, micPopup, micTestButton, micTestLabel])
+        micRow.orientation = .horizontal
+        micRow.alignment = .centerY
+        micRow.spacing = 8
+        micRow.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(micRow)
+
         restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
                                 target: nil, action: nil)
+        launchCheck = NSButton(checkboxWithTitle: "Запускать при входе", target: nil, action: nil)
+        launchNote = label("")
+        launchNote.textColor = .systemOrange
+        launchNote.font = .systemFont(ofSize: 10)
         hudCheck = NSButton(checkboxWithTitle: "Показывать всплывающий бабл статуса",
                             target: nil, action: nil)
 
@@ -171,7 +257,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             depLabel.widthAnchor.constraint(equalTo: depStack.widthAnchor).isActive = true
         }
 
-        let views: [NSView] = [languageLabel, languagePopup, restoreCheck, hudCheck,
+        let views: [NSView] = [languageLabel, languagePopup, micRow, restoreCheck,
+                               launchCheck, launchNote, hudCheck,
                                diagLabel, accessLabel, accessButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -186,10 +273,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             languagePopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             languagePopup.widthAnchor.constraint(equalToConstant: 200),
 
-            restoreCheck.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 20),
+            micRow.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 14),
+            micRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            micRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+
+            restoreCheck.topAnchor.constraint(equalTo: micRow.bottomAnchor, constant: 16),
             restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
-            hudCheck.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 8),
+            launchCheck.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 8),
+            launchCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            launchNote.topAnchor.constraint(equalTo: launchCheck.bottomAnchor, constant: 2),
+            launchNote.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 36),
+
+            hudCheck.topAnchor.constraint(equalTo: launchNote.bottomAnchor, constant: 8),
             hudCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
             diagLabel.topAnchor.constraint(equalTo: hudCheck.bottomAnchor, constant: 24),
@@ -212,16 +309,31 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private func buildAI() -> NSView {
         let view = NSView()
-        let providerLabel = label("Провайдер модели правки")
-        let modelLabel = label("Модель правки")
-        let baseURLLabel = label("Базовый URL (OpenAI-compatible)")
-        let hint = label("Пусто — через OpenCode (если включён).\nЕсли задан URL — напрямую в {URL}/chat/completions.\nБез OpenCode и без URL — текст вставится без правки.")
-        let note = label("Ключ доступа, если нужен: переменная окружения OC_API_KEY.")
 
-        hint.lineBreakMode = .byWordWrapping
-        hint.maximumNumberOfLines = 3
-        note.lineBreakMode = .byWordWrapping
-        note.maximumNumberOfLines = 2
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 16, bottom: 16, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
+        ])
+
+        let modeLabel = label("Способ обработки")
+        modeControl = NSSegmentedControl(labels: ["OpenCode", "Свой API", "Без правки"],
+                                         trackingMode: .selectOne,
+                                         target: self,
+                                         action: #selector(aiModeChanged))
+        modeControl.segmentStyle = .rounded
+        let modeRow = NSStackView(views: [modeLabel, modeControl])
+        modeRow.orientation = .horizontal
+        modeRow.alignment = .centerY
+        modeRow.spacing = 12
 
         providerField = NSTextField()
         providerField.placeholderString = "deepseek"
@@ -229,49 +341,73 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         modelField.placeholderString = "deepseek-flash"
         baseURLField = NSTextField()
         baseURLField.placeholderString = "https://api.example.com/v1"
-        useOpenCodeCheck = NSButton(checkboxWithTitle: "Использовать OpenCode CLI (если базовый URL не задан)",
-                                    target: nil, action: nil)
+        apiKeyField = NSSecureTextField()
+        apiKeyField.placeholderString = "если нужен"
 
-        let views: [NSView] = [providerLabel, providerField, modelLabel, modelField,
-                               baseURLLabel, baseURLField, useOpenCodeCheck, hint, note]
-        for v in views {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(v)
+        providerGroup = fieldGroup("Провайдер", field: providerField)
+        modelGroup = fieldGroup("Модель", field: modelField)
+        baseURLGroup = fieldGroup("Базовый URL (OpenAI-compatible)", field: baseURLField)
+        apiKeyGroup = fieldGroup("API-ключ (хранится в Keychain)", field: apiKeyField)
+
+        testButton = NSButton(title: "Проверить подключение", target: self, action: #selector(testCorrection))
+        testButton.bezelStyle = .rounded
+        testResultLabel = NSTextField(wrappingLabelWithString: "")
+        testResultLabel.font = .systemFont(ofSize: 11)
+        testResultLabel.textColor = .secondaryLabelColor
+        testResultLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let testRow = NSStackView(views: [testButton, testResultLabel])
+        testRow.orientation = .horizontal
+        testRow.alignment = .centerY
+        testRow.spacing = 10
+
+        aiHint = NSTextField(wrappingLabelWithString: "")
+        aiHint.font = .systemFont(ofSize: 11)
+        aiHint.textColor = .secondaryLabelColor
+
+        let rows: [NSView] = [modeRow, providerGroup, modelGroup, baseURLGroup, apiKeyGroup, testRow, aiHint]
+        for row in rows {
+            stack.addArrangedSubview(row)
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
         }
 
-        NSLayoutConstraint.activate([
-            providerLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
-            providerLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            providerField.topAnchor.constraint(equalTo: providerLabel.bottomAnchor, constant: 6),
-            providerField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            providerField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            modelLabel.topAnchor.constraint(equalTo: providerField.bottomAnchor, constant: 16),
-            modelLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            modelField.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 6),
-            modelField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            modelField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            baseURLLabel.topAnchor.constraint(equalTo: modelField.bottomAnchor, constant: 16),
-            baseURLLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            baseURLField.topAnchor.constraint(equalTo: baseURLLabel.bottomAnchor, constant: 6),
-            baseURLField.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            baseURLField.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            useOpenCodeCheck.topAnchor.constraint(equalTo: baseURLField.bottomAnchor, constant: 14),
-            useOpenCodeCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            useOpenCodeCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-
-            hint.topAnchor.constraint(equalTo: useOpenCodeCheck.bottomAnchor, constant: 12),
-            hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            hint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            note.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 6),
-            note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            note.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-        ])
-
         return view
+    }
+
+    private func fieldGroup(_ title: String, field: NSTextField) -> NSStackView {
+        let label = label(title)
+        let stack = NSStackView(views: [label, field])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        return stack
+    }
+
+    @objc private func aiModeChanged() {
+        let mode = selectedProcessingMode
+        providerGroup?.isHidden = mode != "opencode"
+        modelGroup?.isHidden = mode == "off"
+        baseURLGroup?.isHidden = mode != "direct"
+        apiKeyGroup?.isHidden = mode != "direct"
+        testButton?.isEnabled = mode != "off"
+        testResultLabel?.stringValue = ""
+        switch mode {
+        case "direct":
+            aiHint?.stringValue = "Запросы уходят напрямую в {URL}/chat/completions. Ключ хранится в Keychain и передаётся как Bearer."
+        case "off":
+            aiHint?.stringValue = "Постобработка выключена: вставляется сырой текст Whisper."
+        default:
+            aiHint?.stringValue = "Запросы идут через OpenCode CLI. Провайдер и модель должны быть доступны в OpenCode."
+        }
+    }
+
+    private var selectedProcessingMode: String {
+        switch modeControl?.selectedSegment ?? 0 {
+        case 1: return "direct"
+        case 2: return "off"
+        default: return "opencode"
+        }
     }
 
     // MARK: - Модели
@@ -324,6 +460,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         downloadBars.removeAll()
         downloadPercents.removeAll()
+        downloadSpeedLabels.removeAll()
+        downloadSpeeds.removeAll()
 
         let active = WhisperModelStore.file(at: selectedModelPath)
         var found = WhisperModelStore.foundModels(extraDirectories: modelDirs,
@@ -347,7 +485,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         addRow(banner)
 
-        addRow(sectionLabel("Найдены на компьютере"))
+        let foundHeader = NSStackView()
+        foundHeader.orientation = .horizontal
+        foundHeader.alignment = .centerY
+        foundHeader.spacing = 8
+        foundHeader.addArrangedSubview(sectionLabel("Найдены на компьютере"))
+        let foundSpacer = NSView()
+        foundSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        foundHeader.addArrangedSubview(foundSpacer)
+        let refresh = NSButton(title: "Обновить", target: self, action: #selector(refreshModelsList))
+        refresh.bezelStyle = .inline
+        foundHeader.addArrangedSubview(refresh)
+        addRow(foundHeader)
+
         if found.isEmpty {
             let empty = NSTextField(labelWithString: "Модели ggml-*.bin не найдены.")
             empty.font = .systemFont(ofSize: 11)
@@ -357,6 +507,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             for model in found { addRow(modelRow(model)) }
         }
 
+        if !hiddenModelPaths.isEmpty {
+            addRow(sectionLabel("Скрытые модели"))
+            for path in hiddenModelPaths {
+                addRow(hiddenModelRow(path))
+            }
+        }
+
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
@@ -364,13 +521,28 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         addFile.bezelStyle = .rounded
         let addFolder = NSButton(title: "Добавить папку…", target: self, action: #selector(addModelFolder))
         addFolder.bezelStyle = .rounded
+        let openFolder = NSButton(title: "Открыть папку моделей", target: self, action: #selector(openModelsFolder))
+        openFolder.bezelStyle = .rounded
         buttons.addArrangedSubview(addFile)
         buttons.addArrangedSubview(addFolder)
+        buttons.addArrangedSubview(openFolder)
         addRow(buttons)
 
-        let missing = WhisperModelCatalog.models.filter { model in
-            !found.contains(where: { $0.fileName == model.fileName })
+        if !modelDirs.isEmpty {
+            addRow(sectionLabel("Папки"))
+            for dir in modelDirs { addRow(folderRow(dir)) }
         }
+
+        let hiddenNames = Set(hiddenModelPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
+        let missing = WhisperModelCatalog.models
+            .filter { model in
+                !hiddenNames.contains(model.fileName)
+                    && !found.contains(where: { $0.fileName == model.fileName })
+            }
+            .sorted { a, b in
+                if a.recommended != b.recommended { return a.recommended }
+                return a.sizeBytes < b.sizeBytes
+            }
         if !missing.isEmpty {
             addRow(sectionLabel("Скачать"))
             for model in missing { addRow(downloadRow(model)) }
@@ -397,6 +569,86 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         return field
     }
 
+    private func displayTitle(for model: WhisperModelFile) -> String {
+        WhisperModelCatalog.models.first { $0.fileName == model.fileName }?.title ?? model.fileName
+    }
+
+    private func hiddenModelRow(_ path: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+
+        let file = WhisperModelStore.file(at: path)
+        let title = NSTextField(labelWithString: file?.fileName ?? path)
+        title.font = .systemFont(ofSize: 12)
+        title.lineBreakMode = .byTruncatingMiddle
+        let subtitle = NSTextField(labelWithString: file.map { "\($0.sizeText) · скрыта" } ?? "файл не найден")
+        subtitle.font = .systemFont(ofSize: 10)
+        subtitle.textColor = .secondaryLabelColor
+        let text = NSStackView(views: [title, subtitle])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let restore = NSButton(title: "Вернуть", target: self, action: #selector(unhideModel(_:)))
+        restore.bezelStyle = .inline
+        restore.identifier = NSUserInterfaceItemIdentifier(path)
+
+        row.addArrangedSubview(text)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(restore)
+        return row
+    }
+
+    private func folderRow(_ dir: String) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+
+        let label = NSTextField(labelWithString: dir)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingMiddle
+        label.toolTip = "Файлы в этой папке не удаляются"
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let remove = NSButton(title: "Убрать", target: self, action: #selector(removeFolder(_:)))
+        remove.bezelStyle = .inline
+        remove.identifier = NSUserInterfaceItemIdentifier(dir)
+        remove.toolTip = "Убрать папку из списка; файлы останутся на диске"
+
+        row.addArrangedSubview(label)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(remove)
+        return row
+    }
+
+    @objc private func refreshModelsList() {
+        refreshModels()
+        refreshDiagnostics(force: true)
+    }
+
+    @objc private func openModelsFolder() {
+        NSWorkspace.shared.open(WhisperModelStore.modelsDirectory)
+    }
+
+    @objc private func unhideModel(_ sender: NSButton) {
+        guard let path = sender.identifier?.rawValue else { return }
+        hiddenModelPaths.removeAll { $0 == path }
+        refreshModels()
+    }
+
+    @objc private func removeFolder(_ sender: NSButton) {
+        guard let dir = sender.identifier?.rawValue else { return }
+        modelDirs.removeAll { $0 == dir }
+        refreshModels()
+    }
+
     private func modelRow(_ model: WhisperModelFile) -> NSView {
         let row = NSStackView()
         row.orientation = .horizontal
@@ -408,13 +660,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         radio.state = (model.path == selectedModelPath) ? .on : .off
         radio.setContentHuggingPriority(.required, for: .horizontal)
 
-        let title: NSTextField
-        if let catalog = WhisperModelCatalog.models.first(where: { $0.fileName == model.fileName }) {
-            title = NSTextField(labelWithString: catalog.title)
-        } else {
-            title = NSTextField(labelWithString: model.fileName)
-        }
+        let title = NSButton(title: displayTitle(for: model),
+                             target: self, action: #selector(selectModel(_:)))
+        title.isBordered = false
+        title.alignment = .left
         title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.identifier = NSUserInterfaceItemIdentifier(model.path)
 
         let subtitle = NSTextField(labelWithString: "\(model.sizeText) · \(model.directory)")
         subtitle.font = .systemFont(ofSize: 10)
@@ -427,7 +678,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         text.spacing = 2
         text.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
-        let reveal = NSButton(title: "Показать", target: self, action: #selector(revealModel(_:)))
+        let reveal = NSButton(title: "Показать в Finder", target: self, action: #selector(revealModel(_:)))
         reveal.bezelStyle = .inline
         reveal.identifier = NSUserInterfaceItemIdentifier(model.path)
 
@@ -449,6 +700,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             let hide = NSButton(title: "Скрыть", target: self, action: #selector(hideModel(_:)))
             hide.bezelStyle = .inline
             hide.identifier = NSUserInterfaceItemIdentifier(model.path)
+            hide.toolTip = "Убрать модель из списка; файл на диске останется"
             row.addArrangedSubview(hide)
         }
         return row
@@ -467,9 +719,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let title = NSTextField(labelWithString: model.title)
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let subtitle = NSTextField(labelWithString: model.sizeText + (model.recommended ? " · рекомендуется" : ""))
+        let subtitle = NSTextField(labelWithString: model.sizeText)
         subtitle.font = .systemFont(ofSize: 10)
         subtitle.textColor = .secondaryLabelColor
+
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+        let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        let notEnoughSpace = free < model.sizeBytes + 200 * 1024 * 1024
+
+        let recommended = NSTextField(labelWithString: "Рекомендуется")
+        recommended.font = .systemFont(ofSize: 10, weight: .medium)
+        recommended.textColor = .systemGreen
+        recommended.isHidden = !model.recommended
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -487,16 +748,30 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                               target: self, action: #selector(downloadModel(_:)))
         button.bezelStyle = .rounded
         button.identifier = NSUserInterfaceItemIdentifier(model.id)
+        button.isEnabled = downloads[model.id] != nil || !notEnoughSpace
+        button.toolTip = notEnoughSpace ? "Недостаточно свободного места" : nil
 
         header.addArrangedSubview(title)
         header.addArrangedSubview(subtitle)
+        header.addArrangedSubview(recommended)
         header.addArrangedSubview(spacer)
         header.addArrangedSubview(percent)
         header.addArrangedSubview(button)
 
         let note = NSTextField(wrappingLabelWithString: model.note)
         note.font = .systemFont(ofSize: 10)
-        note.textColor = .secondaryLabelColor
+        note.textColor = notEnoughSpace ? .systemOrange : .secondaryLabelColor
+        if notEnoughSpace {
+            note.stringValue += " Недостаточно свободного места: нужно \(model.sizeText) плюс запас 200 МБ."
+        }
+
+        let speedLabel = NSTextField(labelWithString: "")
+        speedLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        speedLabel.textColor = .secondaryLabelColor
+        speedLabel.isHidden = downloads[model.id] == nil
+        if let speed = downloadSpeeds[model.id], let progress = downloadProgress[model.id] {
+            speedLabel.stringValue = speedText(speed, model: model, progress: progress)
+        }
 
         let bar = NSProgressIndicator()
         bar.style = .bar
@@ -509,15 +784,32 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         container.addArrangedSubview(header)
         container.addArrangedSubview(note)
+        container.addArrangedSubview(speedLabel)
         container.addArrangedSubview(bar)
 
         header.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
         note.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+        speedLabel.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
         bar.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
 
         downloadBars[model.id] = bar
         downloadPercents[model.id] = percent
+        downloadSpeedLabels[model.id] = speedLabel
         return container
+    }
+
+    private func speedText(_ speed: Double, model: WhisperModel, progress: Double) -> String {
+        guard speed > 0 else { return "Загрузка…" }
+        let written = Double(model.sizeBytes) * progress
+        let remaining = max(0, Double(model.sizeBytes) - written)
+        let seconds = remaining / speed
+        let eta: String
+        if seconds < 60 {
+            eta = "\(max(1, Int(seconds.rounded()))) с"
+        } else {
+            eta = "\(max(1, Int((seconds / 60).rounded()))) мин"
+        }
+        return "\(WhisperSize.text(Int64(speed)))/с · осталось \(eta)"
     }
 
     @objc private func downloadModel(_ sender: NSButton) {
@@ -546,21 +838,26 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         downloads[id] = downloader
         downloadProgress[id] = 0
 
-        downloader.onProgress = { [weak self] value in
+        downloader.onProgress = { [weak self] value, speed in
             guard let self else { return }
             self.downloadProgress[id] = value
+            self.downloadSpeeds[id] = speed
             self.downloadBars[id]?.doubleValue = value
             self.downloadPercents[id]?.stringValue = "\(Int(value * 100))%"
             self.downloadPercents[id]?.isHidden = false
+            self.downloadSpeedLabels[id]?.stringValue = self.speedText(speed, model: model, progress: value)
+            self.downloadSpeedLabels[id]?.isHidden = false
         }
         downloader.onFinish = { [weak self] result in
             guard let self else { return }
             self.downloads[id] = nil
             self.downloadProgress[id] = nil
+            self.downloadSpeeds[id] = nil
             switch result {
             case .success(let url):
                 if self.selectedModelPath.isEmpty { self.selectedModelPath = url.path }
                 self.refreshModels()
+                self.refreshDiagnostics(force: true)
                 Log.write("model: скачана \(url.lastPathComponent)")
             case .failure(let error):
                 self.refreshModels()
@@ -654,29 +951,52 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildPrompt() -> NSView {
         let view = NSView()
         let fixLabel = label("Промпт для исправления текста  (⌥Space)", bold: true)
-        let fixHint = label("«Сбросить» вернёт встроенный текст. Изменения применяются после «Сохранить».")
+        let fixHint = label("Пустое поле заменяется встроенным промптом при открытии настроек.")
+
+        let reset = NSButton(title: "Сбросить к встроенному", target: self, action: #selector(resetPromptToDefault))
+        reset.bezelStyle = .rounded
+        let test = NSButton(title: "Проверить на примере", target: self, action: #selector(testPrompt))
+        test.bezelStyle = .rounded
+        let buttons = NSStackView(views: [reset, test])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        promptTestLabel = label("")
+        promptTestLabel.lineBreakMode = .byWordWrapping
+        promptTestLabel.maximumNumberOfLines = 2
 
         let fixScroll = makeScroll(fixText)
 
         fixLabel.translatesAutoresizingMaskIntoConstraints = false
         fixHint.translatesAutoresizingMaskIntoConstraints = false
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        promptTestLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(fixLabel)
+        view.addSubview(buttons)
         view.addSubview(fixScroll)
         view.addSubview(fixHint)
+        view.addSubview(promptTestLabel)
 
         NSLayoutConstraint.activate([
             fixLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
             fixLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             fixLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
-            fixScroll.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 6),
+            buttons.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 8),
+            buttons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            fixScroll.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: 8),
             fixScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             fixScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            fixScroll.heightAnchor.constraint(equalToConstant: 330),
+            fixScroll.heightAnchor.constraint(equalToConstant: 280),
 
             fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 6),
             fixHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             fixHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            promptTestLabel.topAnchor.constraint(equalTo: fixHint.bottomAnchor, constant: 4),
+            promptTestLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            promptTestLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -787,6 +1107,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                     display: displayString(keyCode: event.keyCode,
                                                            flags: flags,
                                                            characters: event.charactersIgnoringModifiers))
+        Log.write("hotkey capture: key=\(event.keyCode) mods=\(mods) system=\(systemShortcutName(for: setting) ?? "-")")
+        if let name = systemShortcutName(for: setting) {
+            let alert = NSAlert()
+            alert.messageText = "Сочетание занято macOS"
+            alert.informativeText = "\(setting.display) обычно используется для «\(name)». Всё равно назначить?"
+            alert.addButton(withTitle: "Назначить")
+            alert.addButton(withTitle: "Отмена")
+            if alert.runModal() != .alertFirstButtonReturn {
+                stopCapture()
+                return
+            }
+        }
         if captureTarget === toggleHotkeyButton {
             toggleHotkey = setting
         }
@@ -833,13 +1165,37 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         return text
     }
 
+    private func systemShortcutName(for hotkey: HotKeySetting) -> String? {
+        let mods = hotkey.modifiers
+        let cmd = (mods & UInt32(cmdKey)) != 0
+        let ctrl = (mods & UInt32(controlKey)) != 0
+        let opt = (mods & UInt32(optionKey)) != 0
+        let shift = (mods & UInt32(shiftKey)) != 0
+        let key = Int(hotkey.keyCode)
+
+        if key == kVK_Space {
+            if cmd && !ctrl && !opt { return "Spotlight" }
+            if ctrl && !cmd && !opt { return "переключение источника ввода" }
+            if ctrl && opt && !cmd { return "поиск в Finder" }
+        }
+        if key == kVK_Tab && cmd { return "переключение приложений" }
+        if key == kVK_ANSI_Q && cmd && !shift { return "завершение приложения" }
+        if key == kVK_ANSI_W && cmd { return "закрытие окна" }
+        if key == kVK_ANSI_H && cmd { return "скрытие приложения" }
+        if key == kVK_ANSI_M && cmd { return "сворачивание окна" }
+        return nil
+    }
+
     // MARK: - Диагностика
 
-    private func refreshDiagnostics() {
+    private func refreshDiagnostics(force: Bool = false) {
         let ok = AXIsProcessTrusted()
         accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
         accessLabel.textColor = ok ? .systemGreen : .systemOrange
         accessButton.isHidden = ok
+
+        if !force, Date().timeIntervalSince(lastDependencyRefresh) < 5 { return }
+        lastDependencyRefresh = Date()
 
         let settings = SettingsStore.load()
         for (index, dependency) in Dependency.diagnosticsCases.enumerated() where index < depLabels.count {
@@ -857,8 +1213,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let fm = FileManager.default
         switch dependency {
         case .ffmpeg:
-            if fm.isExecutableFile(atPath: "/opt/homebrew/bin/ffmpeg") {
-                return ("✓ ffmpeg", .systemGreen)
+            if let path = Dependency.locateExecutable("ffmpeg") {
+                return ("✓ ffmpeg — \(path)", .systemGreen)
             }
             return ("⚠️ ffmpeg — не найден (brew install ffmpeg)", .systemOrange)
 
@@ -912,17 +1268,172 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func openLog() {
+        NSWorkspace.shared.open(Paths.log)
+    }
+
+    @objc private func openData() {
+        NSWorkspace.shared.open(Paths.support)
+    }
+
+    @objc private func testMicrophone() {
+        let name = micPopup.titleOfSelectedItem ?? ""
+        micTestButton.isEnabled = false
+        micTestLabel.stringValue = "Запись 1 с…"
+        micTestLabel.textColor = .secondaryLabelColor
+        MicTester.test(micName: name) { [weak self] result in
+            guard let self else { return }
+            self.micTestButton.isEnabled = true
+            switch result {
+            case .success(let level):
+                let value = Double(level.replacingOccurrences(of: ",", with: ".")) ?? -100
+                if value > -50 {
+                    self.micTestLabel.stringValue = "✓ \(level) dB"
+                    self.micTestLabel.textColor = .systemGreen
+                } else {
+                    self.micTestLabel.stringValue = "⚠️ тишина (\(level) dB)"
+                    self.micTestLabel.textColor = .systemOrange
+                }
+            case .failure(let error):
+                self.micTestLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                self.micTestLabel.textColor = .systemOrange
+            }
+        }
+    }
+
+    @objc private func testCorrection() {
+        let settings = currentSettings()
+        testButton.isEnabled = false
+        testResultLabel.stringValue = "Проверяю…"
+        testResultLabel.textColor = .secondaryLabelColor
+        CorrectionTester.test(settings: settings,
+                              prompt: settings.promptFix,
+                              apiKey: apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
+            guard let self else { return }
+            self.testButton.isEnabled = self.selectedProcessingMode != "off"
+            switch result {
+            case .success(let text):
+                self.testResultLabel.stringValue = "✓ \(text)"
+                self.testResultLabel.textColor = .systemGreen
+            case .failure(let error):
+                self.testResultLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                self.testResultLabel.textColor = .systemOrange
+            }
+        }
+    }
+
+    @objc private func resetPromptToDefault() {
+        fixText.string = DefaultPrompts.fix
+    }
+
+    @objc private func testPrompt() {
+        let settings = currentSettings()
+        promptTestLabel.stringValue = "Проверяю…"
+        promptTestLabel.textColor = .secondaryLabelColor
+        CorrectionTester.test(settings: settings,
+                              prompt: fixText.string,
+                              apiKey: apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let text):
+                self.promptTestLabel.stringValue = "✓ \(text)"
+                self.promptTestLabel.textColor = .systemGreen
+            case .failure(let error):
+                self.promptTestLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                self.promptTestLabel.textColor = .systemOrange
+            }
+        }
+    }
+
+    private func reloadMicrophones(selected: String) {
+        var names = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices.map(\.localizedName)
+
+        if names.isEmpty { names = ["MacBook Pro Microphone"] }
+        if !selected.isEmpty, !names.contains(selected) { names.append(selected) }
+        micPopup.removeAllItems()
+        micPopup.addItems(withTitles: names)
+        if let index = names.firstIndex(of: selected) {
+            micPopup.selectItem(at: index)
+        } else if let index = names.firstIndex(of: "MacBook Pro Microphone") {
+            micPopup.selectItem(at: index)
+        } else {
+            micPopup.selectItem(at: 0)
+        }
+    }
+
+    private func refreshLaunchStatus() {
+        let status = SMAppService.mainApp.status
+        loadedLaunchAtLogin = status == .enabled
+        launchCheck.state = loadedLaunchAtLogin ? .on : .off
+        if status == .requiresApproval {
+            launchNote.stringValue = "Подтвердите в System Settings → Login Items"
+            launchNote.isHidden = false
+        } else {
+            launchNote.stringValue = ""
+            launchNote.isHidden = true
+        }
+    }
+
+    private func currentSettings() -> Settings {
+        var settings = loadedSettings
+        settings.promptFix = fixText.string
+        settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
+        settings.microphone = micPopup.titleOfSelectedItem ?? ""
+        settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
+        settings.processingMode = selectedProcessingMode
+        switch settings.processingMode {
+        case "direct":
+            settings.useOpenCode = false
+        case "off":
+            settings.useOpenCode = false
+            settings.baseURL = ""
+        default:
+            settings.useOpenCode = true
+            settings.baseURL = ""
+        }
+        settings.restoreClipboard = restoreCheck.state == .on
+        settings.showHUD = hudCheck.state == .on
+        settings.hotkeyToggle = toggleHotkey
+        settings.whisperModelPath = selectedModelPath
+        settings.whisperModelDirs = modelDirs
+        settings.hiddenModelPaths = hiddenModelPaths
+        return settings
+    }
+
+    private func hasUnsavedChanges() -> Bool {
+        currentSettings() != loadedSettings
+            || (launchCheck.state == .on) != loadedLaunchAtLogin
+            || apiKeyField.stringValue != loadedAPIKey
+    }
+
     private func loadValues() {
         let settings = SettingsStore.load()
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
+        promptTestLabel?.stringValue = ""
+        micTestLabel?.stringValue = ""
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
+        reloadMicrophones(selected: settings.microphone)
         providerField.stringValue = settings.provider
         modelField.stringValue = settings.model
         baseURLField.stringValue = settings.baseURL
-        useOpenCodeCheck.state = settings.useOpenCode ? .on : .off
+        switch settings.processingMode {
+        case "direct": modeControl.selectedSegment = 1
+        case "off": modeControl.selectedSegment = 2
+        default: modeControl.selectedSegment = 0
+        }
+        aiModeChanged()
+        apiKeyField.stringValue = Keychain.value(for: Keychain.directAPIKeyAccount) ?? ""
+        loadedAPIKey = apiKeyField.stringValue
         restoreCheck.state = settings.restoreClipboard ? .on : .off
         hudCheck.state = settings.showHUD ? .on : .off
+        refreshLaunchStatus()
 
         toggleHotkey = settings.hotkeyToggle
         toggleHotkeyButton.title = toggleHotkey.display
@@ -935,9 +1446,24 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             selectedModelPath = auto.path
         }
         refreshModels()
+
+        loadedSettings = settings
+        loadedSettings.promptFix = fixText.string
+        loadedSettings.whisperModelPath = selectedModelPath
+        if loadedSettings.microphone.isEmpty {
+            loadedSettings.microphone = micPopup.titleOfSelectedItem ?? ""
+        }
     }
 
     @objc private func resetDefaults() {
+        let tabName = tabView.selectedTabViewItem?.label ?? "вкладки"
+        let confirm = NSAlert()
+        confirm.messageText = "Сбросить вкладку «\(tabName)»?"
+        confirm.informativeText = "Несохранённые изменения на этой вкладке будут заменены значениями по умолчанию."
+        confirm.addButton(withTitle: "Сбросить")
+        confirm.addButton(withTitle: "Отмена")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
         switch tabView.selectedTabViewItem?.identifier as? String {
         case "prompt":
             fixText.string = DefaultPrompts.fix
@@ -948,7 +1474,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
             baseURLField.stringValue = ""
-            useOpenCodeCheck.state = .on
+            apiKeyField.stringValue = ""
+            modeControl.selectedSegment = 0
+            aiModeChanged()
         case "models":
             modelDirs = []
             hiddenModelPaths = []
@@ -957,44 +1485,64 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             refreshModels()
         default:
             languagePopup.selectItem(at: 0)
+            reloadMicrophones(selected: "")
             restoreCheck.state = .off
             hudCheck.state = .on
         }
     }
 
     @objc private func cancel() {
-        window?.close()
+        window?.performClose(nil)
     }
 
     @objc private func saveSettings() {
-        var settings = SettingsStore.load()
-        settings.promptFix = fixText.string
-        settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
-        settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.useOpenCode = useOpenCodeCheck.state == .on
-        settings.restoreClipboard = restoreCheck.state == .on
-        settings.showHUD = hudCheck.state == .on
-        settings.hotkeyToggle = toggleHotkey
-        settings.whisperModelPath = selectedModelPath
-        settings.whisperModelDirs = modelDirs
-        settings.hiddenModelPaths = hiddenModelPaths
+        let settings = currentSettings()
 
-        if !settings.baseURL.isEmpty,
-           !settings.baseURL.lowercased().hasPrefix("http://"),
-           !settings.baseURL.lowercased().hasPrefix("https://") {
-            let alert = NSAlert()
-            alert.messageText = "Некорректный базовый URL"
-            alert.informativeText = "URL должен начинаться с http:// или https://"
-            alert.runModal()
-            return
+        if settings.processingMode == "direct" {
+            if settings.baseURL.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "Не задан базовый URL"
+                alert.informativeText = "Для «Своего API» укажите базовый URL, например https://api.example.com/v1"
+                alert.runModal()
+                return
+            }
+            if !settings.baseURL.lowercased().hasPrefix("http://"),
+               !settings.baseURL.lowercased().hasPrefix("https://") {
+                let alert = NSAlert()
+                alert.messageText = "Некорректный базовый URL"
+                alert.informativeText = "URL должен начинаться с http:// или https://"
+                alert.runModal()
+                return
+            }
+        }
+
+        let wantLaunch = launchCheck.state == .on
+        if wantLaunch, SMAppService.mainApp.status != .enabled {
+            do { try SMAppService.mainApp.register() }
+            catch { Log.write("login item: register failed: \(error.localizedDescription)") }
+        } else if !wantLaunch,
+                  SMAppService.mainApp.status == .enabled || SMAppService.mainApp.status == .requiresApproval {
+            do { try SMAppService.mainApp.unregister() }
+            catch { Log.write("login item: unregister failed: \(error.localizedDescription)") }
+        }
+        Log.write("login item: requested=\(wantLaunch) status=\(SMAppService.mainApp.status.rawValue)")
+
+        let key = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.isEmpty {
+            Keychain.delete(account: Keychain.directAPIKeyAccount)
+        } else {
+            Keychain.set(key, for: Keychain.directAPIKeyAccount)
         }
 
         SettingsStore.save(settings)
+        loadedSettings = settings
+        loadedAPIKey = key
+        loadedLaunchAtLogin = SMAppService.mainApp.status == .enabled
         onSettingsSaved?()
         Log.write("settings saved")
+        allowClose = true
         window?.close()
+        allowClose = false
     }
 }
 

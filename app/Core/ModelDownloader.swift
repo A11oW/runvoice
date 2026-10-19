@@ -18,13 +18,14 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     }
 
     let model: WhisperModel
-    var onProgress: ((Double) -> Void)?
+    var onProgress: ((Double, Double) -> Void)?
     var onFinish: ((Result<URL, Error>) -> Void)?
 
     private var session: URLSession?
     private var task: URLSessionDownloadTask?
     private var cancelled = false
     private var completed = false
+    private let startedAt = Date()
 
     init(model: WhisperModel) {
         self.model = model
@@ -61,7 +62,10 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
                     totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
         guard totalBytesExpectedToWrite > 0 else { return }
-        onProgress?(min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)))
+        let progress = min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        let elapsed = Date().timeIntervalSince(startedAt)
+        let speed = elapsed > 0.2 ? Double(totalBytesWritten) / elapsed : 0
+        onProgress?(progress, speed)
     }
 
     func urlSession(_ session: URLSession,
