@@ -164,7 +164,7 @@ final class HUDController {
         timerLabel.textColor = NSColor(white: 1, alpha: 0.6)
         timerLabel.isHidden = true
 
-        levelBar = LevelBarView(frame: NSRect(x: 100, y: 7, width: w - 116, height: 4))
+        levelBar = LevelBarView(frame: NSRect(x: 100, y: 12, width: w - 116, height: 4))
         levelBar.isHidden = true
 
         bubble.addSubview(spinner)
