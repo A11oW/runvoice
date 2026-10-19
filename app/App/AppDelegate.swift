@@ -13,12 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var spinner: NSProgressIndicator!
     private var label: NSTextField!
     private var timer: Timer?
-    private var eventTap: CFMachPort?
-    private var hotkeysSuspended = false
-    private var hotkeyToggleSetting = HotKeySetting()
-    private var hotkeyAgentSetting = HotKeySetting(keyCode: 49,
-                                                   modifiers: UInt32(controlKey) | UInt32(shiftKey),
-                                                   display: "⌃⇧Space")
+    private let hotkeys = HotkeyMonitor()
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var hudEnabled = true
@@ -37,8 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
         setupHUD()
-        installEventTap()
-        reloadHotkeys()
+        hotkeys.onAction = { [weak self] action in
+            self?.run(action == .agent ? "agent" : "toggle")
+        }
+        hotkeys.start(settings: saved)
+        updateHotkeyTitles(saved)
         requestPermissions()
 
         if !AXIsProcessTrusted() {
@@ -136,7 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindow == nil {
             settingsWindow = SettingsWindow()
             settingsWindow?.onCaptureStateChanged = { [weak self] capturing in
-                self?.hotkeysSuspended = capturing
+                self?.hotkeys.setSuspended(capturing)
             }
             settingsWindow?.onSettingsSaved = { [weak self] in
                 guard let self else { return }
@@ -261,86 +259,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         a.runModal()
     }
 
-    // MARK: - Глобальные хоткеи (CGEventTap)
-
-    private func installEventTap() {
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: { _, type, event, userInfo in
-                guard let userInfo else { return Unmanaged.passUnretained(event) }
-                let app = Unmanaged<AppDelegate>.fromOpaque(userInfo).takeUnretainedValue()
-
-                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                    if let tap = app.eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-                    return Unmanaged.passUnretained(event)
-                }
-
-                if app.shouldConsume(event: event) { return nil }
-                return Unmanaged.passUnretained(event)
-            },
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
-            Log.write("event tap: failed (accessibility?)")
-            return
-        }
-
-        eventTap = tap
-        let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        Log.write("event tap installed")
-    }
-
-    private func shouldConsume(event: CGEvent) -> Bool {
-        if hotkeysSuspended { return false }
-
-        let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags
-        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-
-        func matches(_ hotkey: HotKeySetting) -> Bool {
-            let mods = hotkey.modifiers
-            let wantControl = (mods & UInt32(controlKey)) != 0
-            let wantShift = (mods & UInt32(shiftKey)) != 0
-            let wantOption = (mods & UInt32(optionKey)) != 0
-            let wantCommand = (mods & UInt32(cmdKey)) != 0
-            return hotkey.keyCode == keyCode
-                && flags.contains(.maskControl) == wantControl
-                && flags.contains(.maskShift) == wantShift
-                && flags.contains(.maskAlternate) == wantOption
-                && flags.contains(.maskCommand) == wantCommand
-        }
-
-        if matches(hotkeyAgentSetting) {
-            if !isRepeat {
-                Log.write("hotkey fired: agent")
-                DispatchQueue.main.async { self.run("agent") }
-            }
-            return true
-        }
-
-        if matches(hotkeyToggleSetting) {
-            if !isRepeat {
-                Log.write("hotkey fired: toggle")
-                DispatchQueue.main.async { self.run("toggle") }
-            }
-            return true
-        }
-
-        return false
-    }
+    // MARK: - Хоткеи
 
     private func reloadHotkeys() {
         let settings = SettingsStore.load()
-        hotkeyToggleSetting = settings.hotkeyToggle
-        hotkeyAgentSetting = settings.hotkeyAgent
+        hotkeys.update(settings: settings)
+        updateHotkeyTitles(settings)
+    }
+
+    private func updateHotkeyTitles(_ settings: Settings) {
         toggleItem?.title = "Диктовка   \(settings.hotkeyToggle.display)"
         agentItem?.title = "Инструкция агенту   \(settings.hotkeyAgent.display)"
     }
+
 
     // MARK: - Окно статуса
 
