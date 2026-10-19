@@ -70,6 +70,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+
+        ensureStatusItemVisible()
+    }
+
+    /// Если значок не поместился в меню-бар (вырез/переполнение), показываем
+    /// приложение в Dock, чтобы его можно было открыть.
+    private func ensureStatusItemVisible() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, !self.statusItemIsVisible() else { return }
+            Log.write("status item hidden (menu bar overflow) — Dock icon enabled")
+            NSApp.setActivationPolicy(.regular)
+        }
+    }
+
+    private func statusItemIsVisible() -> Bool {
+        guard let windows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return true
+        }
+        let pid = Int(ProcessInfo.processInfo.processIdentifier)
+
+        for window in windows {
+            guard (window[kCGWindowOwnerPID as String] as? Int) == pid,
+                  (window[kCGWindowLayer as String] as? Int) == 25,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let height = (bounds["Height"] as? NSNumber)?.doubleValue,
+                  height <= 40,
+                  window[kCGWindowIsOnscreen as String] as? Bool == true else {
+                continue
+            }
+            return true
+        }
+        return false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openSettings()
+        return true
     }
 
     private func setupStatusItem() {
