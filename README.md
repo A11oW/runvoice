@@ -538,6 +538,18 @@ tail -f ~/Library/Logs/whisper-server.log
 Если стоит `paste: pastev rc=0`, а текст не появился — почти наверняка нет Accessibility
 (сам текст при этом лежит в буфере, проверяется через `pbpaste`).
 
+Если разрешение включено, но не применяется, сбросьте TCC-запись и выдайте доступ заново:
+
+```sh
+pkill -x Runvoice
+tccutil reset Accessibility ai.opencode.runvoice
+open -a /Applications/Runvoice.app
+```
+
+В логе `~/Library/Application Support/Runvoice/app.log` статус пишется как
+`accessibility=true/false`, а вставка — как `paste: app cgEvent` или
+`paste: accessibility denied`.
+
 **Слишком долго после нажатия «стоп».**
 Убедитесь, что `whisper-server` работает (`pgrep -f whisper-server`, порт 8799).
 Лог покажет `transcribe: whisper-server` или откат на `whisper-cli`.
