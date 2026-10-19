@@ -68,8 +68,8 @@ struct Settings: Codable {
     var restoreClipboard = false
     var hotkeyToggle = HotKeySetting()
     var hotkeyAgent = HotKeySetting(keyCode: 49,
-                                    modifiers: UInt32(optionKey) | UInt32(controlKey),
-                                    display: "⌃⌥Space")
+                                    modifiers: UInt32(controlKey) | UInt32(shiftKey),
+                                    display: "⌃⇧Space")
 
     enum CodingKeys: String, CodingKey {
         case promptFix, promptAgent, language, provider, model, restoreClipboard
@@ -89,8 +89,8 @@ struct Settings: Codable {
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
         hotkeyAgent = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyAgent)
             ?? HotKeySetting(keyCode: 49,
-                             modifiers: UInt32(optionKey) | UInt32(controlKey),
-                             display: "⌃⌥Space")
+                             modifiers: UInt32(controlKey) | UInt32(shiftKey),
+                             display: "⌃⇧Space")
     }
 }
 
@@ -140,8 +140,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var captureTarget: NSButton?
     private var toggleHotkey = HotKeySetting()
     private var agentHotkey = HotKeySetting(keyCode: 49,
-                                            modifiers: UInt32(optionKey) | UInt32(controlKey),
-                                            display: "⌃⌥Space")
+                                            modifiers: UInt32(controlKey) | UInt32(shiftKey),
+                                            display: "⌃⇧Space")
 
     var onVisibilityChanged: ((Bool) -> Void)?
 
@@ -206,6 +206,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         prompt.view = buildPrompt()
         tabView.addTabViewItem(prompt)
 
+        let hotkeys = NSTabViewItem(identifier: "hotkeys")
+        hotkeys.label = "Hotkeys"
+        hotkeys.view = buildHotkeys()
+        tabView.addTabViewItem(hotkeys)
+
         let reset = NSButton(title: "Сбросить", target: self, action: #selector(resetDefaults))
         let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancel))
         let save = NSButton(title: "Сохранить", target: self, action: #selector(saveSettings))
@@ -251,16 +256,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
                                 target: nil, action: nil)
 
-        let hotkeysLabel = label("Горячие клавиши", bold: true)
-        let toggleLabel = label("Диктовка")
-        let hotkeyAgentLabel = label("Инструкция агенту")
-        let hotkeysHint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
-
-        toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
-        toggleHotkeyButton.bezelStyle = .rounded
-        agentHotkeyButton = NSButton(title: agentHotkey.display, target: self, action: #selector(captureAgent))
-        agentHotkeyButton.bezelStyle = .rounded
-
         accessLabel = label("Accessibility: проверка…")
         accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
         depsLabel = label("")
@@ -268,8 +263,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let views: [NSView] = [languageLabel, languagePopup, providerLabel, providerField,
                                modelLabel, modelField, restoreCheck,
-                               hotkeysLabel, toggleLabel, toggleHotkeyButton,
-                               hotkeyAgentLabel, agentHotkeyButton, hotkeysHint,
                                diagLabel, accessLabel, accessButton, depsLabel, depsButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -298,25 +291,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             restoreCheck.topAnchor.constraint(equalTo: modelLabel.bottomAnchor, constant: 18),
             restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
-            hotkeysLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 22),
-            hotkeysLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            toggleLabel.centerYAnchor.constraint(equalTo: toggleHotkeyButton.centerYAnchor),
-            toggleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            toggleHotkeyButton.topAnchor.constraint(equalTo: hotkeysLabel.bottomAnchor, constant: 8),
-            toggleHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 170),
-
-            hotkeyAgentLabel.centerYAnchor.constraint(equalTo: agentHotkeyButton.centerYAnchor),
-            hotkeyAgentLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            agentHotkeyButton.topAnchor.constraint(equalTo: toggleHotkeyButton.bottomAnchor, constant: 8),
-            agentHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            agentHotkeyButton.widthAnchor.constraint(equalToConstant: 170),
-
-            hotkeysHint.topAnchor.constraint(equalTo: agentHotkeyButton.bottomAnchor, constant: 6),
-            hotkeysHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            diagLabel.topAnchor.constraint(equalTo: hotkeysHint.bottomAnchor, constant: 18),
+            diagLabel.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 24),
             diagLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
             accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
@@ -411,6 +386,48 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         scroll.documentView = textView
         scroll.translatesAutoresizingMaskIntoConstraints = false
         return scroll
+    }
+
+    // MARK: - Hotkeys
+
+    private func buildHotkeys() -> NSView {
+        let view = NSView()
+        let toggleLabel = label("Диктовка")
+        let agentLabel = label("Инструкция агенту")
+        let hint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
+        let note = label("Нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
+
+        toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
+        toggleHotkeyButton.bezelStyle = .rounded
+        agentHotkeyButton = NSButton(title: agentHotkey.display, target: self, action: #selector(captureAgent))
+        agentHotkeyButton.bezelStyle = .rounded
+
+        let views: [NSView] = [toggleLabel, agentLabel, hint, note, toggleHotkeyButton, agentHotkeyButton]
+        for v in views {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(v)
+        }
+
+        NSLayoutConstraint.activate([
+            toggleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
+            toggleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            toggleHotkeyButton.centerYAnchor.constraint(equalTo: toggleLabel.centerYAnchor),
+            toggleHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
+
+            agentLabel.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 18),
+            agentLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            agentHotkeyButton.centerYAnchor.constraint(equalTo: agentLabel.centerYAnchor),
+            agentHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            agentHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
+
+            hint.topAnchor.constraint(equalTo: agentLabel.bottomAnchor, constant: 22),
+            hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            note.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 4),
+            note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+        ])
+
+        return view
     }
 
     // MARK: - Горячие клавиши
@@ -563,21 +580,22 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func resetDefaults() {
-        let tab = tabView.selectedTabViewItem?.identifier as? String
-        if tab == "prompt" {
+        switch tabView.selectedTabViewItem?.identifier as? String {
+        case "prompt":
             fixText.string = DefaultPrompts.fix
             agentText.string = DefaultPrompts.agent
-        } else {
+        case "hotkeys":
+            toggleHotkey = HotKeySetting()
+            agentHotkey = HotKeySetting(keyCode: 49,
+                                        modifiers: UInt32(controlKey) | UInt32(shiftKey),
+                                        display: "⌃⇧Space")
+            toggleHotkeyButton.title = toggleHotkey.display
+            agentHotkeyButton.title = agentHotkey.display
+        default:
             languagePopup.selectItem(at: 0)
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
             restoreCheck.state = .off
-            toggleHotkey = HotKeySetting()
-            agentHotkey = HotKeySetting(keyCode: 49,
-                                        modifiers: UInt32(optionKey) | UInt32(controlKey),
-                                        display: "⌃⌥Space")
-            toggleHotkeyButton.title = toggleHotkey.display
-            agentHotkeyButton.title = agentHotkey.display
         }
     }
 
@@ -735,7 +753,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.selectTab("prompt")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             capture(to: "/tmp/runvoice-settings-prompt.png")
-            NSApp.terminate(nil)
+            self.settingsWindow?.selectTab("hotkeys")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                NSApp.terminate(nil)
+            }
         }
     }
 
