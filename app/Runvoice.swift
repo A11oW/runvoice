@@ -89,14 +89,17 @@ enum SettingsStore {
 final class SettingsWindow: NSWindowController {
     private let fixText = NSTextView()
     private let agentText = NSTextView()
+    private var accessLabel: NSTextField!
+    private var accessButton: NSButton!
+    private var depsLabel: NSTextField!
+    private var refreshTimer: Timer?
 
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 600),
-                              styleMask: [.titled, .closable, .resizable],
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 660),
+                              styleMask: [.titled, .closable],
                               backing: .buffered, defer: false)
         window.title = "Runvoice — Настройки"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 620, height: 520)
         window.center()
         self.init(window: window)
         build()
@@ -112,6 +115,12 @@ final class SettingsWindow: NSWindowController {
 
     func show() {
         loadValues()
+        refreshDiagnostics()
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
+            self.refreshDiagnostics()
+        }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -123,16 +132,26 @@ final class SettingsWindow: NSWindowController {
         let fixHint = label("«Сбросить» вернёт встроенный текст. Изменения применяются после «Сохранить».")
         let agentLabel = label("Промпт для режима «инструкция агенту»  (⌃⇧Space)", bold: true)
         let agentHint = label("Пустое поле — используется встроенный промпт.")
+        let diagLabel = label("Диагностика", bold: true)
+
+        accessLabel = label("Accessibility: проверка…")
+        depsLabel = label("")
 
         let fixScroll = makeScroll(fixText)
         let agentScroll = makeScroll(agentText)
+
+        accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
+        let depsButton = NSButton(title: "Проверить зависимости", target: self, action: #selector(checkDependencies))
 
         let reset = NSButton(title: "Сбросить", target: self, action: #selector(resetDefaults))
         let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancel))
         let save = NSButton(title: "Сохранить", target: self, action: #selector(saveSettings))
         save.keyEquivalent = "\r"
 
-        for view in [fixLabel, fixHint, agentLabel, agentHint, reset, cancel, save] as [NSView] {
+        let views: [NSView] = [fixLabel, fixHint, agentLabel, agentHint, diagLabel,
+                               accessLabel, accessButton, depsLabel, depsButton,
+                               reset, cancel, save]
+        for view in views {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -147,7 +166,7 @@ final class SettingsWindow: NSWindowController {
             fixScroll.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 6),
             fixScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             fixScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            fixScroll.heightAnchor.constraint(equalToConstant: 190),
+            fixScroll.heightAnchor.constraint(equalToConstant: 165),
 
             fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 4),
             fixHint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
@@ -160,11 +179,26 @@ final class SettingsWindow: NSWindowController {
             agentScroll.topAnchor.constraint(equalTo: agentLabel.bottomAnchor, constant: 6),
             agentScroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             agentScroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            agentScroll.heightAnchor.constraint(equalToConstant: 190),
+            agentScroll.heightAnchor.constraint(equalToConstant: 165),
 
             agentHint.topAnchor.constraint(equalTo: agentScroll.bottomAnchor, constant: 4),
             agentHint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             agentHint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+
+            diagLabel.topAnchor.constraint(equalTo: agentHint.bottomAnchor, constant: 18),
+            diagLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            diagLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+
+            accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
+            accessLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            accessButton.topAnchor.constraint(equalTo: diagLabel.bottomAnchor, constant: 8),
+            accessButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+
+            depsButton.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 8),
+            depsButton.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            depsLabel.centerYAnchor.constraint(equalTo: depsButton.centerYAnchor),
+            depsLabel.leadingAnchor.constraint(equalTo: depsButton.trailingAnchor, constant: 10),
+            depsLabel.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -16),
 
             reset.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
             reset.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
@@ -203,6 +237,48 @@ final class SettingsWindow: NSWindowController {
         return scroll
     }
 
+    // MARK: - Диагностика
+
+    private func refreshDiagnostics() {
+        let ok = AXIsProcessTrusted()
+        accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
+        accessLabel.textColor = ok ? .systemGreen : .systemOrange
+        accessButton.isHidden = ok
+    }
+
+    @objc private func openAccessibility() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    @objc private func checkDependencies() {
+        var missing: [String] = []
+        let brew = "/opt/homebrew/bin"
+        for tool in ["\(brew)/ffmpeg", "\(brew)/whisper-server", "\(brew)/whisper-cli"] {
+            if !FileManager.default.isExecutableFile(atPath: tool) { missing.append(tool) }
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let models = home.appendingPathComponent(".local/share/whisper")
+        if !FileManager.default.fileExists(atPath: models.path) { missing.append(models.path) }
+        if let script = Paths.script, !FileManager.default.isExecutableFile(atPath: script.path) {
+            missing.append(script.path)
+        }
+
+        depsLabel.stringValue = missing.isEmpty ? "все на месте" : "не найдено: \(missing.count)"
+        depsLabel.textColor = missing.isEmpty ? .systemGreen : .systemRed
+
+        let alert = NSAlert()
+        if missing.isEmpty {
+            alert.messageText = "Все зависимости на месте"
+            alert.informativeText = "ffmpeg, whisper.cpp и модели найдены."
+        } else {
+            alert.messageText = "Не найдено"
+            alert.informativeText = missing.joined(separator: "\n")
+        }
+        alert.runModal()
+    }
+
     private func loadValues() {
         let settings = SettingsStore.load()
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
@@ -227,7 +303,7 @@ final class SettingsWindow: NSWindowController {
 
 // MARK: - Приложение
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panel: NSPanel!
     private var spinner: NSProgressIndicator!
@@ -235,7 +311,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var timer: Timer?
     private var hotkeys: [EventHotKeyRef?] = []
     private var settingsWindow: SettingsWindow?
-    private var accessItem: NSMenuItem?
     private var lastTrust: Bool?
 
     private var lastState = ""
@@ -290,17 +365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         add(menu, "Открыть лог", #selector(openLog))
         add(menu, "Открыть папку данных", #selector(openData))
-        add(menu, "Проверить зависимости…", #selector(checkDeps))
         menu.addItem(.separator())
-
-        let access = NSMenuItem(title: "Accessibility", action: #selector(openAccessibility), keyEquivalent: "")
-        access.target = self
-        menu.addItem(access)
-        accessItem = access
-        menu.addItem(.separator())
-
         add(menu, "Выход", #selector(quit))
-        menu.delegate = self
         statusItem.menu = menu
     }
 
@@ -319,14 +385,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsWindow?.show()
     }
 
-    func menuWillOpen(_ menu: NSMenu) {
-        let trusted = AXIsProcessTrusted()
-        accessItem?.title = trusted ? "✓ Accessibility разрешено" : "⚠️ Нет Accessibility — открыть настройки"
-        accessItem?.action = trusted ? nil : #selector(openAccessibility)
-        accessItem?.target = self
-        accessItem?.isEnabled = !trusted
-    }
-
     @objc private func openAccessibility() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
@@ -341,30 +399,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openData() { NSWorkspace.shared.open(Paths.state) }
-
-    @objc private func checkDeps() {
-        var missing: [String] = []
-        let brew = "/opt/homebrew/bin"
-        for tool in ["\(brew)/ffmpeg", "\(brew)/whisper-server", "\(brew)/whisper-cli"] {
-            if !FileManager.default.isExecutableFile(atPath: tool) { missing.append(tool) }
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let models = home.appendingPathComponent(".local/share/whisper")
-        if !FileManager.default.fileExists(atPath: models.path) { missing.append(models.path) }
-        if let s = Paths.script, !FileManager.default.isExecutableFile(atPath: s.path) {
-            missing.append(s.path)
-        }
-
-        let alert = NSAlert()
-        if missing.isEmpty {
-            alert.messageText = "Все зависимости на месте"
-            alert.informativeText = "ffmpeg, whisper.cpp и модели найдены."
-        } else {
-            alert.messageText = "Не найдено"
-            alert.informativeText = missing.joined(separator: "\n")
-        }
-        alert.runModal()
-    }
 
     // MARK: - Запуск пайплайна
 
