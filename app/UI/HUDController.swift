@@ -90,14 +90,25 @@ final class HUDController {
     }
 
     /// Отладочный режим: отрисовать бабл в PNG.
-    func snapshot(to path: String, completion: @escaping () -> Void) {
-        label.stringValue = "🎤 Слушаю…"
-        timerLabel.isHidden = false
-        timerLabel.stringValue = "00:07"
-        levelBar.isHidden = false
-        levelBar.level = 0.65
-        spinner.isHidden = false
-        spinner.startAnimation(nil)
+    func snapshot(to path: String,
+                  text: String = "🎤 Слушаю…",
+                  busy: Bool = true,
+                  showLevel: Bool = true,
+                  timer: String? = "00:07",
+                  level: CGFloat = 0.65,
+                  completion: @escaping () -> Void) {
+        label.stringValue = text
+        timerLabel.isHidden = (timer == nil)
+        timerLabel.stringValue = timer ?? ""
+        levelBar.isHidden = !showLevel
+        levelBar.level = showLevel ? level : 0
+        if busy {
+            spinner.isHidden = false
+            spinner.startAnimation(nil)
+        } else {
+            spinner.stopAnimation(nil)
+            spinner.isHidden = true
+        }
         place()
         panel.orderFrontRegardless()
 

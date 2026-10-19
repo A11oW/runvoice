@@ -66,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if CommandLine.arguments.contains("--snapshot-states") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.snapshotStates()
+            }
+        }
         if CommandLine.arguments.contains("--snapshot") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 self?.openSettings()
@@ -159,6 +164,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         settingsWindow?.show()
+    }
+
+    private func snapshotStates() {
+        let states: [(name: String, text: String, busy: Bool, showLevel: Bool, timer: String?, level: CGFloat)] = [
+            ("preparing", "🎤 Готовлю микрофон…", true, false, nil, 0),
+            ("recording", "🎤 Слушаю…", true, true, "00:12", 0.62),
+            ("transcribing", "Распознаю…", true, false, nil, 0),
+            ("fixing", "Исправляю через OpenCode…", true, false, nil, 0),
+            ("done", "✅ Готово", false, false, nil, 0),
+            ("info", "ℹ️ запись не идёт", false, false, nil, 0),
+            ("error", "⚠️ речь не распознана (тишина?)", false, false, nil, 0),
+        ]
+
+        func capture(_ index: Int) {
+            guard index < states.count else {
+                NSApp.terminate(nil)
+                return
+            }
+            let state = states[index]
+            hud.snapshot(to: "/tmp/runvoice-state-\(state.name).png",
+                         text: state.text,
+                         busy: state.busy,
+                         showLevel: state.showLevel,
+                         timer: state.timer,
+                         level: state.level) {
+                capture(index + 1)
+            }
+        }
+
+        capture(0)
     }
 
     private func snapshotSettings() {
