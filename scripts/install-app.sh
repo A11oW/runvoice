@@ -18,6 +18,10 @@ cp -R "$REPO/dist/Runvoice.app" "$DEST/Runvoice.app"
 launchctl bootout "gui/$(id -u)/com.koekeishiya.skhd" 2>/dev/null || true
 pkill -x dictatehud 2>/dev/null || true
 
+# Whisper теперь встроен в приложение, старый LaunchAgent больше не нужен.
+launchctl bootout "gui/$(id -u)/ai.opencode.whisper-server" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/ai.opencode.whisper-server.plist"
+
 open "$DEST/Runvoice.app"
 
 cat <<EOF

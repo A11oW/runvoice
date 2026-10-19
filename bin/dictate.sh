@@ -25,9 +25,28 @@ export LANG="${LANG:-en_US.UTF-8}"
 unset LC_ALL
 
 # ---------- настройки ----------
-WHISPER_BIN="${WHISPER_BIN:-whisper-cli}"
+BUNDLE_WHISPER="$SCRIPT_DIR/whisper"
+
+WHISPER_CLI_BIN="${WHISPER_CLI_BIN:-${WHISPER_BIN:-}}"
+if [ -z "$WHISPER_CLI_BIN" ]; then
+  if [ -x "$BUNDLE_WHISPER/bin/whisper-cli" ]; then
+    WHISPER_CLI_BIN="$BUNDLE_WHISPER/bin/whisper-cli"
+  else
+    WHISPER_CLI_BIN="whisper-cli"
+  fi
+fi
+
 WHISPER_MODEL="${WHISPER_MODEL:-$HOME/.local/share/whisper/ggml-large-v3-turbo-q5_0.bin}"
-WHISPER_VAD_MODEL="${WHISPER_VAD_MODEL:-$HOME/.local/share/whisper/ggml-silero-v5.1.2.bin}"
+
+WHISPER_VAD_MODEL="${WHISPER_VAD_MODEL:-}"
+if [ -z "$WHISPER_VAD_MODEL" ]; then
+  if [ -f "$BUNDLE_WHISPER/models/ggml-silero-v5.1.2.bin" ]; then
+    WHISPER_VAD_MODEL="$BUNDLE_WHISPER/models/ggml-silero-v5.1.2.bin"
+  else
+    WHISPER_VAD_MODEL="$HOME/.local/share/whisper/ggml-silero-v5.1.2.bin"
+  fi
+fi
+
 WHISPER_LANG="${WHISPER_LANG:-ru}"
 WHISPER_THREADS="${WHISPER_THREADS:-8}"
 MIC_NAME="${MIC_NAME:-MacBook Pro Microphone}"
@@ -36,7 +55,14 @@ OC_PROVIDER="${OC_PROVIDER:-deepseek}"
 OC_MODEL_ID="${OC_MODEL_ID:-deepseek-flash}"
 OC_VARIANT="${OC_VARIANT:-none}"          # none = без «мышления» (заметно быстрее)
 
-WHISPER_SERVER_BIN="${WHISPER_SERVER_BIN:-whisper-server}"
+WHISPER_SERVER_BIN="${WHISPER_SERVER_BIN:-}"
+if [ -z "$WHISPER_SERVER_BIN" ]; then
+  if [ -x "$BUNDLE_WHISPER/bin/whisper-server" ]; then
+    WHISPER_SERVER_BIN="$BUNDLE_WHISPER/bin/whisper-server"
+  else
+    WHISPER_SERVER_BIN="whisper-server"
+  fi
+fi
 WHISPER_SERVER_PORT="${WHISPER_SERVER_PORT:-8799}"
 
 NOTIFY="${DICTATE_NOTIFY:-1}"
@@ -136,7 +162,7 @@ transcribe() {
   fi
   log "transcribe: whisper-cli (сервер недоступен)"
   local v=(); [ -f "$WHISPER_VAD_MODEL" ] && v=(--vad -vm "$WHISPER_VAD_MODEL")
-  "$WHISPER_BIN" -m "$WHISPER_MODEL" "${v[@]}" -l "$WHISPER_LANG" -t "$WHISPER_THREADS" \
+  "$WHISPER_CLI_BIN" -m "$WHISPER_MODEL" "${v[@]}" -l "$WHISPER_LANG" -t "$WHISPER_THREADS" \
     -nt -otxt -of "$OUT" "$wav" >/dev/null 2>&1
   cat "$OUT.txt" 2>/dev/null
 }
