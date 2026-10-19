@@ -8,23 +8,35 @@ final class HotkeyMonitor {
     var onAction: (() -> Void)?
 
     private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
     private var toggleHotkey = HotKeySetting()
     private var suspended = false
 
     func start(settings: Settings) {
-        update(settings: settings)
+        toggleHotkey = settings.hotkeyToggle
         installTap()
+        Log.write("hotkey configured: \(toggleHotkey.display)")
     }
 
-    func update(settings: Settings) {
+    /// Переустановить tap после смены сочетания — без перезапуска приложения.
+    func reload(settings: Settings) {
         toggleHotkey = settings.hotkeyToggle
+        removeTap()
+        installTap()
+        Log.write("hotkey reconfigured: \(toggleHotkey.display)")
     }
 
     func setSuspended(_ value: Bool) {
         suspended = value
+        // Во время захвата сочетания tap мог быть выключен системой.
+        if !value, let tap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
     }
 
     private func installTap() {
+        removeTap()
+
         let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -51,9 +63,22 @@ final class HotkeyMonitor {
 
         self.tap = tap
         let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
+        self.source = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         Log.write("event tap installed")
+    }
+
+    private func removeTap() {
+        if let source {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        source = nil
+        tap = nil
     }
 
     private func shouldConsume(_ event: CGEvent) -> Bool {

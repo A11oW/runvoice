@@ -327,7 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func reloadHotkeys() {
         let settings = SettingsStore.load()
-        hotkeys.update(settings: settings)
+        hotkeys.reload(settings: settings)
         updateHotkeyTitles(settings)
     }
 
