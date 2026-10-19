@@ -276,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        setIcon("mic")
+        setIcon("waveform")
 
         let menu = NSMenu()
         let header = NSMenuItem(title: "Runvoice", action: nil, keyEquivalent: "")
@@ -536,7 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func hideHUD() {
         panel?.orderOut(nil)
         closeAt = nil
-        setIcon("mic")          // после завершения — снова микрофон
+        setIcon("waveform")     // после завершения — значок приложения
         Log.write("hideHUD")
     }
 
@@ -568,10 +568,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch state {
         case "preparing":
             showHUD(); busy(true); label.stringValue = msg.isEmpty ? "🎤 Готовлю микрофон…" : msg
-            setIcon("waveform")
+            setIcon("mic")
         case "recording":
             showHUD(); busy(true); label.stringValue = msg.isEmpty ? "🎤 Слушаю…" : msg
-            setIcon("waveform")
+            setIcon("mic")
         case "transcribing":
             showHUD(); busy(true); label.stringValue = msg.isEmpty ? "Распознаю…" : msg
             setIcon("waveform")
@@ -592,7 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setIcon("exclamationmark.triangle")
             closeAt = Date().addingTimeInterval(5)
         case "idle", "quit":
-            hideHUD(); setIcon("mic")
+            hideHUD()
         default:
             break
         }
