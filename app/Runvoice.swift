@@ -34,6 +34,71 @@ enum Paths {
     }
 }
 
+// MARK: - Проверка зависимостей
+
+enum OpenCodeLocator {
+    static func find() -> String? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let base = home.appendingPathComponent(".npm/_npx")
+        if let dirs = try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil) {
+            for dir in dirs {
+                let path = dir.appendingPathComponent("node_modules/.bin/opencode").path
+                if fm.isExecutableFile(atPath: path) { return path }
+            }
+        }
+        let brew = "/opt/homebrew/bin/opencode"
+        if fm.isExecutableFile(atPath: brew) { return brew }
+        return nil
+    }
+}
+
+enum Dependency: CaseIterable {
+    case ffmpeg, whisperServer, whisperCli, whisperModel, vadModel, script, opencode
+
+    var title: String {
+        switch self {
+        case .ffmpeg: return "ffmpeg"
+        case .whisperServer: return "whisper-server"
+        case .whisperCli: return "whisper-cli"
+        case .whisperModel: return "Модель Whisper"
+        case .vadModel: return "VAD-модель"
+        case .script: return "dictate.sh"
+        case .opencode: return "OpenCode CLI"
+        }
+    }
+
+    var expected: String {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        switch self {
+        case .ffmpeg: return "/opt/homebrew/bin/ffmpeg"
+        case .whisperServer: return "/opt/homebrew/bin/whisper-server"
+        case .whisperCli: return "/opt/homebrew/bin/whisper-cli"
+        case .whisperModel:
+            return home.appendingPathComponent(".local/share/whisper/ggml-large-v3-turbo-q5_0.bin").path
+        case .vadModel:
+            return home.appendingPathComponent(".local/share/whisper/ggml-silero-v5.1.2.bin").path
+        case .script: return Paths.script?.path ?? "dictate.sh"
+        case .opencode: return "npx-кэш или /opt/homebrew/bin/opencode"
+        }
+    }
+
+    func isOK() -> Bool {
+        let fm = FileManager.default
+        switch self {
+        case .ffmpeg, .whisperServer, .whisperCli:
+            return fm.isExecutableFile(atPath: expected)
+        case .whisperModel, .vadModel:
+            return fm.fileExists(atPath: expected)
+        case .script:
+            guard let url = Paths.script else { return false }
+            return fm.isExecutableFile(atPath: url.path)
+        case .opencode:
+            return OpenCodeLocator.find() != nil
+        }
+    }
+}
+
 // MARK: - Лог приложения
 
 enum Log {
@@ -134,7 +199,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var agentHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
-    private var depsLabel: NSTextField!
+    private var depStack: NSStackView!
+    private var depLabels: [NSTextField] = []
     private var refreshTimer: Timer?
     private var captureMonitor: Any?
     private var captureTarget: NSButton?
@@ -258,16 +324,26 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         accessLabel = label("Accessibility: проверка…")
         accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
-        depsLabel = label("")
-        let depsButton = NSButton(title: "Проверить зависимости", target: self, action: #selector(checkDependencies))
+
+        depStack = NSStackView()
+        depStack.orientation = .vertical
+        depStack.alignment = .leading
+        depStack.spacing = 4
+        depStack.translatesAutoresizingMaskIntoConstraints = false
+        depLabels = Dependency.allCases.map { _ in label("") }
+        for depLabel in depLabels {
+            depLabel.translatesAutoresizingMaskIntoConstraints = false
+            depStack.addArrangedSubview(depLabel)
+        }
 
         let views: [NSView] = [languageLabel, languagePopup, providerLabel, providerField,
                                modelLabel, modelField, restoreCheck,
-                               diagLabel, accessLabel, accessButton, depsLabel, depsButton]
+                               diagLabel, accessLabel, accessButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
         }
+        view.addSubview(depStack)
 
         NSLayoutConstraint.activate([
             languageLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
@@ -299,11 +375,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             accessButton.topAnchor.constraint(equalTo: diagLabel.bottomAnchor, constant: 8),
             accessButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
 
-            depsButton.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 8),
-            depsButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            depsLabel.centerYAnchor.constraint(equalTo: depsButton.centerYAnchor),
-            depsLabel.leadingAnchor.constraint(equalTo: depsButton.trailingAnchor, constant: 10),
-            depsLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            depStack.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 10),
+            depStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            depStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -528,39 +602,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
         accessLabel.textColor = ok ? .systemGreen : .systemOrange
         accessButton.isHidden = ok
+
+        for (index, dependency) in Dependency.allCases.enumerated() where index < depLabels.count {
+            let available = dependency.isOK()
+            depLabels[index].stringValue = available
+                ? "✓ \(dependency.title)"
+                : "⚠️ \(dependency.title) — \(dependency.expected)"
+            depLabels[index].textColor = available ? .systemGreen : .systemOrange
+        }
     }
 
     @objc private func openAccessibility() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
-    }
-
-    @objc private func checkDependencies() {
-        var missing: [String] = []
-        let brew = "/opt/homebrew/bin"
-        for tool in ["\(brew)/ffmpeg", "\(brew)/whisper-server", "\(brew)/whisper-cli"] {
-            if !FileManager.default.isExecutableFile(atPath: tool) { missing.append(tool) }
-        }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let models = home.appendingPathComponent(".local/share/whisper")
-        if !FileManager.default.fileExists(atPath: models.path) { missing.append(models.path) }
-        if let script = Paths.script, !FileManager.default.isExecutableFile(atPath: script.path) {
-            missing.append(script.path)
-        }
-
-        depsLabel.stringValue = missing.isEmpty ? "все на месте" : "не найдено: \(missing.count)"
-        depsLabel.textColor = missing.isEmpty ? .systemGreen : .systemRed
-
-        let alert = NSAlert()
-        if missing.isEmpty {
-            alert.messageText = "Все зависимости на месте"
-            alert.informativeText = "ffmpeg, whisper.cpp и модели найдены."
-        } else {
-            alert.messageText = "Не найдено"
-            alert.informativeText = missing.joined(separator: "\n")
-        }
-        alert.runModal()
     }
 
     private func loadValues() {
@@ -649,6 +704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let saved = SettingsStore.load()
         Log.write("settings fix=\(saved.promptFix.count) agent=\(saved.promptAgent.count)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
+        Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
         setupHUD()
         installHotKeyHandler()
