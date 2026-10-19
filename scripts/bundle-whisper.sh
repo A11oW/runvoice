@@ -25,21 +25,30 @@ fi
 
 SERVER="$SRC/build/bin/whisper-server"
 CLI="$SRC/build/bin/whisper-cli"
+STAMP="$BUILD/whisper-build.stamp"
+WANT="v1.9.5-macos13-noblas"
+
+if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$WANT" ]; then
+  rm -rf "$SRC/build"
+fi
 
 if [ ! -x "$SERVER" ] || [ ! -x "$CLI" ]; then
   command -v cmake >/dev/null 2>&1 || {
     echo "нужен cmake: brew install cmake" >&2; exit 1; }
 
-  echo "==> whisper.cpp: статическая сборка"
+  echo "==> whisper.cpp: статическая сборка (macOS 13+)"
   cmake -B "$SRC/build" -S "$SRC" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
     -DBUILD_SHARED_LIBS=OFF \
     -DWHISPER_BUILD_SERVER=ON \
     -DWHISPER_BUILD_EXAMPLES=ON \
     -DGGML_METAL=ON \
+    -DGGML_BLAS=OFF \
     -DGGML_BACKEND_DL=OFF \
     -DGGML_OPENMP=OFF >/dev/null
   cmake --build "$SRC/build" --target whisper-server whisper-cli -j "$(sysctl -n hw.ncpu)" >/dev/null
+  printf '%s' "$WANT" > "$STAMP"
 fi
 
 cp "$SERVER" "$DEST/bin/whisper-server"

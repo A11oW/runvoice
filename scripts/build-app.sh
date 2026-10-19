@@ -22,7 +22,8 @@ cp "$BUILD/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 echo "==> приложение"
 SWIFT_SOURCES=()
 while IFS= read -r file; do SWIFT_SOURCES+=("$file"); done < <(find "$REPO/app" -name '*.swift' -print | sort)
-swiftc -O -o "$APP/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
+TARGET="$(uname -m)-apple-macos13.0"
+swiftc -O -target "$TARGET" -o "$APP/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
 
 echo "==> ресурсы"
 cp "$REPO/app/Info.plist" "$APP/Contents/Info.plist"

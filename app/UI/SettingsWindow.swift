@@ -1346,8 +1346,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     private func reloadMicrophones(selected: String) {
+        let deviceTypes: [AVCaptureDevice.DeviceType]
+        if #available(macOS 14.0, *) {
+            deviceTypes = [.microphone]
+        } else {
+            deviceTypes = [.builtInMicrophone, .externalUnknown]
+        }
         var names = AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.microphone],
+            deviceTypes: deviceTypes,
             mediaType: .audio,
             position: .unspecified
         ).devices.map(\.localizedName)
