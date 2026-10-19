@@ -3,7 +3,8 @@
 #
 # Использование:
 #   dictate.sh toggle        # ⌥Space: начать запись / остановить и вставить (fix)
-#   dictate.sh agent         # ⌃⇧Space: остановить и вставить как инструкцию агенту
+#   dictate.sh agent         # ⌃⇧Space: начать запись в режиме «инструкция агенту» /
+#                            #          остановить и вставить как инструкцию агенту
 #   dictate.sh start|stop    # явные команды (для отладки)
 #
 # Отладка:
@@ -146,6 +147,10 @@ transcribe() {
 }
 
 recording() { pgrep -f "$PCM" >/dev/null 2>&1; }
+rec_mode() {
+  local m; m="$(cat "$STATE/rec_mode" 2>/dev/null || true)"
+  [ "$m" = "agent" ] && echo agent || echo fix
+}
 
 stop_recorders() {
   local pids
@@ -176,9 +181,11 @@ paste_text() {
 }
 
 start_recording() {
+  local mode="${1:-fix}"
   if recording; then log "start: уже идёт — игнор"; return 0; fi
   local idx; idx="$(mic_index)"; [ -z "$idx" ] && idx=0
   rm -f "$PCM" "$WAV" "$OUT.txt"
+  printf '%s' "$mode" > "$STATE/rec_mode"
   status preparing
   ffmpeg -hide_banner -loglevel error -nostdin -f avfoundation -i ":$idx" \
     -ar 16000 -ac 1 -c:a pcm_s16le -f s16le -y "$PCM" >>"$LOG" 2>&1 &
@@ -188,8 +195,8 @@ start_recording() {
     rm -f "$STATE/pid" "$MIC_CACHE"
     err "не удалось начать запись (микрофон/права)"; return 1
   fi
-  log "start: mic=$idx pid=$(cat "$STATE/pid" 2>/dev/null)"
-  status recording
+  log "start: mic=$idx pid=$(cat "$STATE/pid" 2>/dev/null) mode=$mode"
+  if [ "$mode" = "agent" ]; then status recording_agent; else status recording; fi
 }
 
 stop_and_insert() {
@@ -290,9 +297,9 @@ trap 'rm -rf "$LOCK"' EXIT
 
 # 3) действие
 case "$ACTION" in
-  start)  start_recording ;;
+  start)  start_recording "${2:-fix}" ;;
   stop)   stop_and_insert "$MODE" ;;
-  agent)  if recording; then stop_and_insert agent; else log "agent: запись не идёт"; status info "запись не идёт"; fi ;;
-  toggle) if recording; then stop_and_insert fix; else start_recording; fi ;;
+  agent)  if recording; then stop_and_insert agent; else start_recording agent; fi ;;
+  toggle) if recording; then stop_and_insert "$(rec_mode)"; else start_recording fix; fi ;;
   *) echo "usage: dictate.sh [toggle|agent|start|stop]" >&2; exit 2 ;;
 esac

@@ -9,6 +9,7 @@
 |---|---|
 | ![](hud-preparing.png) | `preparing` — «Готовлю микрофон…» |
 | ![](hud-recording.png) | `recording` — «Слушаю…», таймер и уровень микрофона |
+| ![](hud-recording-agent.png) | `recording_agent` — «Слушаю… · инструкция агенту» |
 | ![](hud-transcribing.png) | `transcribing` — «Распознаю…» |
 | ![](hud-fixing.png) | `fixing` — «Обрабатываю текст…» |
 | ![](hud-done.png) | `done` — «Готово», зелёная галочка |

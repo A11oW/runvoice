@@ -342,7 +342,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildHotkeys() -> NSView {
         let view = NSView()
         let toggleLabel = label("Диктовка")
-        let agentLabel = label("Инструкция агенту")
+        let agentLabel = label("Инструкция агенту (старт/стоп)")
         let hint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
         let note = label("Нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
 

@@ -19,6 +19,7 @@ struct HUDContent {
 enum DictationState: Equatable {
     case preparing
     case recording
+    case recordingAgent
     case transcribing
     case fixing
     case done(message: String)
@@ -37,6 +38,7 @@ enum DictationState: Equatable {
         switch name {
         case "preparing": self = .preparing
         case "recording": self = .recording
+        case "recording_agent": self = .recordingAgent
         case "transcribing": self = .transcribing
         case "fixing": self = .fixing
         case "done": self = .done(message: message)
@@ -52,6 +54,7 @@ enum DictationState: Equatable {
         switch self {
         case .preparing: return "preparing"
         case .recording: return "recording"
+        case .recordingAgent: return "recording_agent"
         case .transcribing: return "transcribing"
         case .fixing: return "fixing"
         case .done: return "done"
@@ -77,6 +80,10 @@ enum DictationState: Equatable {
         case .recording:
             return HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                               hudIcon: "mic", accent: .neutral, autoHideAfter: nil, showLevel: true)
+        case .recordingAgent:
+            return HUDContent(text: "Слушаю… · инструкция агенту", busy: true, icon: "text.bubble",
+                              hudIcon: "text.bubble", accent: .neutral,
+                              autoHideAfter: nil, showLevel: true)
         case .transcribing:
             return HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
                               hudIcon: "waveform", accent: .neutral, autoHideAfter: nil)
