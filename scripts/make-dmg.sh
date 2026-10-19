@@ -22,6 +22,7 @@ ln -s /Applications "$STAGE/Applications"
 
 cat > "$STAGE/README.txt" <<EOF
 Runvoice $VERSION
+Универсальное приложение: Apple Silicon и Intel, macOS 13+.
 
 СПОСОБ 1 — проще
   Правый клик по «Установить Runvoice.command» → «Открыть».

@@ -296,7 +296,7 @@ skhd --start-service
 
 | Компонент | Версия в этой установке | Зачем |
 |---|---|---|
-| macOS | 15.7.3 (Apple Silicon) | |
+| macOS | 13.0+ (Apple Silicon / Intel) | |
 | ffmpeg | 9.0.2 | запись с микрофона |
 | OpenCode | 2.0.27 | постобработка текста (опционально) |
 | jq, curl | системные/brew | работа с JSON и HTTP |
@@ -322,7 +322,8 @@ open dist/Runvoice-1.0.0.dmg
 ```
 
 В образе: `Runvoice.app`, ярлык `Applications`, `Установить Runvoice.command`
-и краткая инструкция.
+и краткая инструкция. Приложение универсальное: **Apple Silicon + Intel**,
+минимальная версия macOS — **13.0**.
 
 **Способ 1 — установщик**
 
@@ -775,6 +776,8 @@ swiftc -O -o bin/dictatehud bin/dictatehud.swift
 
 - Только macOS — используются специфичные для системы API: `avfoundation`, `pbcopy`,
   `CGEvent`, AppKit; CLI-режим дополнительно требует `skhd`.
+- На Intel Whisper работает на CPU (без Metal), поэтому распознавание медленнее,
+  чем на Apple Silicon.
 - Модель Whisper не входит в бандл: скачивается в **Настройки → Модели**
   (от ~78 МБ для `tiny` до ~3,1 ГБ для `large-v3`).
 - `whisper-server` постоянно держит модель в памяти — примерно от 0,3 до 3 ГБ

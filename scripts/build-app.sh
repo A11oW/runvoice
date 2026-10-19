@@ -22,13 +22,19 @@ cp "$BUILD/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 echo "==> приложение"
 SWIFT_SOURCES=()
 while IFS= read -r file; do SWIFT_SOURCES+=("$file"); done < <(find "$REPO/app" -name '*.swift' -print | sort)
-TARGET="$(uname -m)-apple-macos13.0"
-swiftc -O -target "$TARGET" -o "$APP/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
+ARM_BIN="$BUILD/Runvoice-arm64"
+X86_BIN="$BUILD/Runvoice-x86_64"
+swiftc -O -target arm64-apple-macos13.0 -o "$ARM_BIN" "${SWIFT_SOURCES[@]}"
+swiftc -O -target x86_64-apple-macos13.0 -o "$X86_BIN" "${SWIFT_SOURCES[@]}"
+lipo -create "$ARM_BIN" "$X86_BIN" -output "$APP/Contents/MacOS/Runvoice"
 
 echo "==> ресурсы"
 cp "$REPO/app/Info.plist" "$APP/Contents/Info.plist"
 cp "$REPO/bin/dictate.sh" "$APP/Contents/Resources/dictate.sh"
-cp "$REPO/bin/pastev" "$APP/Contents/Resources/pastev"
+if ! cc -O2 -arch arm64 -arch x86_64 -framework ApplicationServices \
+      -o "$APP/Contents/Resources/pastev" "$REPO/bin/pastev.c" 2>/dev/null; then
+  cp "$REPO/bin/pastev" "$APP/Contents/Resources/pastev"
+fi
 chmod +x "$APP/Contents/Resources/dictate.sh" "$APP/Contents/Resources/pastev"
 
 echo "==> whisper"
