@@ -5,12 +5,7 @@ import CoreGraphics
 /// Глобальные хоткеи через активный CGEventTap.
 /// Сравнивает код клавиши и модификаторы, совпавшие сочетания потребляет.
 final class HotkeyMonitor {
-    enum Action {
-        case toggle
-        case agent
-    }
-
-    var onAction: ((Action) -> Void)?
+    var onAction: ((DictationAction) -> Void)?
 
     private var tap: CFMachPort?
     private var toggleHotkey = HotKeySetting()

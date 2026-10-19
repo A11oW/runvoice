@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var label: NSTextField!
     private var timer: Timer?
     private let hotkeys = HotkeyMonitor()
+    private let runner = DictationRunner()
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var hudEnabled = true
@@ -33,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupHUD()
         hotkeys.onAction = { [weak self] action in
-            self?.run(action == .agent ? "agent" : "toggle")
+            self?.run(action)
         }
         hotkeys.start(settings: saved)
         updateHotkeyTitles(saved)
@@ -126,8 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
-    @objc private func toggleDictation() { run("toggle") }
-    @objc private func agentDictation() { run("agent") }
+    @objc private func toggleDictation() { run(.toggle) }
+    @objc private func agentDictation() { run(.agent) }
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func openSettings() {
@@ -199,37 +200,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Запуск пайплайна
 
-    private func run(_ action: String) {
-        guard let script = Paths.script else {
-            showAlert("В ресурсах приложения не найден dictate.sh")
-            return
-        }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [script.path, action]
-
-        var env = ProcessInfo.processInfo.environment
-        env["DICTATE_STATE_DIR"] = Paths.state.path
-        env["HUD_BIN"] = "/nonexistent"   // окно рисует само приложение
-        env["DICTATE_NOTIFY"] = "0"
-        env["DICTATE_NO_PASTE"] = "1"     // ⌘V отправляет само приложение
-
-        let settings = SettingsStore.load()
-        if !settings.promptFix.isEmpty { env["DICTATE_PROMPT_FIX"] = settings.promptFix }
-        if !settings.promptAgent.isEmpty { env["DICTATE_PROMPT_AGENT"] = settings.promptAgent }
-        if !settings.language.isEmpty { env["WHISPER_LANG"] = settings.language }
-        if !settings.provider.isEmpty { env["OC_PROVIDER"] = settings.provider }
-        if !settings.model.isEmpty { env["OC_MODEL_ID"] = settings.model }
-        if !settings.baseURL.isEmpty { env["OC_BASE_URL"] = settings.baseURL }
-        if settings.restoreClipboard { env["DICTATE_RESTORE_CLIPBOARD"] = "1" }
-        let base = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = base + ":" + (env["PATH"] ?? "")
-        p.environment = env
-
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
+    private func run(_ action: DictationAction) {
         do {
-            try p.run()
+            try runner.run(action)
+        } catch DictationRunner.Failure.missingScript {
+            showAlert("В ресурсах приложения не найден dictate.sh")
         } catch {
             showAlert("Не удалось запустить dictate.sh: \(error.localizedDescription)")
         }
