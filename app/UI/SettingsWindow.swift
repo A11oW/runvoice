@@ -29,6 +29,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var modelGroup: NSStackView!
     private var baseURLGroup: NSStackView!
     private var apiKeyGroup: NSStackView!
+    private var promptGroup: NSStackView!
     private var restoreCheck: NSButton!
     private var hudCheck: NSButton!
     private var resetButton: NSButton!
@@ -146,11 +147,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         ai.label = "Постобработка"
         ai.view = buildAI()
         tabView.addTabViewItem(ai)
-
-        let prompt = NSTabViewItem(identifier: "prompt")
-        prompt.label = "Промпт"
-        prompt.view = buildPrompt()
-        tabView.addTabViewItem(prompt)
 
         let hotkeys = NSTabViewItem(identifier: "hotkeys")
         hotkeys.label = "Хоткеи"
@@ -310,18 +306,37 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildAI() -> NSView {
         let view = NSView()
 
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        view.addSubview(scroll)
+
+        let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 16, bottom: 16, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+        doc.addSubview(stack)
+
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor),
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.topAnchor.constraint(equalTo: doc.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
         ])
 
         let modeLabel = label("Способ обработки")
@@ -364,7 +379,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         aiHint.font = .systemFont(ofSize: 11)
         aiHint.textColor = .secondaryLabelColor
 
-        let rows: [NSView] = [modeRow, providerGroup, modelGroup, baseURLGroup, apiKeyGroup, testRow, aiHint]
+        let separator = NSBox()
+        separator.boxType = .separator
+        promptGroup = buildPromptSection()
+
+        let rows: [NSView] = [modeRow, providerGroup, modelGroup, baseURLGroup,
+                              apiKeyGroup, testRow, aiHint, separator, promptGroup]
         for row in rows {
             stack.addArrangedSubview(row)
             row.translatesAutoresizingMaskIntoConstraints = false
@@ -390,6 +410,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         modelGroup?.isHidden = mode == "off"
         baseURLGroup?.isHidden = mode != "direct"
         apiKeyGroup?.isHidden = mode != "direct"
+        promptGroup?.isHidden = mode == "off"
         testButton?.isEnabled = mode != "off"
         testResultLabel?.stringValue = ""
         switch mode {
@@ -948,10 +969,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     // MARK: - Prompt
 
-    private func buildPrompt() -> NSView {
-        let view = NSView()
+    private func buildPromptSection() -> NSStackView {
+        let section = NSStackView()
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 6
+
         let fixLabel = label("Промпт для исправления текста  (⌥Space)", bold: true)
-        let fixHint = label("Пустое поле заменяется встроенным промптом при открытии настроек.")
+        let fixHint = label("Используется при включённой постобработке. Пустое поле заменяется встроенным промптом.")
 
         let reset = NSButton(title: "Сбросить к встроенному", target: self, action: #selector(resetPromptToDefault))
         reset.bezelStyle = .rounded
@@ -966,40 +991,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         promptTestLabel.maximumNumberOfLines = 2
 
         let fixScroll = makeScroll(fixText)
+        fixScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
 
-        fixLabel.translatesAutoresizingMaskIntoConstraints = false
-        fixHint.translatesAutoresizingMaskIntoConstraints = false
-        buttons.translatesAutoresizingMaskIntoConstraints = false
-        promptTestLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(fixLabel)
-        view.addSubview(buttons)
-        view.addSubview(fixScroll)
-        view.addSubview(fixHint)
-        view.addSubview(promptTestLabel)
+        section.addArrangedSubview(fixLabel)
+        section.addArrangedSubview(buttons)
+        section.addArrangedSubview(fixScroll)
+        section.addArrangedSubview(fixHint)
+        section.addArrangedSubview(promptTestLabel)
 
-        NSLayoutConstraint.activate([
-            fixLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            fixLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            fixLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+        for view in [fixLabel, fixScroll, fixHint, promptTestLabel] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        }
 
-            buttons.topAnchor.constraint(equalTo: fixLabel.bottomAnchor, constant: 8),
-            buttons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            fixScroll.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: 8),
-            fixScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            fixScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            fixScroll.heightAnchor.constraint(equalToConstant: 280),
-
-            fixHint.topAnchor.constraint(equalTo: fixScroll.bottomAnchor, constant: 6),
-            fixHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            fixHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            promptTestLabel.topAnchor.constraint(equalTo: fixHint.bottomAnchor, constant: 4),
-            promptTestLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            promptTestLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-        ])
-
-        return view
+        return section
     }
 
     private func label(_ text: String, bold: Bool = false) -> NSTextField {
@@ -1471,8 +1476,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
         switch tabView.selectedTabViewItem?.identifier as? String {
-        case "prompt":
-            fixText.string = DefaultPrompts.fix
         case "hotkeys":
             toggleHotkey = HotKeySetting()
             toggleHotkeyButton.title = toggleHotkey.display
@@ -1482,6 +1485,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             baseURLField.stringValue = ""
             apiKeyField.stringValue = ""
             modeControl.selectedSegment = 0
+            fixText.string = DefaultPrompts.fix
+            promptTestLabel?.stringValue = ""
             aiModeChanged()
         case "models":
             modelDirs = []

@@ -21,8 +21,7 @@
 |---|---|
 | Основные (язык, микрофон, автозапуск, HUD, диагностика) | [settings-general.png](settings-general.png) |
 | Распознавание (модели Whisper, скачивание, папки) | [settings-models.png](settings-models.png) |
-| Постобработка (OpenCode / свой API, проверка) | [settings-ai.png](settings-ai.png) |
-| Промпт (редактор, сброс, проверка) | [settings-prompt.png](settings-prompt.png) |
+| Постобработка (режим, проверка, промпт) | [settings-ai.png](settings-ai.png) |
 | Хоткеи (диктовка, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
 
 ## Как переснять

@@ -241,14 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settingsWindow?.selectTab("models")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 capture(to: "/tmp/runvoice-settings-models.png")
-                self.settingsWindow?.selectTab("prompt")
+                self.settingsWindow?.selectTab("hotkeys")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    capture(to: "/tmp/runvoice-settings-prompt.png")
-                    self.settingsWindow?.selectTab("hotkeys")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                        NSApp.terminate(nil)
-                    }
+                    capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                    NSApp.terminate(nil)
                 }
             }
         }
