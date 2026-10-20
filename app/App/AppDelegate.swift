@@ -24,6 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
         WhisperModelStore.cleanupPartialDownloads()
+        HistoryStore.shared.load()
+        HistoryStore.shared.prune(maxItems: saved.historyMaxItems, maxDays: saved.historyMaxDays)
         Log.write("settings fix=\(saved.promptFix.count)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
@@ -241,10 +243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.settingsWindow?.selectTab("models")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 capture(to: "/tmp/runvoice-settings-models.png")
-                self.settingsWindow?.selectTab("hotkeys")
+                self.settingsWindow?.selectTab("history")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                    NSApp.terminate(nil)
+                    capture(to: "/tmp/runvoice-settings-history.png")
+                    self.settingsWindow?.selectTab("hotkeys")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                        NSApp.terminate(nil)
+                    }
                 }
             }
         }
@@ -332,6 +338,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
+    private func recordHistory() {
+        guard let result = HistoryStore.consumeLastResult() else { return }
+        let date = result.timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
+        HistoryStore.shared.add(text: result.fixed, raw: result.raw,
+                                model: result.model, date: date)
+    }
+
     private func hideHUD() {
         micLevel.stop()
         hud.dismiss()
@@ -364,7 +377,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if case .done = state { postPaste() }
+        if case .done = state {
+            postPaste()
+            recordHistory()
+        }
 
         if content.showLevel {
             micLevel.start()

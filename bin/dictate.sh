@@ -92,6 +92,18 @@ PROMPT_FIX="${DICTATE_PROMPT_FIX:-$DEFAULT_PROMPT_FIX}"
 # ---------- утилиты ----------
 log() { printf '%s  %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
 notify() { [ "$NOTIFY" = "1" ] && osascript -e "display notification \"$1\" with title \"Диктовка\"" >/dev/null 2>&1; true; }
+
+# Результат для истории в приложении. Пишем атомарно, чтобы app не прочитал половину.
+save_result() {
+  local raw="$1" fixed="$2"
+  [ -n "$fixed" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -cn --arg raw "$raw" --arg fixed "$fixed" \
+    --arg model "$(basename "${WHISPER_MODEL:-}")" --argjson ts "$(date +%s)" \
+    '{raw: $raw, fixed: $fixed, model: $model, timestamp: $ts}' \
+    > "$STATE/last_result.json.tmp" 2>/dev/null \
+    && mv "$STATE/last_result.json.tmp" "$STATE/last_result.json"
+}
 hud_running() { pgrep -x dictatehud >/dev/null 2>&1; }
 
 # Показать состояние в HUD (окно держится всё время обработки).
@@ -283,7 +295,7 @@ start_recording() {
     err "микрофон не найден: ${MIC_NAME:-устройство по умолчанию}"
     return 1
   fi
-  rm -f "$PCM" "$WAV" "$OUT.txt"
+  rm -f "$PCM" "$WAV" "$OUT.txt" "$STATE/last_result.json" "$STATE/last_result.json.tmp"
   status preparing
   ffmpeg -hide_banner -loglevel error -nostdin -f avfoundation -i ":$idx" \
     -ar 16000 -ac 1 -c:a pcm_s16le -f s16le -y "$PCM" >>"$LOG" 2>&1 &
@@ -366,6 +378,7 @@ stop_and_insert() {
 
   local old=""; [ "$RESTORE_CLIPBOARD" = "1" ] && old="$(pbpaste 2>/dev/null || true)"
   printf '%s' "$fixed" | pbcopy
+  save_result "$raw" "$fixed"
 
   # В режиме приложения ⌘V отправляет само приложение (у него есть Accessibility).
   if [ "${DICTATE_NO_PASTE:-0}" = "1" ]; then

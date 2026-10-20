@@ -18,6 +18,8 @@ enum Paths {
 
     static var status: URL { state.appendingPathComponent("status") }
     static var log: URL { state.appendingPathComponent("dictate.log") }
+    static var lastResult: URL { state.appendingPathComponent("last_result.json") }
+    static var history: URL { support.appendingPathComponent("history.json") }
 
     static var script: URL? {
         Bundle.main.resourceURL?.appendingPathComponent("dictate.sh")

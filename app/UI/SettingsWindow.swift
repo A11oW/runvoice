@@ -43,6 +43,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var modelDirs: [String] = []
     private var hiddenModelPaths: [String] = []
     private var selectedModelPath = ""
+    private var historyTable: NSTableView!
+    private var historyDetail: NSTextView!
+    private var historySearch: NSSearchField!
+    private var historyEnabledCheck: NSButton!
+    private var historyItemsField: NSTextField!
+    private var historyItemsStepper: NSStepper!
+    private var historyDaysField: NSTextField!
+    private var historyDaysStepper: NSStepper!
+    private var historyStatusLabel: NSTextField!
+    private var filteredHistory: [HistoryEntry] = []
+    private var historyObserver: NSObjectProtocol?
+    private lazy var historyDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
     private var downloads: [String: ModelDownloader] = [:]
     private var downloadProgress: [String: Double] = [:]
     private var downloadBars: [String: NSProgressIndicator] = [:]
@@ -77,6 +94,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         self.init(window: window)
         window.delegate = self
         build()
+        historyObserver = NotificationCenter.default.addObserver(
+            forName: HistoryStore.didChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.reloadHistory()
+        }
+    }
+
+    deinit {
+        if let historyObserver {
+            NotificationCenter.default.removeObserver(historyObserver)
+        }
     }
 
     override init(window: NSWindow?) {
@@ -148,6 +176,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         ai.label = "Постобработка"
         ai.view = buildAI()
         tabView.addTabViewItem(ai)
+
+        let history = NSTabViewItem(identifier: "history")
+        history.label = "История"
+        history.view = buildHistory()
+        tabView.addTabViewItem(history)
 
         let hotkeys = NSTabViewItem(identifier: "hotkeys")
         hotkeys.label = "Хоткеи"
@@ -431,6 +464,233 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         case 2: return "off"
         default: return "opencode"
         }
+    }
+
+    // MARK: - История
+
+    private func buildHistory() -> NSView {
+        let view = NSView()
+
+        historyEnabledCheck = NSButton(checkboxWithTitle: "Сохранять историю распознаваний",
+                                       target: nil, action: nil)
+        historySearch = NSSearchField()
+        historySearch.placeholderString = "Поиск по тексту"
+        historySearch.delegate = self
+        historySearch.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        let refresh = NSButton(title: "Обновить", target: self, action: #selector(reloadHistoryAction))
+        refresh.bezelStyle = .inline
+
+        let topRow = NSStackView(views: [historyEnabledCheck, historySearch, refresh])
+        topRow.orientation = .horizontal
+        topRow.alignment = .centerY
+        topRow.spacing = 10
+
+        historyItemsField = NSTextField(string: "100")
+        historyItemsField.alignment = .right
+        historyItemsField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        historyItemsField.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        historyItemsField.target = self
+        historyItemsField.action = #selector(historyItemsFieldChanged)
+        historyItemsStepper = NSStepper()
+        historyItemsStepper.minValue = 1
+        historyItemsStepper.maxValue = 1000
+        historyItemsStepper.increment = 10
+        historyItemsStepper.target = self
+        historyItemsStepper.action = #selector(historyItemsStepperChanged)
+
+        historyDaysField = NSTextField(string: "30")
+        historyDaysField.alignment = .right
+        historyDaysField.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        historyDaysField.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        historyDaysField.target = self
+        historyDaysField.action = #selector(historyDaysFieldChanged)
+        historyDaysStepper = NSStepper()
+        historyDaysStepper.minValue = 1
+        historyDaysStepper.maxValue = 3650
+        historyDaysStepper.increment = 7
+        historyDaysStepper.target = self
+        historyDaysStepper.action = #selector(historyDaysStepperChanged)
+
+        let limitsRow = NSStackView(views: [
+            label("Хранить последних"), historyItemsField, historyItemsStepper,
+            label("сообщений"), label("Удалять старше"), historyDaysField,
+            historyDaysStepper, label("дней"),
+        ])
+        limitsRow.orientation = .horizontal
+        limitsRow.alignment = .centerY
+        limitsRow.spacing = 6
+
+        historyTable = NSTableView()
+        historyTable.rowHeight = 26
+        historyTable.usesAlternatingRowBackgroundColors = true
+        historyTable.dataSource = self
+        historyTable.delegate = self
+        historyTable.target = self
+        historyTable.doubleAction = #selector(copySelectedHistory)
+        historyTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        let dateColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("date"))
+        dateColumn.title = "Когда"
+        dateColumn.width = 120
+        let textColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("text"))
+        textColumn.title = "Текст"
+        textColumn.width = 500
+        historyTable.addTableColumn(dateColumn)
+        historyTable.addTableColumn(textColumn)
+        historyTable.headerView = NSTableHeaderView()
+
+        let tableScroll = NSScrollView()
+        tableScroll.translatesAutoresizingMaskIntoConstraints = false
+        tableScroll.hasVerticalScroller = true
+        tableScroll.autohidesScrollers = true
+        tableScroll.borderType = .bezelBorder
+        tableScroll.documentView = historyTable
+        tableScroll.heightAnchor.constraint(equalToConstant: 190).isActive = true
+
+        let detailTitle = label("Текст", bold: true)
+        historyStatusLabel = label("")
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let copy = NSButton(title: "Копировать", target: self, action: #selector(copySelectedHistory))
+        copy.bezelStyle = .rounded
+        let delete = NSButton(title: "Удалить", target: self, action: #selector(deleteSelectedHistory))
+        delete.bezelStyle = .rounded
+        let detailHeader = NSStackView(views: [detailTitle, historyStatusLabel, spacer, copy, delete])
+        detailHeader.orientation = .horizontal
+        detailHeader.alignment = .centerY
+        detailHeader.spacing = 8
+
+        historyDetail = NSTextView()
+        historyDetail.isEditable = false
+        historyDetail.isSelectable = true
+        historyDetail.font = .systemFont(ofSize: 12)
+        historyDetail.textContainerInset = NSSize(width: 6, height: 6)
+        historyDetail.string = "Выберите запись в списке."
+        let detailScroll = makeScroll(historyDetail)
+        historyDetail.font = .systemFont(ofSize: 12)
+        detailScroll.heightAnchor.constraint(equalToConstant: 130).isActive = true
+
+        let clear = NSButton(title: "Очистить историю", target: self, action: #selector(clearHistory))
+        clear.bezelStyle = .rounded
+
+        let views: [NSView] = [topRow, limitsRow, tableScroll, detailHeader, detailScroll, clear]
+        for item in views {
+            item.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(item)
+        }
+
+        NSLayoutConstraint.activate([
+            topRow.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            topRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            topRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+
+            limitsRow.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: 10),
+            limitsRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+
+            tableScroll.topAnchor.constraint(equalTo: limitsRow.bottomAnchor, constant: 10),
+            tableScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            tableScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            detailHeader.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: 10),
+            detailHeader.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            detailHeader.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            detailScroll.topAnchor.constraint(equalTo: detailHeader.bottomAnchor, constant: 4),
+            detailScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            detailScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+
+            clear.topAnchor.constraint(equalTo: detailScroll.bottomAnchor, constant: 8),
+            clear.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            clear.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
+        ])
+
+        return view
+    }
+
+    private func reloadHistory() {
+        guard historyTable != nil else { return }
+        HistoryStore.shared.load()
+        let query = historySearch?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let all = HistoryStore.shared.entries
+        if query.isEmpty {
+            filteredHistory = all
+        } else {
+            filteredHistory = all.filter {
+                $0.text.localizedCaseInsensitiveContains(query)
+                    || ($0.raw?.localizedCaseInsensitiveContains(query) ?? false)
+            }
+        }
+        historyTable.reloadData()
+        historyStatusLabel?.stringValue = "Записей: \(filteredHistory.count)"
+        if filteredHistory.isEmpty {
+            historyTable.deselectAll(nil)
+            historyDetail?.string = "Выберите запись в списке."
+        } else {
+            historyTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            historyDetail?.string = filteredHistory[0].text
+        }
+    }
+
+    @objc private func reloadHistoryAction() {
+        reloadHistory()
+    }
+
+    @objc private func historyItemsStepperChanged() {
+        historyItemsField.integerValue = historyItemsStepper.integerValue
+    }
+
+    @objc private func historyItemsFieldChanged() {
+        historyItemsStepper.integerValue = historyItemsField.integerValue
+    }
+
+    @objc private func historyDaysStepperChanged() {
+        historyDaysField.integerValue = historyDaysStepper.integerValue
+    }
+
+    @objc private func historyDaysFieldChanged() {
+        historyDaysStepper.integerValue = historyDaysField.integerValue
+    }
+
+    @objc private func copySelectedHistory() {
+        let row = historyTable?.selectedRow ?? -1
+        guard row >= 0, row < filteredHistory.count else {
+            historyStatusLabel?.stringValue = "Выберите запись"
+            return
+        }
+        let text = filteredHistory[row].text
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        historyStatusLabel?.stringValue = "Скопировано"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, self.historyStatusLabel.stringValue == "Скопировано" else { return }
+            self.historyStatusLabel.stringValue = "Записей: \(self.filteredHistory.count)"
+        }
+    }
+
+    @objc private func deleteSelectedHistory() {
+        let row = historyTable?.selectedRow ?? -1
+        guard row >= 0, row < filteredHistory.count else { return }
+        let entry = filteredHistory[row]
+        let alert = NSAlert()
+        alert.messageText = "Удалить запись?"
+        alert.informativeText = "Текст будет удалён из истории."
+        alert.addButton(withTitle: "Удалить")
+        alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        HistoryStore.shared.delete(id: entry.id)
+        reloadHistory()
+    }
+
+    @objc private func clearHistory() {
+        guard !HistoryStore.shared.entries.isEmpty else { return }
+        let alert = NSAlert()
+        alert.messageText = "Очистить историю?"
+        alert.informativeText = "Все сохранённые распознавания будут удалены."
+        alert.addButton(withTitle: "Очистить")
+        alert.addButton(withTitle: "Отмена")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        HistoryStore.shared.clear()
+        reloadHistory()
     }
 
     // MARK: - Модели
@@ -1412,6 +1672,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         settings.restoreClipboard = restoreCheck.state == .on
         settings.showHUD = hudCheck.state == .on
+        settings.historyEnabled = historyEnabledCheck.state == .on
+        settings.historyMaxItems = max(1, min(1000, historyItemsField.integerValue))
+        settings.historyMaxDays = max(1, min(3650, historyDaysField.integerValue))
         settings.hotkeyToggle = toggleHotkey
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
@@ -1460,6 +1723,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         refreshModels()
 
+        historyEnabledCheck.state = settings.historyEnabled ? .on : .off
+        historyItemsField.integerValue = settings.historyMaxItems
+        historyItemsStepper.integerValue = settings.historyMaxItems
+        historyDaysField.integerValue = settings.historyMaxDays
+        historyDaysStepper.integerValue = settings.historyMaxDays
+        reloadHistory()
+
         loadedSettings = settings
         loadedSettings.promptFix = fixText.string
         loadedSettings.whisperModelPath = selectedModelPath
@@ -1496,6 +1766,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             selectedModelPath = WhisperModelStore.autoSelect(
                 from: WhisperModelStore.foundModels())?.path ?? ""
             refreshModels()
+        case "history":
+            historyEnabledCheck.state = .on
+            historyItemsField.integerValue = 100
+            historyItemsStepper.integerValue = 100
+            historyDaysField.integerValue = 30
+            historyDaysStepper.integerValue = 30
+            reloadHistory()
         default:
             languagePopup.selectItem(at: 0)
             reloadMicrophones(selected: "")
@@ -1548,6 +1825,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
 
         SettingsStore.save(settings)
+        HistoryStore.shared.prune(maxItems: settings.historyMaxItems,
+                                  maxDays: settings.historyMaxDays)
+        reloadHistory()
         loadedSettings = settings
         loadedAPIKey = key
         loadedLaunchAtLogin = SMAppService.mainApp.status == .enabled
@@ -1563,4 +1843,46 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 /// прижимается к нижнему краю окна.
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
+}
+
+extension SettingsWindow: NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        filteredHistory.count
+    }
+
+    func tableView(_ tableView: NSTableView,
+                   viewFor tableColumn: NSTableColumn?,
+                   row: Int) -> NSView? {
+        guard row >= 0, row < filteredHistory.count,
+              let identifier = tableColumn?.identifier.rawValue else { return nil }
+        let entry = filteredHistory[row]
+        let value = identifier == "date"
+            ? historyDateFormatter.string(from: entry.date)
+            : entry.text.replacingOccurrences(of: "\n", with: " ")
+        let label = NSTextField(labelWithString: value)
+        if identifier == "date" {
+            label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            label.textColor = .secondaryLabelColor
+        } else {
+            label.font = .systemFont(ofSize: 12)
+            label.textColor = .labelColor
+        }
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        return label
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = historyTable?.selectedRow ?? -1
+        if row >= 0, row < filteredHistory.count {
+            historyDetail?.string = filteredHistory[row].text
+        } else {
+            historyDetail?.string = "Выберите запись в списке."
+        }
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field === historySearch else { return }
+        reloadHistory()
+    }
 }

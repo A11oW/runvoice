@@ -23,12 +23,16 @@ struct Settings: Codable, Equatable {
     var useOpenCode = true
     var restoreClipboard = false
     var showHUD = true
+    var historyEnabled = true
+    var historyMaxItems = 100
+    var historyMaxDays = 30
     var hotkeyToggle = HotKeySetting()
 
     enum CodingKeys: String, CodingKey {
         case promptFix, whisperModelPath, whisperModelDirs, hiddenModelPaths
         case language, microphone, provider, model, baseURL, processingMode
         case useOpenCode, restoreClipboard, showHUD
+        case historyEnabled, historyMaxItems, historyMaxDays
         case hotkeyToggle
     }
 
@@ -57,6 +61,9 @@ struct Settings: Codable, Equatable {
         }
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
         showHUD = try c.decodeIfPresent(Bool.self, forKey: .showHUD) ?? true
+        historyEnabled = try c.decodeIfPresent(Bool.self, forKey: .historyEnabled) ?? true
+        historyMaxItems = max(1, try c.decodeIfPresent(Int.self, forKey: .historyMaxItems) ?? 100)
+        historyMaxDays = max(1, try c.decodeIfPresent(Int.self, forKey: .historyMaxDays) ?? 30)
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
     }
 }
