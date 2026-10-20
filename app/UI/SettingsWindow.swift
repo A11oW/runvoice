@@ -23,6 +23,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var apiKeyField: NSSecureTextField!
     private var modeControl: NSSegmentedControl!
     private var testButton: NSButton!
+    private var testRow: NSStackView!
     private var testResultLabel: NSTextField!
     private var aiHint: NSTextField!
     private var providerGroup: NSStackView!
@@ -370,7 +371,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         testResultLabel.font = .systemFont(ofSize: 11)
         testResultLabel.textColor = .secondaryLabelColor
         testResultLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let testRow = NSStackView(views: [testButton, testResultLabel])
+        testRow = NSStackView(views: [testButton, testResultLabel])
         testRow.orientation = .horizontal
         testRow.alignment = .centerY
         testRow.spacing = 10
@@ -412,6 +413,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         apiKeyGroup?.isHidden = mode != "direct"
         promptGroup?.isHidden = mode == "off"
         testButton?.isEnabled = mode != "off"
+        testRow?.isHidden = mode == "off"
         testResultLabel?.stringValue = ""
         switch mode {
         case "direct":
