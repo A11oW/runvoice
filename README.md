@@ -29,6 +29,7 @@ OpenCode (орфография, пунктуация, заглавные), и в
 - [Обслуживание](#обслуживание)
 - [Ограничения](#ограничения)
 - [Тестирование](docs/testing.md)
+- [Feature requests](docs/feature-requests.md)
 - [Удаление](#удаление)
 
 ---
@@ -808,6 +809,15 @@ swiftc -O -o bin/dictatehud bin/dictatehud.swift
 постобработка, безопасность, совместимость и release-checklist.
 
 При любом изменении функционала обновляйте `docs/testing.md` вместе с кодом.
+
+---
+
+## Feature requests
+
+Идеи на будущее и их техническое обоснование — в
+[`docs/feature-requests.md`](docs/feature-requests.md). Сейчас там зафиксирована
+диаризация (FR-001): исследование whisper.cpp, варианты реализации и критерии
+готовности.
 
 ---
 
