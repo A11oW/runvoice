@@ -72,12 +72,16 @@ final class ProviderEditorWindow: NSWindowController, NSWindowDelegate {
         let nameGroup = fieldGroup("Название", field: nameField)
 
         let kindLabel = label("Тип")
-        kindControl = NSSegmentedControl(labels: ["OpenCode", "Свой API"],
+        kindControl = NSSegmentedControl(labels: ["OpenCode", "OpenAI", "Anthropic"],
                                          trackingMode: .selectOne,
                                          target: self,
                                          action: #selector(kindChanged))
         kindControl.segmentStyle = .rounded
-        kindControl.selectedSegment = provider.kind == .direct ? 1 : 0
+        switch provider.kind {
+        case .opencode: kindControl.selectedSegment = 0
+        case .openai: kindControl.selectedSegment = 1
+        case .anthropic: kindControl.selectedSegment = 2
+        }
         let kindRow = NSStackView(views: [kindLabel, kindControl])
         kindRow.orientation = .horizontal
         kindRow.alignment = .centerY
@@ -168,17 +172,28 @@ final class ProviderEditorWindow: NSWindowController, NSWindowDelegate {
     }
 
     private var selectedKind: AIProviderKind {
-        kindControl.selectedSegment == 1 ? .direct : .opencode
+        switch kindControl.selectedSegment {
+        case 1: return .openai
+        case 2: return .anthropic
+        default: return .opencode
+        }
     }
 
     @objc private func kindChanged() {
-        let direct = selectedKind == .direct
-        providerGroup?.isHidden = direct
-        baseURLGroup?.isHidden = !direct
-        apiKeyGroup?.isHidden = !direct
-        hint?.stringValue = direct
-            ? "Запросы уходят напрямую в {URL}/chat/completions. Ключ хранится в Keychain."
-            : "Провайдер и модель должны быть доступны в OpenCode CLI."
+        let kind = selectedKind
+        let api = kind.usesAPIKey
+        providerGroup?.isHidden = api
+        baseURLGroup?.isHidden = !api
+        apiKeyGroup?.isHidden = !api
+        if kind == .anthropic {
+            baseURLField.placeholderString = "https://api.anthropic.com"
+            hint?.stringValue = "Запросы идут в {URL}/v1/messages. Заголовки: x-api-key и anthropic-version."
+        } else if kind == .openai {
+            baseURLField.placeholderString = "https://api.openai.com/v1"
+            hint?.stringValue = "Запросы идут в {URL}/chat/completions с Authorization: Bearer."
+        } else {
+            hint?.stringValue = "Провайдер и модель должны быть доступны в OpenCode CLI."
+        }
         testLabel?.stringValue = ""
     }
 
@@ -248,7 +263,7 @@ final class ProviderEditorWindow: NSWindowController, NSWindowDelegate {
             return
         }
 
-        let key = candidate.kind == .direct
+        let key = candidate.kind.usesAPIKey
             ? apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
         onSave?(candidate, key)

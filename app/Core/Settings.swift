@@ -15,7 +15,22 @@ struct HotKeySetting: Codable, Equatable {
 
 enum AIProviderKind: String, Codable, Equatable {
     case opencode
-    case direct
+    case openai
+    case anthropic
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "opencode": self = .opencode
+        case "openai", "direct": self = .openai
+        case "anthropic": self = .anthropic
+        default: self = .openai
+        }
+    }
+
+    var usesAPIKey: Bool {
+        self == .openai || self == .anthropic
+    }
 }
 
 /// Именованный профиль AI-провайдера и модели.
@@ -55,7 +70,11 @@ struct AIProvider: Codable, Equatable, Identifiable {
     var keychainAccount: String { "ai-provider-\(id.uuidString)" }
 
     var typeTitle: String {
-        kind == .opencode ? "OpenCode" : "Свой API"
+        switch kind {
+        case .opencode: return "OpenCode"
+        case .openai: return "OpenAI-совместимый"
+        case .anthropic: return "Anthropic-совместимый"
+        }
     }
 
     var displayTitle: String {
@@ -69,7 +88,7 @@ struct AIProvider: Codable, Equatable, Identifiable {
             let p = providerID.isEmpty ? "?" : providerID
             let m = model.isEmpty ? "?" : model
             return "\(p) / \(m)"
-        case .direct:
+        case .openai, .anthropic:
             return model.isEmpty ? baseURL : "\(baseURL) / \(model)"
         }
     }
@@ -192,7 +211,7 @@ struct Settings: Codable, Equatable {
         }
 
         let kind: AIProviderKind = (legacyMode == "direct" || !legacyBaseURL.isEmpty)
-            ? .direct
+            ? .openai
             : .opencode
         let profile = AIProvider(name: "Профиль по умолчанию",
                                  kind: kind,
@@ -230,7 +249,7 @@ enum SettingsStore {
         let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         if raw?["providers"] == nil {
             // Старый settings.json: переносим ключ в аккаунт нового профиля.
-            if let direct = settings.providers.first(where: { $0.kind == .direct }),
+            if let direct = settings.providers.first(where: { $0.kind == .openai }),
                Keychain.value(for: direct.keychainAccount) == nil,
                let oldKey = Keychain.value(for: Keychain.directAPIKeyAccount),
                !oldKey.isEmpty {

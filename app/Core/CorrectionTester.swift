@@ -26,14 +26,22 @@ enum AIClient {
                          apiKey: String? = nil,
                          completion: @escaping (Result<String, Error>) -> Void) {
         switch provider.kind {
-        case .direct:
+        case .openai:
             let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !base.isEmpty else {
                 finish(.failure(AIError.noBaseURL), completion)
                 return
             }
-            directRequest(provider: provider, system: system, text: text,
+            openAIRequest(provider: provider, system: system, text: text,
                           baseURL: base, apiKey: apiKey, completion: completion)
+        case .anthropic:
+            let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !base.isEmpty else {
+                finish(.failure(AIError.noBaseURL), completion)
+                return
+            }
+            anthropicRequest(provider: provider, system: system, text: text,
+                             baseURL: base, apiKey: apiKey, completion: completion)
         case .opencode:
             guard let opencode = OpenCodeLocator.find() else {
                 finish(.failure(AIError.noOpenCode), completion)
@@ -44,7 +52,7 @@ enum AIClient {
         }
     }
 
-    private static func directRequest(provider: AIProvider,
+    private static func openAIRequest(provider: AIProvider,
                                       system: String,
                                       text: String,
                                       baseURL: String,
@@ -101,6 +109,76 @@ enum AIClient {
                 finish(.failure(AIError.badResponse(String(raw.prefix(200)))), completion)
                 return
             }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                finish(.failure(AIError.emptyAnswer), completion)
+                return
+            }
+            finish(.success(text), completion)
+        }.resume()
+    }
+
+    private static func anthropicRequest(provider: AIProvider,
+                                         system: String,
+                                         text: String,
+                                         baseURL: String,
+                                         apiKey: String?,
+                                         completion: @escaping (Result<String, Error>) -> Void) {
+        var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        while base.hasSuffix("/") { base.removeLast() }
+        let urlString: String
+        if base.hasSuffix("/v1/messages") || base.hasSuffix("/messages") {
+            urlString = base
+        } else if base.hasSuffix("/v1") {
+            urlString = base + "/messages"
+        } else {
+            urlString = base + "/v1/messages"
+        }
+        guard let url = URL(string: urlString) else {
+            finish(.failure(AIError.badResponse("некорректный URL \(urlString)")), completion)
+            return
+        }
+
+        let payload: [String: Any] = [
+            "model": provider.model.isEmpty ? "claude-sonnet-4-20250514" : provider.model,
+            "max_tokens": 4096,
+            "temperature": 0,
+            "system": system,
+            "messages": [
+                ["role": "user", "content": "<text>\(text)</text>"],
+            ],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            finish(.failure(AIError.badResponse("не удалось собрать JSON")), completion)
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        if let apiKey, !apiKey.isEmpty {
+            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        } else if let key = Keychain.value(for: provider.keychainAccount), !key.isEmpty {
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+        } else if let key = ProcessInfo.processInfo.environment["OC_API_KEY"], !key.isEmpty {
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+        }
+        request.httpBody = data
+
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            if let error {
+                finish(.failure(error), completion)
+                return
+            }
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let blocks = json["content"] as? [[String: Any]] else {
+                let raw = data.flatMap { String(data: $0, encoding: .utf8) } ?? "пусто"
+                finish(.failure(AIError.badResponse(String(raw.prefix(200)))), completion)
+                return
+            }
+            let text = blocks.compactMap { $0["text"] as? String }.joined()
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 finish(.failure(AIError.emptyAnswer), completion)
                 return

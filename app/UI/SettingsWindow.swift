@@ -609,7 +609,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             } else {
                 self.providers.append(updated)
             }
-            self.providerKeys[updated.id] = updated.kind == .direct ? key : ""
+            self.providerKeys[updated.id] = updated.kind.usesAPIKey ? key : ""
 
             if wasEmpty {
                 self.dictationProviderID = updated.id
@@ -2022,7 +2022,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         improveProviderID = settings.improveProviderID
         providerKeys = [:]
         for provider in providers {
-            providerKeys[provider.id] = provider.kind == .direct
+            providerKeys[provider.id] = provider.kind.usesAPIKey
                 ? (Keychain.value(for: provider.keychainAccount) ?? "")
                 : ""
         }
@@ -2158,11 +2158,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         var normalizedKeys: [UUID: String] = [:]
         for provider in settings.providers {
-            let key = provider.kind == .direct
+            let key = provider.kind.usesAPIKey
                 ? (providerKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 : ""
             normalizedKeys[provider.id] = key
-            if provider.kind == .direct, !key.isEmpty {
+            if provider.kind.usesAPIKey, !key.isEmpty {
                 Keychain.set(key, for: provider.keychainAccount)
             } else {
                 Keychain.delete(account: provider.keychainAccount)
@@ -2204,7 +2204,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                 guard !provider.providerID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return "Укажите provider ID OpenCode для «\(name)»."
                 }
-            case .direct:
+            case .openai, .anthropic:
                 let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !base.isEmpty else {
                     return "Укажите базовый URL для «\(name)»."

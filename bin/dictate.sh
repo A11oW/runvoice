@@ -283,6 +283,93 @@ paste_text() {
   log "paste: osascript(fallback) rc=$rc ${out:+msg=$out}"
 }
 
+# generate_fix <raw> -> исправленный текст в stdout.
+# Тип AI задаётся DICTATE_AI_KIND: openai | anthropic | opencode.
+generate_fix() {
+  local raw="$1"
+  local sys="$PROMPT_FIX"
+  local kind="${DICTATE_AI_KIND:-}"
+
+  if [ -z "$kind" ]; then
+    if [ -n "${OC_BASE_URL:-}" ]; then kind=openai; else kind=opencode; fi
+  fi
+
+  if [ "${DICTATE_USE_OC:-1}" = "0" ]; then
+    log "generate: AI отключён — RAW"
+    printf '%s' "$raw"
+    return 0
+  fi
+
+  case "$kind" in
+    anthropic)
+      if [ -z "${OC_BASE_URL:-}" ]; then
+        log "generate: anthropic без base URL — RAW"
+        printf '%s' "$raw"
+        return 0
+      fi
+      local abase="${OC_BASE_URL%/}"
+      local aurl
+      case "$abase" in
+        */v1/messages) aurl="$abase" ;;
+        */messages) aurl="$abase" ;;
+        */v1) aurl="$abase/messages" ;;
+        *) aurl="$abase/v1/messages" ;;
+      esac
+      local apayload
+      apayload="$(jq -cn --arg model "$OC_MODEL_ID" --arg sys "$sys" --arg raw "$raw" \
+        '{model: $model, max_tokens: 4096, temperature: 0, system: $sys,
+          messages: [{role: "user", content: ("<text>" + $raw + "</text>")}]}')"
+      log "generate: anthropic $aurl model=$OC_MODEL_ID"
+      if [ -n "${OC_API_KEY:-}" ]; then
+        curl -s --max-time 120 -H 'Content-Type: application/json' \
+          -H "x-api-key: $OC_API_KEY" -H 'anthropic-version: 2023-06-01' \
+          -d "$apayload" "$aurl" 2>>"$LOG" \
+          | jq -r '[.content[]? | select(.type == "text") | .text] | join("")' 2>>"$LOG"
+      else
+        curl -s --max-time 120 -H 'Content-Type: application/json' \
+          -H 'anthropic-version: 2023-06-01' \
+          -d "$apayload" "$aurl" 2>>"$LOG" \
+          | jq -r '[.content[]? | select(.type == "text") | .text] | join("")' 2>>"$LOG"
+      fi
+      ;;
+
+    openai)
+      if [ -z "${OC_BASE_URL:-}" ]; then
+        log "generate: openai без base URL — RAW"
+        printf '%s' "$raw"
+        return 0
+      fi
+      local ourl
+      case "$OC_BASE_URL" in
+        */chat/completions) ourl="$OC_BASE_URL" ;;
+        *) ourl="${OC_BASE_URL%/}/chat/completions" ;;
+      esac
+      local opayload
+      opayload="$(jq -cn --arg model "$OC_MODEL_ID" --arg sys "$sys" --arg raw "$raw" \
+        '{model: $model, temperature: 0, messages: [{role: "system", content: $sys}, {role: "user", content: ("<text>" + $raw + "</text>")}]}')"
+      log "generate: openai $ourl model=$OC_MODEL_ID"
+      if [ -n "${OC_API_KEY:-}" ]; then
+        curl -s --max-time 120 -H 'Content-Type: application/json' \
+          -H "Authorization: Bearer $OC_API_KEY" -d "$opayload" "$ourl" 2>>"$LOG" \
+          | jq -r '.choices[0].message.content // empty' 2>>"$LOG"
+      else
+        curl -s --max-time 120 -H 'Content-Type: application/json' \
+          -d "$opayload" "$ourl" 2>>"$LOG" \
+          | jq -r '.choices[0].message.content // empty' 2>>"$LOG"
+      fi
+      ;;
+
+    *)
+      local body
+      body="$(jq -cn --arg sys "$sys" --arg raw "$raw" --arg prov "$OC_PROVIDER" --arg id "$OC_MODEL_ID" --arg var "$OC_VARIANT" \
+        '{prompt: ($sys + "\n\n<text>" + $raw + "</text>"), model: ({providerID: $prov, id: $id} + (if $var == "" then {} else {variant: $var} end))}')"
+      log "generate: opencode provider=$OC_PROVIDER model=$OC_MODEL_ID"
+      "${OC_BIN:-opencode}" api post /api/experimental/generate --data "$body" 2>>"$LOG" \
+        | jq -r '.data.text // empty' 2>>"$LOG"
+      ;;
+  esac
+}
+
 start_recording() {
   if recording; then log "start: уже идёт — игнор"; return 0; fi
   if [ ! -f "$WHISPER_MODEL" ]; then
@@ -338,36 +425,8 @@ stop_and_insert() {
   [ -z "$raw" ] && { err "речь не распознана (тишина?)"; return 1; }
 
   status fixing
-  local SYS="$PROMPT_FIX"
   local fixed
-  if [ "${DICTATE_USE_OC:-1}" = "0" ] && [ -z "${OC_BASE_URL:-}" ]; then
-    # OpenCode отключён и своего endpoint нет — без правки
-    log "generate: OpenCode отключён — вставляю RAW"
-    fixed="$raw"
-  elif [ -n "${OC_BASE_URL:-}" ]; then
-    # прямой OpenAI-совместимый запрос (без OpenCode)
-    local url
-    case "$OC_BASE_URL" in
-      */chat/completions) url="$OC_BASE_URL" ;;
-      *) url="${OC_BASE_URL%/}/chat/completions" ;;
-    esac
-    local payload; payload="$(jq -cn --arg model "$OC_MODEL_ID" --arg sys "$SYS" --arg raw "$raw" \
-      '{model: $model, temperature: 0, messages: [{role: "system", content: $sys}, {role: "user", content: ("<text>" + $raw + "</text>")}]}')"
-    log "generate: direct $url model=$OC_MODEL_ID"
-    if [ -n "${OC_API_KEY:-}" ]; then
-      fixed="$(curl -s --max-time 120 -H 'Content-Type: application/json' \
-        -H "Authorization: Bearer $OC_API_KEY" -d "$payload" "$url" 2>>"$LOG" \
-        | jq -r '.choices[0].message.content // empty')"
-    else
-      fixed="$(curl -s --max-time 120 -H 'Content-Type: application/json' \
-        -d "$payload" "$url" 2>>"$LOG" \
-        | jq -r '.choices[0].message.content // empty')"
-    fi
-  else
-    local body; body="$(jq -cn --arg sys "$SYS" --arg raw "$raw" --arg prov "$OC_PROVIDER" --arg id "$OC_MODEL_ID" --arg var "$OC_VARIANT" \
-      '{prompt: ($sys + "\n\n<text>" + $raw + "</text>"), model: ({providerID: $prov, id: $id} + (if $var == "" then {} else {variant: $var} end))}')"
-    fixed="$("${OC_BIN:-opencode}" api post /api/experimental/generate --data "$body" 2>>"$LOG" | jq -r '.data.text // empty')"
-  fi
+  fixed="$(generate_fix "$raw")"
   if [ -z "$fixed" ]; then
     log "generate: пустой ответ — подставляю RAW"
     fixed="$raw"
