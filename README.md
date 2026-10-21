@@ -765,6 +765,7 @@ tail -f ~/Library/Application\ Support/Runvoice/state/whisper-server.log
 | `whisper: модель изменилась — перезапускаю сервер` | смена модели |
 | `warmup: …` / `warmup: готов` | прогрев после сохранения настроек |
 | `RAW: …` / `FIXED: …` | что услышал Whisper и что вернула модель |
+| `generate: AI response …ms` / `ai: provider=… elapsed=…ms` | сколько времени занял ответ AI |
 | `paste: app cgEvent` | ⌘V отправлен приложением |
 | `paste: accessibility denied` | нет Accessibility |
 | `model: скачана …` | модель успешно скачана |

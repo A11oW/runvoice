@@ -425,8 +425,15 @@ stop_and_insert() {
   [ -z "$raw" ] && { err "речь не распознана (тишина?)"; return 1; }
 
   status fixing
-  local fixed
+  local fixed ai_start ai_elapsed
+  ai_start="$(now_ms)"
   fixed="$(generate_fix "$raw")"
+  ai_elapsed=$(( $(now_ms) - ai_start ))
+  if [ "${DICTATE_USE_OC:-1}" = "0" ]; then
+    log "generate: AI disabled"
+  else
+    log "generate: AI response ${ai_elapsed}ms kind=${DICTATE_AI_KIND:-auto} model=${OC_MODEL_ID:-?}"
+  fi
   if [ -z "$fixed" ]; then
     log "generate: пустой ответ — подставляю RAW"
     fixed="$raw"

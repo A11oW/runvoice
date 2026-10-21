@@ -25,30 +25,45 @@ enum AIClient {
                          text: String,
                          apiKey: String? = nil,
                          completion: @escaping (Result<String, Error>) -> Void) {
+        let started = Date()
+        let kind = provider.kind.rawValue
+        let timedCompletion: (Result<String, Error>) -> Void = { result in
+            let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+            switch result {
+            case .success:
+                Log.write("ai: provider=\(provider.displayTitle) kind=\(kind) model=\(provider.model) elapsed=\(elapsed)ms")
+            case .failure(let error):
+                let message = error.localizedDescription
+                    .replacingOccurrences(of: "\n", with: " ")
+                Log.write("ai: provider=\(provider.displayTitle) kind=\(kind) model=\(provider.model) elapsed=\(elapsed)ms error=\(message.prefix(200))")
+            }
+            completion(result)
+        }
+
         switch provider.kind {
         case .openai:
             let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !base.isEmpty else {
-                finish(.failure(AIError.noBaseURL), completion)
+                finish(.failure(AIError.noBaseURL), timedCompletion)
                 return
             }
             openAIRequest(provider: provider, system: system, text: text,
-                          baseURL: base, apiKey: apiKey, completion: completion)
+                          baseURL: base, apiKey: apiKey, completion: timedCompletion)
         case .anthropic:
             let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !base.isEmpty else {
-                finish(.failure(AIError.noBaseURL), completion)
+                finish(.failure(AIError.noBaseURL), timedCompletion)
                 return
             }
             anthropicRequest(provider: provider, system: system, text: text,
-                             baseURL: base, apiKey: apiKey, completion: completion)
+                             baseURL: base, apiKey: apiKey, completion: timedCompletion)
         case .opencode:
             guard let opencode = OpenCodeLocator.find() else {
-                finish(.failure(AIError.noOpenCode), completion)
+                finish(.failure(AIError.noOpenCode), timedCompletion)
                 return
             }
             openCodeRequest(provider: provider, system: system, text: text,
-                            binary: opencode, completion: completion)
+                            binary: opencode, completion: timedCompletion)
         }
     }
 
