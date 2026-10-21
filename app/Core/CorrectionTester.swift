@@ -1,9 +1,9 @@
 import Foundation
 
-/// Одноразовый вызов модели: используется проверкой подключения и улучшением текста.
+/// Одноразовый вызов выбранного AI-провайдера.
 enum AIClient {
     enum AIError: LocalizedError {
-        case processingOff
+        case noProvider
         case noBaseURL
         case noOpenCode
         case badResponse(String)
@@ -11,7 +11,7 @@ enum AIClient {
 
         var errorDescription: String? {
             switch self {
-            case .processingOff: return "Постобработка выключена — включите OpenCode или свой API"
+            case .noProvider: return "Не выбран AI-провайдер"
             case .noBaseURL: return "Не задан базовый URL для своего API"
             case .noOpenCode: return "OpenCode CLI не найден"
             case .badResponse(let text): return "Некорректный ответ: \(text)"
@@ -20,40 +20,36 @@ enum AIClient {
         }
     }
 
-    static func generate(settings: Settings,
+    static func generate(provider: AIProvider,
                          system: String,
                          text: String,
                          apiKey: String? = nil,
                          completion: @escaping (Result<String, Error>) -> Void) {
-        let mode = settings.processingMode
-        if mode == "off" {
-            finish(.failure(AIError.processingOff), completion)
-            return
-        }
-        if mode == "direct" {
-            let base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch provider.kind {
+        case .direct:
+            let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !base.isEmpty else {
                 finish(.failure(AIError.noBaseURL), completion)
                 return
             }
-            directTest(settings: settings, system: system, text: text, baseURL: base,
-                       apiKey: apiKey, completion: completion)
-            return
+            directRequest(provider: provider, system: system, text: text,
+                          baseURL: base, apiKey: apiKey, completion: completion)
+        case .opencode:
+            guard let opencode = OpenCodeLocator.find() else {
+                finish(.failure(AIError.noOpenCode), completion)
+                return
+            }
+            openCodeRequest(provider: provider, system: system, text: text,
+                            binary: opencode, completion: completion)
         }
-        guard let opencode = OpenCodeLocator.find() else {
-            finish(.failure(AIError.noOpenCode), completion)
-            return
-        }
-        openCodeTest(settings: settings, system: system, text: text,
-                     binary: opencode, completion: completion)
     }
 
-    private static func directTest(settings: Settings,
-                                   system: String,
-                                   text: String,
-                                   baseURL: String,
-                                   apiKey: String?,
-                                   completion: @escaping (Result<String, Error>) -> Void) {
+    private static func directRequest(provider: AIProvider,
+                                      system: String,
+                                      text: String,
+                                      baseURL: String,
+                                      apiKey: String?,
+                                      completion: @escaping (Result<String, Error>) -> Void) {
         let urlString: String
         if baseURL.hasSuffix("/chat/completions") {
             urlString = baseURL
@@ -66,7 +62,7 @@ enum AIClient {
         }
 
         let payload: [String: Any] = [
-            "model": settings.model.isEmpty ? "deepseek-flash" : settings.model,
+            "model": provider.model.isEmpty ? "deepseek-flash" : provider.model,
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": system],
@@ -84,7 +80,7 @@ enum AIClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let apiKey, !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        } else if let key = Keychain.value(for: Keychain.directAPIKeyAccount), !key.isEmpty {
+        } else if let key = Keychain.value(for: provider.keychainAccount), !key.isEmpty {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         } else if let key = ProcessInfo.processInfo.environment["OC_API_KEY"], !key.isEmpty {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -113,17 +109,17 @@ enum AIClient {
         }.resume()
     }
 
-    private static func openCodeTest(settings: Settings,
-                                     system: String,
-                                     text: String,
-                                     binary: String,
-                                     completion: @escaping (Result<String, Error>) -> Void) {
+    private static func openCodeRequest(provider: AIProvider,
+                                        system: String,
+                                        text: String,
+                                        binary: String,
+                                        completion: @escaping (Result<String, Error>) -> Void) {
         let prompt = system + "\n\n<text>" + text + "</text>"
         let payload: [String: Any] = [
             "prompt": prompt,
             "model": [
-                "providerID": settings.provider.isEmpty ? "deepseek" : settings.provider,
-                "id": settings.model.isEmpty ? "deepseek-flash" : settings.model,
+                "providerID": provider.providerID.isEmpty ? "deepseek" : provider.providerID,
+                "id": provider.model.isEmpty ? "deepseek-flash" : provider.model,
                 "variant": "none",
             ],
         ]
@@ -181,20 +177,16 @@ enum AIClient {
     }
 }
 
-/// Проверка настройки постобработки на тестовой фразе.
+/// Проверка выбранного профиля/промпта на тестовой фразе.
 enum CorrectionTester {
-    private static let sample = "это проверка связи с моделью, проверка связи"
+    static let sample = "это проверка связи с моделью, проверка связи"
 
-    static func test(settings: Settings,
+    static func test(provider: AIProvider,
                      prompt: String,
                      apiKey: String? = nil,
                      completion: @escaping (Result<String, Error>) -> Void) {
-        if settings.processingMode == "off" {
-            completion(.success("Постобработка выключена — текст вставляется без правки."))
-            return
-        }
         let system = prompt.isEmpty ? DefaultPrompts.fix : prompt
-        AIClient.generate(settings: settings, system: system, text: sample,
+        AIClient.generate(provider: provider, system: system, text: sample,
                           apiKey: apiKey, completion: completion)
     }
 }

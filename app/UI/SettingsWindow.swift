@@ -24,19 +24,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var micTestLabel: NSTextField!
     private var launchCheck: NSButton!
     private var launchNote: NSTextField!
-    private var providerField: NSTextField!
-    private var modelField: NSTextField!
-    private var baseURLField: NSTextField!
-    private var apiKeyField: NSSecureTextField!
-    private var modeControl: NSSegmentedControl!
-    private var testButton: NSButton!
-    private var testRow: NSStackView!
-    private var testResultLabel: NSTextField!
-    private var aiHint: NSTextField!
-    private var providerGroup: NSStackView!
-    private var modelGroup: NSStackView!
-    private var baseURLGroup: NSStackView!
-    private var apiKeyGroup: NSStackView!
+    private var dictationProviderPopup: NSPopUpButton!
+    private var improveProviderPopup: NSPopUpButton!
+    private var dictationProviderNote: NSTextField!
+    private var improveProviderNote: NSTextField!
+    private var providersStack: NSStackView!
+    private var providersEmptyLabel: NSTextField!
+    private var providerEditor: ProviderEditorWindow?
+    private var providers: [AIProvider] = []
+    private var providerKeys: [UUID: String] = [:]
+    private var loadedProviderKeys: [UUID: String] = [:]
+    private var dictationProviderID: UUID?
+    private var improveProviderID: UUID?
     private var promptGroup: NSStackView!
     private var restoreCheck: NSButton!
     private var hudCheck: NSButton!
@@ -85,7 +84,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private var loadedSettings = Settings()
     private var loadedLaunchAtLogin = false
-    private var loadedAPIKey = ""
     private var allowClose = false
 
     var onCaptureStateChanged: ((Bool) -> Void)?
@@ -94,9 +92,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let languages = ["ru", "en", "auto"]
 
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 620),
-                              styleMask: [.titled, .closable],
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
+                              styleMask: [.titled, .closable, .resizable],
                               backing: .buffered, defer: false)
+        window.contentMinSize = NSSize(width: 900, height: 650)
+        window.minSize = NSSize(width: 900, height: 650)
         window.title = "Runvoice — Настройки"
         window.isReleasedWhenClosed = false
         window.center()
@@ -133,6 +133,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
             self.refreshDiagnostics(force: false)
         }
+        let current = window?.contentView?.bounds.size ?? NSSize(width: 900, height: 650)
+        window?.setContentSize(NSSize(width: max(900, current.width),
+                                      height: max(650, current.height)))
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -162,6 +165,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     func selectTab(_ identifier: String) {
         tabView.selectTabViewItem(withIdentifier: identifier)
+        let current = window?.contentView?.bounds.size ?? NSSize(width: 900, height: 650)
+        let size = NSSize(width: max(900, current.width), height: max(650, current.height))
+        window?.setContentSize(size)
+        window?.contentView?.needsLayout = true
+        window?.contentView?.layoutSubtreeIfNeeded()
+        tabView.needsLayout = true
+        tabView.layoutSubtreeIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.setContentSize(size)
+            self?.window?.contentView?.needsLayout = true
+            self?.window?.contentView?.layoutSubtreeIfNeeded()
+            self?.tabView.needsLayout = true
+            self?.tabView.layoutSubtreeIfNeeded()
+        }
     }
 
     /// Для отладочного скриншота: показать блок улучшения текста на вкладке «Постобработка».
@@ -190,6 +207,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         models.label = "Распознавание"
         models.view = buildModels()
         tabView.addTabViewItem(models)
+
+        let providers = NSTabViewItem(identifier: "providers")
+        providers.label = "Провайдеры"
+        providers.view = buildProviders()
+        tabView.addTabViewItem(providers)
 
         let ai = NSTabViewItem(identifier: "ai")
         ai.label = "Постобработка"
@@ -354,7 +376,258 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         return view
     }
 
-    // MARK: - AI
+    // MARK: - Providers
+
+    private func buildProviders() -> NSView {
+        let view = NSView()
+
+        let scroll = NSScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        view.addSubview(scroll)
+
+        let doc = FlippedView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = doc
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 16, bottom: 16, right: 16)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.widthAnchor.constraint(greaterThanOrEqualToConstant: 860).isActive = true
+        doc.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: view.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.topAnchor.constraint(equalTo: doc.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
+        ])
+
+        let title = label("AI-провайдеры и модели", bold: true)
+        let hint = label("Здесь настраиваются профили. Какой профиль использовать для диктовки и улучшения — выбирается в «Постобработке».")
+        hint.lineBreakMode = .byWordWrapping
+        hint.maximumNumberOfLines = 2
+
+        let add = NSButton(title: "+ Добавить провайдера", target: self, action: #selector(addProvider))
+        add.bezelStyle = .rounded
+
+        providersEmptyLabel = label("Провайдеры не добавлены. Добавьте хотя бы один, чтобы использовать AI.")
+        providersEmptyLabel.textColor = .secondaryLabelColor
+        providersEmptyLabel.lineBreakMode = .byWordWrapping
+        providersEmptyLabel.maximumNumberOfLines = 2
+
+        providersStack = NSStackView()
+        providersStack.orientation = .vertical
+        providersStack.alignment = .leading
+        providersStack.spacing = 8
+
+        for row in [title, hint, add, providersEmptyLabel, providersStack] as [NSView] {
+            stack.addArrangedSubview(row)
+            row.translatesAutoresizingMaskIntoConstraints = false
+            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+        }
+
+        return view
+    }
+
+    private func providerRow(_ provider: AIProvider) -> NSView {
+        let row = NSStackView()
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+
+        let info = NSStackView()
+        info.orientation = .vertical
+        info.alignment = .leading
+        info.spacing = 3
+
+        let name = label(provider.displayTitle, bold: true)
+        let details = label("\(provider.typeTitle) · \(provider.detail)")
+        details.lineBreakMode = .byTruncatingMiddle
+        var usageParts: [String] = []
+        if provider.id == dictationProviderID { usageParts.append("диктовка") }
+        if provider.id == improveProviderID { usageParts.append("улучшение") }
+        let usage = label(usageParts.isEmpty
+                          ? "Не используется"
+                          : "Используется: " + usageParts.joined(separator: ", "))
+        usage.textColor = usageParts.isEmpty ? .secondaryLabelColor : .systemGreen
+
+        info.addArrangedSubview(name)
+        info.addArrangedSubview(details)
+        info.addArrangedSubview(usage)
+
+        let edit = NSButton(title: "Изменить", target: self, action: #selector(editProvider(_:)))
+        edit.bezelStyle = .rounded
+        edit.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
+        let delete = NSButton(title: "Удалить", target: self, action: #selector(deleteProvider(_:)))
+        delete.bezelStyle = .rounded
+        delete.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
+
+        row.addArrangedSubview(info)
+        row.addArrangedSubview(edit)
+        row.addArrangedSubview(delete)
+        info.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return row
+    }
+
+    private func refreshProvidersList() {
+        guard providersStack != nil else { return }
+        for view in providersStack.arrangedSubviews {
+            providersStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        providersEmptyLabel?.isHidden = !providers.isEmpty
+
+        for (index, provider) in providers.enumerated() {
+            let row = providerRow(provider)
+            row.translatesAutoresizingMaskIntoConstraints = false
+            providersStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: providersStack.widthAnchor).isActive = true
+
+            if index < providers.count - 1 {
+                let separator = NSBox()
+                separator.boxType = .separator
+                separator.translatesAutoresizingMaskIntoConstraints = false
+                providersStack.addArrangedSubview(separator)
+                separator.widthAnchor.constraint(equalTo: providersStack.widthAnchor).isActive = true
+            }
+        }
+    }
+
+    private func refreshProviderMenus() {
+        guard dictationProviderPopup != nil, improveProviderPopup != nil else { return }
+        configureProviderPopup(dictationProviderPopup,
+                               noneTitle: "Не использовать AI",
+                               selected: dictationProviderID)
+        configureProviderPopup(improveProviderPopup,
+                               noneTitle: "Не выбран",
+                               selected: improveProviderID)
+        updateAIProviderState()
+    }
+
+    private func configureProviderPopup(_ popup: NSPopUpButton, noneTitle: String, selected: UUID?) {
+        popup.removeAllItems()
+        popup.addItem(withTitle: noneTitle)
+        popup.lastItem?.representedObject = nil
+        for provider in providers {
+            popup.addItem(withTitle: "\(provider.displayTitle) — \(provider.detail)")
+            popup.lastItem?.representedObject = provider.id
+        }
+        if let selected,
+           let index = popup.itemArray.firstIndex(where: { ($0.representedObject as? UUID) == selected }) {
+            popup.selectItem(at: index)
+        } else {
+            popup.selectItem(at: 0)
+        }
+        popup.isEnabled = !providers.isEmpty
+    }
+
+    private func updateAIProviderState() {
+        let dictation = providers.first { $0.id == dictationProviderID }
+        let improve = providers.first { $0.id == improveProviderID }
+
+        promptGroup?.isHidden = dictation == nil
+        promptSeparator?.isHidden = dictation == nil
+        dictationProviderNote?.stringValue = dictation == nil
+            ? "AI не используется: вставляется сырой текст Whisper."
+            : "Используется для исправления распознанного текста."
+        improveProviderNote?.stringValue = improve == nil
+            ? (improveEnabledCheck?.state == .on
+                ? "Выберите провайдера для улучшения."
+                : "Улучшение выключено.")
+            : "Используется при ⌥⌘E."
+    }
+
+    @objc private func addProvider() {
+        let provider = AIProvider(name: "",
+                                  kind: .opencode,
+                                  providerID: "deepseek",
+                                  model: "deepseek-flash",
+                                  baseURL: "")
+        showProviderEditor(provider, apiKey: "")
+    }
+
+    @objc private func editProvider(_ sender: NSButton) {
+        guard let id = providerID(from: sender),
+              let provider = providers.first(where: { $0.id == id }) else { return }
+        showProviderEditor(provider, apiKey: providerKeys[id] ?? "")
+    }
+
+    @objc private func deleteProvider(_ sender: NSButton) {
+        guard let id = providerID(from: sender),
+              let provider = providers.first(where: { $0.id == id }) else { return }
+        if id == dictationProviderID || id == improveProviderID {
+            let alert = NSAlert()
+            alert.messageText = "Провайдер используется"
+            alert.informativeText = "Сначала выберите другого провайдера в «Постобработке»."
+            alert.runModal()
+            return
+        }
+        let confirm = NSAlert()
+        confirm.messageText = "Удалить провайдера «\(provider.displayTitle)»?"
+        confirm.informativeText = "Профиль и его API-ключ будут удалены после сохранения настроек."
+        confirm.addButton(withTitle: "Удалить")
+        confirm.addButton(withTitle: "Отмена")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        providers.removeAll { $0.id == id }
+        providerKeys.removeValue(forKey: id)
+        refreshProvidersList()
+        refreshProviderMenus()
+    }
+
+    private func providerID(from sender: NSButton) -> UUID? {
+        guard let raw = sender.identifier?.rawValue else { return nil }
+        return UUID(uuidString: raw)
+    }
+
+    private func showProviderEditor(_ provider: AIProvider, apiKey: String) {
+        let existingNames = Set(providers
+            .filter { $0.id != provider.id }
+            .map(\.name))
+        let editor = ProviderEditorWindow(provider: provider,
+                                          apiKey: apiKey,
+                                          existingNames: existingNames)
+        editor.onSave = { [weak self] updated, key in
+            guard let self else { return }
+            let wasEmpty = self.providers.isEmpty
+            if let index = self.providers.firstIndex(where: { $0.id == updated.id }) {
+                self.providers[index] = updated
+            } else {
+                self.providers.append(updated)
+            }
+            self.providerKeys[updated.id] = updated.kind == .direct ? key : ""
+
+            if wasEmpty {
+                self.dictationProviderID = updated.id
+                self.improveProviderID = updated.id
+            }
+            self.refreshProvidersList()
+            self.refreshProviderMenus()
+        }
+        providerEditor = editor
+        guard let editorWindow = editor.window else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        editorWindow.center()
+        editorWindow.makeKeyAndOrderFront(nil)
+        NSApp.runModal(for: editorWindow)
+        providerEditor = nil
+    }
+
+    // MARK: - Postprocessing
 
     private func buildAI() -> NSView {
         let view = NSView()
@@ -378,6 +651,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 16, bottom: 16, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.widthAnchor.constraint(greaterThanOrEqualToConstant: 860).isActive = true
         doc.addSubview(stack)
 
         NSLayoutConstraint.activate([
@@ -393,45 +667,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
         ])
 
-        let modeLabel = label("Способ обработки")
-        modeControl = NSSegmentedControl(labels: ["OpenCode", "Свой API", "Без правки"],
-                                         trackingMode: .selectOne,
-                                         target: self,
-                                         action: #selector(aiModeChanged))
-        modeControl.segmentStyle = .rounded
-        let modeRow = NSStackView(views: [modeLabel, modeControl])
-        modeRow.orientation = .horizontal
-        modeRow.alignment = .centerY
-        modeRow.spacing = 12
-
-        providerField = NSTextField()
-        providerField.placeholderString = "deepseek"
-        modelField = NSTextField()
-        modelField.placeholderString = "deepseek-flash"
-        baseURLField = NSTextField()
-        baseURLField.placeholderString = "https://api.example.com/v1"
-        apiKeyField = NSSecureTextField()
-        apiKeyField.placeholderString = "если нужен"
-
-        providerGroup = fieldGroup("Провайдер", field: providerField)
-        modelGroup = fieldGroup("Модель", field: modelField)
-        baseURLGroup = fieldGroup("Базовый URL (OpenAI-compatible)", field: baseURLField)
-        apiKeyGroup = fieldGroup("API-ключ (хранится в Keychain)", field: apiKeyField)
-
-        testButton = NSButton(title: "Проверить подключение", target: self, action: #selector(testCorrection))
-        testButton.bezelStyle = .rounded
-        testResultLabel = NSTextField(wrappingLabelWithString: "")
-        testResultLabel.font = .systemFont(ofSize: 11)
-        testResultLabel.textColor = .secondaryLabelColor
-        testResultLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        testRow = NSStackView(views: [testButton, testResultLabel])
-        testRow.orientation = .horizontal
-        testRow.alignment = .centerY
-        testRow.spacing = 10
-
-        aiHint = NSTextField(wrappingLabelWithString: "")
-        aiHint.font = .systemFont(ofSize: 11)
-        aiHint.textColor = .secondaryLabelColor
+        let dictationHeader = label("Провайдер для диктовки", bold: true)
+        dictationProviderPopup = NSPopUpButton()
+        dictationProviderPopup.target = self
+        dictationProviderPopup.action = #selector(dictationProviderChanged)
+        dictationProviderPopup.widthAnchor.constraint(equalToConstant: 430).isActive = true
+        let dictationHint = label("Модели и подключения настраиваются во вкладке «Провайдеры».")
+        dictationProviderNote = label("")
+        dictationProviderNote.lineBreakMode = .byWordWrapping
+        dictationProviderNote.maximumNumberOfLines = 2
 
         promptSeparator = NSBox()
         promptSeparator.boxType = .separator
@@ -441,8 +685,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         improveSeparator.boxType = .separator
         improveGroup = buildImproveSection()
 
-        let rows: [NSView] = [modeRow, providerGroup, modelGroup, baseURLGroup,
-                              apiKeyGroup, testRow, aiHint, promptSeparator, promptGroup,
+        let rows: [NSView] = [dictationHeader, dictationProviderPopup, dictationHint,
+                              dictationProviderNote, promptSeparator, promptGroup,
                               improveSeparator, improveGroup]
         for row in rows {
             stack.addArrangedSubview(row)
@@ -453,45 +697,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         return view
     }
 
-    private func fieldGroup(_ title: String, field: NSTextField) -> NSStackView {
-        let label = label(title)
-        let stack = NSStackView(views: [label, field])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 6
-        field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        return stack
+    @objc private func dictationProviderChanged() {
+        dictationProviderID = dictationProviderPopup.selectedItem?.representedObject as? UUID
+        updateAIProviderState()
+        refreshProvidersList()
     }
 
-    @objc private func aiModeChanged() {
-        let mode = selectedProcessingMode
-        providerGroup?.isHidden = mode != "opencode"
-        modelGroup?.isHidden = mode == "off"
-        baseURLGroup?.isHidden = mode != "direct"
-        apiKeyGroup?.isHidden = mode != "direct"
-        promptGroup?.isHidden = mode == "off"
-        promptSeparator?.isHidden = mode == "off"
-        improveGroup?.isHidden = mode == "off"
-        improveSeparator?.isHidden = mode == "off"
-        testButton?.isEnabled = mode != "off"
-        testRow?.isHidden = mode == "off"
-        testResultLabel?.stringValue = ""
-        switch mode {
-        case "direct":
-            aiHint?.stringValue = "Запросы уходят напрямую в {URL}/chat/completions. Ключ хранится в Keychain и передаётся как Bearer."
-        case "off":
-            aiHint?.stringValue = "Постобработка выключена: вставляется сырой текст Whisper."
-        default:
-            aiHint?.stringValue = "Запросы идут через OpenCode CLI. Провайдер и модель должны быть доступны в OpenCode."
-        }
+    @objc private func improveProviderChanged() {
+        improveProviderID = improveProviderPopup.selectedItem?.representedObject as? UUID
+        updateAIProviderState()
+        refreshProvidersList()
     }
 
-    private var selectedProcessingMode: String {
-        switch modeControl?.selectedSegment ?? 0 {
-        case 1: return "direct"
-        case 2: return "off"
-        default: return "opencode"
-        }
+    @objc private func improveEnabledChanged() {
+        updateAIProviderState()
     }
 
     // MARK: - История
@@ -1267,8 +1486,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let header = label("Улучшение выделенного текста", bold: true)
         improveEnabledCheck = NSButton(checkboxWithTitle: "Включить улучшение выделенного текста",
-                                       target: nil, action: nil)
-        let hint = label("Провайдер и модель — из «Постобработки». Пустое поле заменяется встроенным промптом. Хоткей — в разделе «Хоткеи».")
+                                       target: self, action: #selector(improveEnabledChanged))
+        let providerLabel = label("Провайдер для улучшения")
+        improveProviderPopup = NSPopUpButton()
+        improveProviderPopup.target = self
+        improveProviderPopup.action = #selector(improveProviderChanged)
+        improveProviderPopup.widthAnchor.constraint(equalToConstant: 430).isActive = true
+        improveProviderNote = label("")
+        improveProviderNote.lineBreakMode = .byWordWrapping
+        improveProviderNote.maximumNumberOfLines = 2
+
+        let hint = label("Провайдер и модель выбираются здесь; профили — во вкладке «Провайдеры». Пустое поле промпта заменяется встроенным.")
 
         let reset = NSButton(title: "Сбросить к встроенному", target: self, action: #selector(resetImprovePromptToDefault))
         reset.bezelStyle = .rounded
@@ -1287,12 +1515,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         section.addArrangedSubview(header)
         section.addArrangedSubview(improveEnabledCheck)
+        section.addArrangedSubview(providerLabel)
+        section.addArrangedSubview(improveProviderPopup)
+        section.addArrangedSubview(improveProviderNote)
         section.addArrangedSubview(hint)
         section.addArrangedSubview(buttons)
         section.addArrangedSubview(scroll)
         section.addArrangedSubview(improveTestLabel)
 
-        for view in [header, hint, scroll, improveTestLabel] as [NSView] {
+        for view in [header, hint, scroll, improveTestLabel, improveProviderPopup, improveProviderNote] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
         }
@@ -1304,13 +1535,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func testImprovePrompt() {
-        let settings = currentSettings()
+        guard let provider = providers.first(where: { $0.id == improveProviderID }) else {
+            improveTestLabel.stringValue = "Выберите провайдера улучшения."
+            improveTestLabel.textColor = .systemOrange
+            return
+        }
         let prompt = improveText.string.isEmpty ? DefaultPrompts.improve : improveText.string
         improveTestLabel.stringValue = "Проверяю…"
         improveTestLabel.textColor = .secondaryLabelColor
-        AIClient.generate(settings: settings, system: prompt,
-                          text: "это текст который нужно улучшить он содержит ошибки и повторы",
-                          apiKey: apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
+        CorrectionTester.test(provider: provider, prompt: prompt) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let text):
@@ -1624,7 +1857,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             return ("⚠️ VAD-модель — не найдена в бандле", .systemOrange)
 
         case .opencode:
-            if !settings.useOpenCode {
+            let selected = [settings.dictationProvider,
+                            settings.improveEnabled ? settings.improveProvider : nil]
+                .compactMap { $0 }
+            let usesOpenCode = selected.contains { $0.kind == .opencode }
+            if !usesOpenCode {
                 return ("– OpenCode CLI (не используется)", .secondaryLabelColor)
             }
             if let path = OpenCodeLocator.find() {
@@ -1673,38 +1910,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc private func testCorrection() {
-        let settings = currentSettings()
-        testButton.isEnabled = false
-        testResultLabel.stringValue = "Проверяю…"
-        testResultLabel.textColor = .secondaryLabelColor
-        CorrectionTester.test(settings: settings,
-                              prompt: settings.promptFix,
-                              apiKey: apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
-            guard let self else { return }
-            self.testButton.isEnabled = self.selectedProcessingMode != "off"
-            switch result {
-            case .success(let text):
-                self.testResultLabel.stringValue = "✓ \(text)"
-                self.testResultLabel.textColor = .systemGreen
-            case .failure(let error):
-                self.testResultLabel.stringValue = "⚠️ \(error.localizedDescription)"
-                self.testResultLabel.textColor = .systemOrange
-            }
-        }
-    }
-
     @objc private func resetPromptToDefault() {
         fixText.string = DefaultPrompts.fix
     }
 
     @objc private func testPrompt() {
-        let settings = currentSettings()
+        guard let provider = providers.first(where: { $0.id == dictationProviderID }) else {
+            promptTestLabel.stringValue = "Выберите провайдера для диктовки."
+            promptTestLabel.textColor = .systemOrange
+            return
+        }
         promptTestLabel.stringValue = "Проверяю…"
         promptTestLabel.textColor = .secondaryLabelColor
-        CorrectionTester.test(settings: settings,
-                              prompt: fixText.string,
-                              apiKey: apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
+        CorrectionTester.test(provider: provider, prompt: fixText.string) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let text):
@@ -1761,22 +1979,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.promptFix = fixText.string
         settings.promptImprove = improveText.string
         settings.improveEnabled = improveEnabledCheck.state == .on
+        settings.providers = providers
+        settings.dictationProviderID = providers.contains(where: { $0.id == dictationProviderID })
+            ? dictationProviderID
+            : nil
+        settings.improveProviderID = providers.contains(where: { $0.id == improveProviderID })
+            ? improveProviderID
+            : nil
         settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
         settings.microphone = micPopup.titleOfSelectedItem ?? ""
-        settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.model = modelField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.baseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
-        settings.processingMode = selectedProcessingMode
-        switch settings.processingMode {
-        case "direct":
-            settings.useOpenCode = false
-        case "off":
-            settings.useOpenCode = false
-            settings.baseURL = ""
-        default:
-            settings.useOpenCode = true
-            settings.baseURL = ""
-        }
         settings.restoreClipboard = restoreCheck.state == .on
         settings.showHUD = hudCheck.state == .on
         settings.historyEnabled = historyEnabledCheck.state == .on
@@ -1793,7 +2004,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func hasUnsavedChanges() -> Bool {
         currentSettings() != loadedSettings
             || (launchCheck.state == .on) != loadedLaunchAtLogin
-            || apiKeyField.stringValue != loadedAPIKey
+            || providerKeys != loadedProviderKeys
     }
 
     private func loadValues() {
@@ -1805,17 +2016,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
         reloadMicrophones(selected: settings.microphone)
-        providerField.stringValue = settings.provider
-        modelField.stringValue = settings.model
-        baseURLField.stringValue = settings.baseURL
-        switch settings.processingMode {
-        case "direct": modeControl.selectedSegment = 1
-        case "off": modeControl.selectedSegment = 2
-        default: modeControl.selectedSegment = 0
+
+        providers = settings.providers
+        dictationProviderID = settings.dictationProviderID
+        improveProviderID = settings.improveProviderID
+        providerKeys = [:]
+        for provider in providers {
+            providerKeys[provider.id] = provider.kind == .direct
+                ? (Keychain.value(for: provider.keychainAccount) ?? "")
+                : ""
         }
-        aiModeChanged()
-        apiKeyField.stringValue = Keychain.value(for: Keychain.directAPIKeyAccount) ?? ""
-        loadedAPIKey = apiKeyField.stringValue
+        loadedProviderKeys = providerKeys
+        refreshProvidersList()
+        refreshProviderMenus()
+
         restoreCheck.state = settings.restoreClipboard ? .on : .off
         hudCheck.state = settings.showHUD ? .on : .off
         refreshLaunchStatus()
@@ -1827,6 +2041,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         improveText.string = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
         improveEnabledCheck.state = settings.improveEnabled ? .on : .off
+        updateAIProviderState()
 
         modelDirs = settings.whisperModelDirs
         hiddenModelPaths = settings.hiddenModelPaths
@@ -1869,18 +2084,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             toggleHotkeyButton.title = toggleHotkey.display
             improveHotkey = HotKeySetting.improveDefault
             improveHotkeyButton.title = improveHotkey.display
+        case "providers":
+            let provider = AIProvider.openCodeDefault()
+            providers = [provider]
+            providerKeys = [provider.id: ""]
+            dictationProviderID = provider.id
+            improveProviderID = provider.id
+            refreshProvidersList()
+            refreshProviderMenus()
         case "ai":
-            providerField.stringValue = "deepseek"
-            modelField.stringValue = "deepseek-flash"
-            baseURLField.stringValue = ""
-            apiKeyField.stringValue = ""
-            modeControl.selectedSegment = 0
             fixText.string = DefaultPrompts.fix
             improveText.string = DefaultPrompts.improve
             improveEnabledCheck.state = .on
             promptTestLabel?.stringValue = ""
             improveTestLabel?.stringValue = ""
-            aiModeChanged()
+            updateAIProviderState()
         case "models":
             modelDirs = []
             hiddenModelPaths = []
@@ -1918,22 +2136,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             return
         }
 
-        if settings.processingMode == "direct" {
-            if settings.baseURL.isEmpty {
-                let alert = NSAlert()
-                alert.messageText = "Не задан базовый URL"
-                alert.informativeText = "Для «Своего API» укажите базовый URL, например https://api.example.com/v1"
-                alert.runModal()
-                return
-            }
-            if !settings.baseURL.lowercased().hasPrefix("http://"),
-               !settings.baseURL.lowercased().hasPrefix("https://") {
-                let alert = NSAlert()
-                alert.messageText = "Некорректный базовый URL"
-                alert.informativeText = "URL должен начинаться с http:// или https://"
-                alert.runModal()
-                return
-            }
+        if let error = validateProviders() {
+            let alert = NSAlert()
+            alert.messageText = "Проверьте провайдеров"
+            alert.informativeText = error
+            alert.runModal()
+            selectTab("providers")
+            return
         }
 
         let wantLaunch = launchCheck.state == .on
@@ -1947,25 +2156,66 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         Log.write("login item: requested=\(wantLaunch) status=\(SMAppService.mainApp.status.rawValue)")
 
-        let key = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if key.isEmpty {
-            Keychain.delete(account: Keychain.directAPIKeyAccount)
-        } else {
-            Keychain.set(key, for: Keychain.directAPIKeyAccount)
+        var normalizedKeys: [UUID: String] = [:]
+        for provider in settings.providers {
+            let key = provider.kind == .direct
+                ? (providerKeys[provider.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                : ""
+            normalizedKeys[provider.id] = key
+            if provider.kind == .direct, !key.isEmpty {
+                Keychain.set(key, for: provider.keychainAccount)
+            } else {
+                Keychain.delete(account: provider.keychainAccount)
+            }
         }
+        let currentIDs = Set(settings.providers.map(\.id))
+        for old in loadedSettings.providers where !currentIDs.contains(old.id) {
+            Keychain.delete(account: old.keychainAccount)
+        }
+        providerKeys = normalizedKeys
 
         SettingsStore.save(settings)
         HistoryStore.shared.prune(maxItems: settings.historyMaxItems,
                                   maxDays: settings.historyMaxDays)
         reloadHistory()
         loadedSettings = settings
-        loadedAPIKey = key
+        loadedProviderKeys = normalizedKeys
         loadedLaunchAtLogin = SMAppService.mainApp.status == .enabled
         onSettingsSaved?()
-        Log.write("settings saved")
+        Log.write("settings saved providers=\(settings.providers.count) dictation=\(settings.dictationProvider?.displayTitle ?? "none") improve=\(settings.improveProvider?.displayTitle ?? "none")")
         allowClose = true
         window?.close()
         allowClose = false
+    }
+
+    private func validateProviders() -> String? {
+        var names = Set<String>()
+        for provider in providers {
+            let name = provider.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let model = provider.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return "Укажите название каждого провайдера." }
+            let normalized = name.lowercased()
+            guard names.insert(normalized).inserted else {
+                return "Названия провайдеров не должны совпадать: «\(name)»."
+            }
+            guard !model.isEmpty else { return "Укажите модель для «\(name)»." }
+            switch provider.kind {
+            case .opencode:
+                guard !provider.providerID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return "Укажите provider ID OpenCode для «\(name)»."
+                }
+            case .direct:
+                let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !base.isEmpty else {
+                    return "Укажите базовый URL для «\(name)»."
+                }
+                guard base.lowercased().hasPrefix("http://")
+                        || base.lowercased().hasPrefix("https://") else {
+                    return "URL провайдера «\(name)» должен начинаться с http:// или https://."
+                }
+            }
+        }
+        return nil
     }
 }
 

@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WhisperModelStore.cleanupPartialDownloads()
         HistoryStore.shared.load()
         HistoryStore.shared.prune(maxItems: saved.historyMaxItems, maxDays: saved.historyMaxDays)
-        Log.write("settings fix=\(saved.promptFix.count) improve=\(saved.promptImprove.count) improveEnabled=\(saved.improveEnabled)")
+        Log.write("settings fix=\(saved.promptFix.count) improve=\(saved.promptImprove.count) improveEnabled=\(saved.improveEnabled) providers=\(saved.providers.count) dictation=\(saved.dictationProvider?.displayTitle ?? "none") improveProfile=\(saved.improveProvider?.displayTitle ?? "none")")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
@@ -260,13 +260,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.settingsWindow?.selectTab("models")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                     capture(to: "/tmp/runvoice-settings-models.png")
-                    self.settingsWindow?.selectTab("history")
+                    self.settingsWindow?.selectTab("providers")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        capture(to: "/tmp/runvoice-settings-history.png")
-                        self.settingsWindow?.selectTab("hotkeys")
+                        capture(to: "/tmp/runvoice-settings-providers.png")
+                        self.settingsWindow?.selectTab("history")
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                            NSApp.terminate(nil)
+                            capture(to: "/tmp/runvoice-settings-history.png")
+                            self.settingsWindow?.selectTab("hotkeys")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                                NSApp.terminate(nil)
+                            }
                         }
                     }
                 }
@@ -323,8 +327,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            accent: .info, duration: 3)
             return
         }
-        guard settings.processingMode != "off" else {
-            showImproveHUD("Включите постобработку", icon: "exclamationmark.triangle.fill",
+        guard let provider = settings.improveProvider else {
+            showImproveHUD("Не выбран AI-провайдер для улучшения", icon: "exclamationmark.triangle.fill",
                            accent: .warning, duration: 4)
             return
         }
@@ -348,7 +352,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.write("improve: capture \(context.source == .accessibility ? "ax" : "clipboard"), \(context.text.count) символов")
 
             let prompt = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
-            AIClient.generate(settings: settings, system: prompt, text: context.text) { [weak self] result in
+            Log.write("improve: provider=\(provider.displayTitle) type=\(provider.kind.rawValue) model=\(provider.model)")
+            AIClient.generate(provider: provider, system: prompt, text: context.text) { [weak self] result in
                 guard let self, self.improveToken == token else { return }
 
                 switch result {

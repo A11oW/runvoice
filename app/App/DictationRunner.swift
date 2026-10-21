@@ -61,17 +61,40 @@ final class DictationRunner {
         if !settings.microphone.isEmpty {
             environment["MIC_NAME"] = settings.microphone
         }
-        if let key = Keychain.value(for: Keychain.directAPIKeyAccount), !key.isEmpty {
-            environment["OC_API_KEY"] = key
+
+        // Не даём унаследованным из shell переменным смешиваться с выбранным профилем.
+        for key in ["OC_PROVIDER", "OC_MODEL_ID", "OC_BASE_URL",
+                    "OC_API_KEY", "OC_VARIANT", "DICTATE_USE_OC"] {
+            environment.removeValue(forKey: key)
+        }
+
+        if let provider = settings.dictationProvider {
+            environment["OC_MODEL_ID"] = provider.model
+            switch provider.kind {
+            case .opencode:
+                environment["DICTATE_USE_OC"] = "1"
+                environment["OC_PROVIDER"] = provider.providerID
+            case .direct:
+                let baseURL = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                if baseURL.isEmpty {
+                    environment["DICTATE_USE_OC"] = "0"
+                } else {
+                    environment["DICTATE_USE_OC"] = "1"
+                    environment["OC_BASE_URL"] = baseURL
+                    if let key = Keychain.value(for: provider.keychainAccount), !key.isEmpty {
+                        environment["OC_API_KEY"] = key
+                    }
+                }
+            }
+            Log.write("dictation profile: \(provider.name), \(provider.kind.rawValue), model=\(provider.model)")
+        } else {
+            environment["DICTATE_USE_OC"] = "0"
+            Log.write("dictation profile: без AI (сырой текст)")
         }
 
         let forwarded: [(String, String?)] = [
             ("DICTATE_PROMPT_FIX", settings.promptFix.isEmpty ? nil : settings.promptFix),
             ("WHISPER_LANG", settings.language.isEmpty ? nil : settings.language),
-            ("OC_PROVIDER", settings.provider.isEmpty ? nil : settings.provider),
-            ("OC_MODEL_ID", settings.model.isEmpty ? nil : settings.model),
-            ("OC_BASE_URL", settings.baseURL.isEmpty ? nil : settings.baseURL),
-            ("DICTATE_USE_OC", settings.useOpenCode ? "1" : "0"),
             ("DICTATE_RESTORE_CLIPBOARD", settings.restoreClipboard ? "1" : nil),
         ]
         for (key, value) in forwarded {

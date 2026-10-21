@@ -13,20 +13,88 @@ struct HotKeySetting: Codable, Equatable {
                                               display: "⌥⌘E")
 }
 
+enum AIProviderKind: String, Codable, Equatable {
+    case opencode
+    case direct
+}
+
+/// Именованный профиль AI-провайдера и модели.
+/// Для direct-профиля API-ключ хранится в Keychain отдельно.
+struct AIProvider: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var name: String
+    var kind: AIProviderKind
+    var providerID: String
+    var model: String
+    var baseURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, providerID, model, baseURL
+    }
+
+    init(id: UUID = UUID(), name: String, kind: AIProviderKind,
+         providerID: String, model: String, baseURL: String) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.providerID = providerID
+        self.model = model
+        self.baseURL = baseURL
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        kind = try c.decodeIfPresent(AIProviderKind.self, forKey: .kind) ?? .opencode
+        providerID = try c.decodeIfPresent(String.self, forKey: .providerID) ?? ""
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
+        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
+    }
+
+    var keychainAccount: String { "ai-provider-\(id.uuidString)" }
+
+    var typeTitle: String {
+        kind == .opencode ? "OpenCode" : "Свой API"
+    }
+
+    var displayTitle: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? detail : trimmed
+    }
+
+    var detail: String {
+        switch kind {
+        case .opencode:
+            let p = providerID.isEmpty ? "?" : providerID
+            let m = model.isEmpty ? "?" : model
+            return "\(p) / \(m)"
+        case .direct:
+            return model.isEmpty ? baseURL : "\(baseURL) / \(model)"
+        }
+    }
+
+    static func openCodeDefault() -> AIProvider {
+        AIProvider(name: "DeepSeek",
+                   kind: .opencode,
+                   providerID: "deepseek",
+                   model: "deepseek-flash",
+                   baseURL: "")
+    }
+}
+
 struct Settings: Codable, Equatable {
     var promptFix = ""
     var promptImprove = ""
     var improveEnabled = true
+    var providers: [AIProvider] = []
+    var dictationProviderID: UUID?
+    var improveProviderID: UUID?
     var whisperModelPath = ""
     var whisperModelDirs: [String] = []
     var hiddenModelPaths: [String] = []
     var language = "ru"
     var microphone = ""
-    var provider = "deepseek"
-    var model = "deepseek-flash"
-    var baseURL = ""
-    var processingMode = "opencode"   // opencode | direct | off
-    var useOpenCode = true
     var restoreClipboard = false
     var showHUD = true
     var historyEnabled = true
@@ -37,38 +105,55 @@ struct Settings: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case promptFix, promptImprove, improveEnabled
+        case providers, dictationProviderID, improveProviderID
         case whisperModelPath, whisperModelDirs, hiddenModelPaths
-        case language, microphone, provider, model, baseURL, processingMode
-        case useOpenCode, restoreClipboard, showHUD
+        case language, microphone
+        case restoreClipboard, showHUD
         case historyEnabled, historyMaxItems, historyMaxDays
         case hotkeyToggle, hotkeyImprove
     }
 
-    init() {}
+    /// Поля старого формата — только для миграции.
+    private enum LegacyKeys: String, CodingKey {
+        case provider, model, baseURL, processingMode, useOpenCode
+    }
+
+    init() {
+        let provider = AIProvider.openCodeDefault()
+        providers = [provider]
+        dictationProviderID = provider.id
+        improveProviderID = provider.id
+    }
+
+    var dictationProvider: AIProvider? {
+        providers.first { $0.id == dictationProviderID }
+    }
+
+    var improveProvider: AIProvider? {
+        providers.first { $0.id == improveProviderID }
+    }
 
     init(from decoder: Decoder) throws {
+        self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
+
         promptFix = try c.decodeIfPresent(String.self, forKey: .promptFix) ?? ""
         promptImprove = try c.decodeIfPresent(String.self, forKey: .promptImprove) ?? ""
         improveEnabled = try c.decodeIfPresent(Bool.self, forKey: .improveEnabled) ?? true
+
+        if let decodedProviders = try c.decodeIfPresent([AIProvider].self, forKey: .providers) {
+            providers = decodedProviders
+            dictationProviderID = try c.decodeIfPresent(UUID.self, forKey: .dictationProviderID)
+            improveProviderID = try c.decodeIfPresent(UUID.self, forKey: .improveProviderID)
+        } else {
+            migrateLegacy(decoder)
+        }
+
         whisperModelPath = try c.decodeIfPresent(String.self, forKey: .whisperModelPath) ?? ""
         whisperModelDirs = try c.decodeIfPresent([String].self, forKey: .whisperModelDirs) ?? []
         hiddenModelPaths = try c.decodeIfPresent([String].self, forKey: .hiddenModelPaths) ?? []
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
         microphone = try c.decodeIfPresent(String.self, forKey: .microphone) ?? ""
-        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "deepseek"
-        model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
-        baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? ""
-        useOpenCode = try c.decodeIfPresent(Bool.self, forKey: .useOpenCode) ?? true
-        if let mode = try c.decodeIfPresent(String.self, forKey: .processingMode) {
-            processingMode = mode
-        } else if !baseURL.isEmpty {
-            processingMode = "direct"
-        } else if useOpenCode {
-            processingMode = "opencode"
-        } else {
-            processingMode = "off"
-        }
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
         showHUD = try c.decodeIfPresent(Bool.self, forKey: .showHUD) ?? true
         historyEnabled = try c.decodeIfPresent(Bool.self, forKey: .historyEnabled) ?? true
@@ -77,6 +162,51 @@ struct Settings: Codable, Equatable {
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
         hotkeyImprove = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyImprove)
             ?? HotKeySetting.improveDefault
+
+        // Если профиль удалён или JSON частично повреждён — не оставляем
+        // несуществующий выбор.
+        if let id = dictationProviderID, !providers.contains(where: { $0.id == id }) {
+            dictationProviderID = nil
+        }
+        if let id = improveProviderID, !providers.contains(where: { $0.id == id }) {
+            improveProviderID = nil
+        }
+    }
+
+    private mutating func migrateLegacy(_ decoder: Decoder) {
+        guard let c = try? decoder.container(keyedBy: LegacyKeys.self) else { return }
+        let legacyProvider = ((try? c.decodeIfPresent(String.self, forKey: .provider)) ?? nil) ?? "deepseek"
+        let legacyModel = ((try? c.decodeIfPresent(String.self, forKey: .model)) ?? nil) ?? "deepseek-flash"
+        let legacyBaseURL = ((try? c.decodeIfPresent(String.self, forKey: .baseURL)) ?? nil) ?? ""
+        let legacyUseOpenCode = ((try? c.decodeIfPresent(Bool.self, forKey: .useOpenCode)) ?? nil) ?? true
+        let legacyModeValue: String? = (try? c.decodeIfPresent(String.self, forKey: .processingMode)) ?? nil
+        let legacyMode: String
+        if let mode = legacyModeValue {
+            legacyMode = mode
+        } else if !legacyBaseURL.isEmpty {
+            legacyMode = "direct"
+        } else if legacyUseOpenCode {
+            legacyMode = "opencode"
+        } else {
+            legacyMode = "off"
+        }
+
+        let kind: AIProviderKind = (legacyMode == "direct" || !legacyBaseURL.isEmpty)
+            ? .direct
+            : .opencode
+        let profile = AIProvider(name: "Профиль по умолчанию",
+                                 kind: kind,
+                                 providerID: legacyProvider,
+                                 model: legacyModel,
+                                 baseURL: legacyBaseURL)
+        providers = [profile]
+        improveProviderID = profile.id
+        if legacyMode == "off" {
+            dictationProviderID = nil
+            improveEnabled = false
+        } else {
+            dictationProviderID = profile.id
+        }
     }
 }
 
@@ -90,9 +220,23 @@ enum SettingsStore {
     static let url = Paths.support.appendingPathComponent("settings.json")
 
     static func load() -> Settings {
-        guard let data = try? Data(contentsOf: url),
-              let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
+        guard let data = try? Data(contentsOf: url) else {
             return Settings()
+        }
+        guard let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
+            return Settings()
+        }
+
+        let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if raw?["providers"] == nil {
+            // Старый settings.json: переносим ключ в аккаунт нового профиля.
+            if let direct = settings.providers.first(where: { $0.kind == .direct }),
+               Keychain.value(for: direct.keychainAccount) == nil,
+               let oldKey = Keychain.value(for: Keychain.directAPIKeyAccount),
+               !oldKey.isEmpty {
+                Keychain.set(oldKey, for: direct.keychainAccount)
+            }
+            save(settings)
         }
         return settings
     }

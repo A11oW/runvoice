@@ -23,7 +23,8 @@
 |---|---|
 | Основные (язык, микрофон, автозапуск, HUD, диагностика) | [settings-general.png](settings-general.png) |
 | Распознавание (модели Whisper, скачивание, папки) | [settings-models.png](settings-models.png) |
-| Постобработка (режим, проверка, промпт) | [settings-ai.png](settings-ai.png) |
+| Провайдеры (профили, модели, ключи, проверка) | [settings-providers.png](settings-providers.png) |
+| Постобработка (выбор провайдеров, промпты) | [settings-ai.png](settings-ai.png) |
 | Постобработка → улучшение выделенного текста | [settings-improve.png](settings-improve.png) |
 | История (список, копирование, лимиты) | [settings-history.png](settings-history.png) |
 | Хоткеи (диктовка, улучшение, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
