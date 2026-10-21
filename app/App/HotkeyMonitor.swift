@@ -6,24 +6,28 @@ import CoreGraphics
 /// Сравнивает код клавиши и модификаторы, совпавшие сочетания потребляет.
 final class HotkeyMonitor {
     var onAction: (() -> Void)?
+    var onImprove: (() -> Void)?
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var toggleHotkey = HotKeySetting()
+    private var improveHotkey = HotKeySetting()
     private var suspended = false
 
     func start(settings: Settings) {
         toggleHotkey = settings.hotkeyToggle
+        improveHotkey = settings.hotkeyImprove
         installTap()
-        Log.write("hotkey configured: \(toggleHotkey.display)")
+        Log.write("hotkeys configured: \(toggleHotkey.display), \(improveHotkey.display)")
     }
 
     /// Переустановить tap после смены сочетания — без перезапуска приложения.
     func reload(settings: Settings) {
         toggleHotkey = settings.hotkeyToggle
+        improveHotkey = settings.hotkeyImprove
         removeTap()
         installTap()
-        Log.write("hotkey reconfigured: \(toggleHotkey.display)")
+        Log.write("hotkeys reconfigured: \(toggleHotkey.display), \(improveHotkey.display)")
     }
 
     func setSuspended(_ value: Bool) {
@@ -99,6 +103,14 @@ final class HotkeyMonitor {
                 && flags.contains(.maskShift) == wantShift
                 && flags.contains(.maskAlternate) == wantOption
                 && flags.contains(.maskCommand) == wantCommand
+        }
+
+        if matches(improveHotkey) {
+            if !isRepeat {
+                Log.write("hotkey fired: improve")
+                DispatchQueue.main.async { self.onImprove?() }
+            }
+            return true
         }
 
         if matches(toggleHotkey) {

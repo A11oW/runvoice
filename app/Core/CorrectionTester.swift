@@ -1,9 +1,9 @@
 import Foundation
 
-/// Одноразовая проверка настройки постобработки: отправляет тестовую фразу
-/// тем же способом, которым пользуется dictate.sh, и возвращает ответ модели.
-enum CorrectionTester {
-    enum TestError: LocalizedError {
+/// Одноразовый вызов модели: используется проверкой подключения и улучшением текста.
+enum AIClient {
+    enum AIError: LocalizedError {
+        case processingOff
         case noBaseURL
         case noOpenCode
         case badResponse(String)
@@ -11,6 +11,7 @@ enum CorrectionTester {
 
         var errorDescription: String? {
             switch self {
+            case .processingOff: return "Постобработка выключена — включите OpenCode или свой API"
             case .noBaseURL: return "Не задан базовый URL для своего API"
             case .noOpenCode: return "OpenCode CLI не найден"
             case .badResponse(let text): return "Некорректный ответ: \(text)"
@@ -19,40 +20,37 @@ enum CorrectionTester {
         }
     }
 
-    private static let sample = "это проверка связи с моделью, проверка связи"
-
-    static func test(settings: Settings,
-                     prompt: String,
-                     apiKey: String? = nil,
-                     completion: @escaping (Result<String, Error>) -> Void) {
-        let system = prompt.isEmpty ? DefaultPrompts.fix : prompt
+    static func generate(settings: Settings,
+                         system: String,
+                         text: String,
+                         apiKey: String? = nil,
+                         completion: @escaping (Result<String, Error>) -> Void) {
         let mode = settings.processingMode
-
         if mode == "off" {
-            finish(.success("Постобработка выключена — текст вставляется без правки."), completion)
+            finish(.failure(AIError.processingOff), completion)
             return
         }
-
         if mode == "direct" {
             let base = settings.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !base.isEmpty else {
-                finish(.failure(TestError.noBaseURL), completion)
+                finish(.failure(AIError.noBaseURL), completion)
                 return
             }
-            directTest(settings: settings, system: system, baseURL: base,
+            directTest(settings: settings, system: system, text: text, baseURL: base,
                        apiKey: apiKey, completion: completion)
             return
         }
-
         guard let opencode = OpenCodeLocator.find() else {
-            finish(.failure(TestError.noOpenCode), completion)
+            finish(.failure(AIError.noOpenCode), completion)
             return
         }
-        openCodeTest(settings: settings, system: system, binary: opencode, completion: completion)
+        openCodeTest(settings: settings, system: system, text: text,
+                     binary: opencode, completion: completion)
     }
 
     private static func directTest(settings: Settings,
                                    system: String,
+                                   text: String,
                                    baseURL: String,
                                    apiKey: String?,
                                    completion: @escaping (Result<String, Error>) -> Void) {
@@ -63,7 +61,7 @@ enum CorrectionTester {
             urlString = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/chat/completions"
         }
         guard let url = URL(string: urlString) else {
-            finish(.failure(TestError.badResponse("некорректный URL \(urlString)")), completion)
+            finish(.failure(AIError.badResponse("некорректный URL \(urlString)")), completion)
             return
         }
 
@@ -72,17 +70,17 @@ enum CorrectionTester {
             "temperature": 0,
             "messages": [
                 ["role": "system", "content": system],
-                ["role": "user", "content": "<text>\(sample)</text>"],
+                ["role": "user", "content": "<text>\(text)</text>"],
             ],
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
-            finish(.failure(TestError.badResponse("не удалось собрать JSON")), completion)
+            finish(.failure(AIError.badResponse("не удалось собрать JSON")), completion)
             return
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let apiKey, !apiKey.isEmpty {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
@@ -102,10 +100,13 @@ enum CorrectionTester {
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = json["choices"] as? [[String: Any]],
                   let message = choices.first?["message"] as? [String: Any],
-                  let text = message["content"] as? String,
-                  !text.isEmpty else {
+                  let text = message["content"] as? String else {
                 let raw = data.flatMap { String(data: $0, encoding: .utf8) } ?? "пусто"
-                finish(.failure(TestError.badResponse(String(raw.prefix(200)))), completion)
+                finish(.failure(AIError.badResponse(String(raw.prefix(200)))), completion)
+                return
+            }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                finish(.failure(AIError.emptyAnswer), completion)
                 return
             }
             finish(.success(text), completion)
@@ -114,9 +115,10 @@ enum CorrectionTester {
 
     private static func openCodeTest(settings: Settings,
                                      system: String,
+                                     text: String,
                                      binary: String,
                                      completion: @escaping (Result<String, Error>) -> Void) {
-        let prompt = system + "\n\n<text>" + sample + "</text>"
+        let prompt = system + "\n\n<text>" + text + "</text>"
         let payload: [String: Any] = [
             "prompt": prompt,
             "model": [
@@ -127,7 +129,7 @@ enum CorrectionTester {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let body = String(data: data, encoding: .utf8) else {
-            finish(.failure(TestError.badResponse("не удалось собрать JSON")), completion)
+            finish(.failure(AIError.badResponse("не удалось собрать JSON")), completion)
             return
         }
 
@@ -155,15 +157,18 @@ enum CorrectionTester {
             let errorData = err.fileHandleForReading.readDataToEndOfFile()
             guard process.terminationStatus == 0 else {
                 let text = String(data: errorData, encoding: .utf8) ?? ""
-                finish(.failure(TestError.badResponse(String(text.prefix(300)))), completion)
+                finish(.failure(AIError.badResponse(String(text.prefix(300)))), completion)
                 return
             }
             guard let json = try? JSONSerialization.jsonObject(with: output) as? [String: Any],
                   let dataObject = json["data"] as? [String: Any],
-                  let text = dataObject["text"] as? String,
-                  !text.isEmpty else {
+                  let text = dataObject["text"] as? String else {
                 let text = String(data: output, encoding: .utf8) ?? "пусто"
-                finish(.failure(TestError.badResponse(String(text.prefix(300)))), completion)
+                finish(.failure(AIError.badResponse(String(text.prefix(300)))), completion)
+                return
+            }
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                finish(.failure(AIError.emptyAnswer), completion)
                 return
             }
             finish(.success(text), completion)
@@ -173,5 +178,23 @@ enum CorrectionTester {
     private static func finish(_ result: Result<String, Error>,
                                _ completion: @escaping (Result<String, Error>) -> Void) {
         DispatchQueue.main.async { completion(result) }
+    }
+}
+
+/// Проверка настройки постобработки на тестовой фразе.
+enum CorrectionTester {
+    private static let sample = "это проверка связи с моделью, проверка связи"
+
+    static func test(settings: Settings,
+                     prompt: String,
+                     apiKey: String? = nil,
+                     completion: @escaping (Result<String, Error>) -> Void) {
+        if settings.processingMode == "off" {
+            completion(.success("Постобработка выключена — текст вставляется без правки."))
+            return
+        }
+        let system = prompt.isEmpty ? DefaultPrompts.fix : prompt
+        AIClient.generate(settings: settings, system: system, text: sample,
+                          apiKey: apiKey, completion: completion)
     }
 }

@@ -14,6 +14,8 @@
 | ![](hud-done.png) | `done` — «Готово», зелёная галочка |
 | ![](hud-info.png) | `info` — «запись не идёт», синяя иконка |
 | ![](hud-error.png) | `error` — «речь не распознана (тишина?)», оранжевая иконка |
+| ![](hud-improve.png) | `improve` — «Улучшаю текст…», искры |
+| ![](hud-improve-copied.png) | `improve-copied` — «Улучшено и скопировано», синяя иконка |
 
 ## Настройки
 
@@ -22,8 +24,9 @@
 | Основные (язык, микрофон, автозапуск, HUD, диагностика) | [settings-general.png](settings-general.png) |
 | Распознавание (модели Whisper, скачивание, папки) | [settings-models.png](settings-models.png) |
 | Постобработка (режим, проверка, промпт) | [settings-ai.png](settings-ai.png) |
+| Постобработка → улучшение выделенного текста | [settings-improve.png](settings-improve.png) |
 | История (список, копирование, лимиты) | [settings-history.png](settings-history.png) |
-| Хоткеи (диктовка, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
+| Хоткеи (диктовка, улучшение, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
 
 ## Как переснять
 

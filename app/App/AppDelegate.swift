@@ -16,9 +16,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
+    private var improveItem: NSMenuItem?
 
     private var lastStateKey = ""
     private var closeAt: Date?
+    private var isImproving = false
+    private var improveToken: UUID?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
@@ -26,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WhisperModelStore.cleanupPartialDownloads()
         HistoryStore.shared.load()
         HistoryStore.shared.prune(maxItems: saved.historyMaxItems, maxDays: saved.historyMaxDays)
-        Log.write("settings fix=\(saved.promptFix.count)")
+        Log.write("settings fix=\(saved.promptFix.count) improve=\(saved.promptImprove.count) improveEnabled=\(saved.improveEnabled)")
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
@@ -34,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hud.setEnabled(saved.showHUD)
         hotkeys.onAction = { [weak self] in
             self?.run()
+        }
+        hotkeys.onImprove = { [weak self] in
+            self?.improveSelection()
         }
         hotkeys.start(settings: saved)
         updateHotkeyTitles(saved)
@@ -134,6 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(header)
         menu.addItem(.separator())
         toggleItem = add(menu, "Диктовка", #selector(toggleDictation))
+        improveItem = add(menu, "Улучшить текст", #selector(improveSelection))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
         menu.addItem(.separator())
@@ -197,6 +204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  icon: "exclamationmark.triangle",
                                  hudIcon: "exclamationmark.triangle.fill",
                                  accent: .warning, autoHideAfter: nil), nil, 0),
+            ("improve", HUDContent(text: "Улучшаю текст…", busy: true, icon: "sparkles",
+                                   hudIcon: "sparkles", accent: .neutral,
+                                   autoHideAfter: nil), nil, 0),
+            ("improve-copied", HUDContent(text: "Улучшено и скопировано", busy: false,
+                                          icon: "info.circle",
+                                          hudIcon: "info.circle.fill",
+                                          accent: .info, autoHideAfter: nil), nil, 0),
         ]
 
         func capture(_ index: Int) {
@@ -240,16 +254,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.selectTab("ai")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             capture(to: "/tmp/runvoice-settings-ai.png")
-            self.settingsWindow?.selectTab("models")
+            self.settingsWindow?.scrollAIToImprove()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                capture(to: "/tmp/runvoice-settings-models.png")
-                self.settingsWindow?.selectTab("history")
+                capture(to: "/tmp/runvoice-settings-improve.png")
+                self.settingsWindow?.selectTab("models")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    capture(to: "/tmp/runvoice-settings-history.png")
-                    self.settingsWindow?.selectTab("hotkeys")
+                    capture(to: "/tmp/runvoice-settings-models.png")
+                    self.settingsWindow?.selectTab("history")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                        NSApp.terminate(nil)
+                        capture(to: "/tmp/runvoice-settings-history.png")
+                        self.settingsWindow?.selectTab("hotkeys")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            capture(to: "/tmp/runvoice-settings-hotkeys.png")
+                            NSApp.terminate(nil)
+                        }
                     }
                 }
             }
@@ -274,6 +292,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Запуск пайплайна
 
     private func run() {
+        if isImproving {
+            showImproveHUD("Идёт улучшение текста", icon: "info.circle.fill",
+                           accent: .info, duration: 2.5)
+            return
+        }
         do {
             try runner.run()
         } catch DictationRunner.Failure.missingScript {
@@ -283,6 +306,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             showAlert("Не удалось запустить dictate.sh: \(error.localizedDescription)")
         }
+    }
+
+    @objc private func improveSelection() {
+        guard !isImproving else { return }
+
+        if ["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
+            showImproveHUD("Идёт диктовка", icon: "info.circle.fill",
+                           accent: .info, duration: 2.5)
+            return
+        }
+
+        let settings = SettingsStore.load()
+        guard settings.improveEnabled else {
+            showImproveHUD("Улучшение текста выключено", icon: "info.circle.fill",
+                           accent: .info, duration: 3)
+            return
+        }
+        guard settings.processingMode != "off" else {
+            showImproveHUD("Включите постобработку", icon: "exclamationmark.triangle.fill",
+                           accent: .warning, duration: 4)
+            return
+        }
+
+        switch SelectionService.capture() {
+        case .failure(let error):
+            showImproveHUD(error.localizedDescription, icon: "info.circle.fill",
+                           accent: .info, duration: 3)
+        case .success(let context):
+            guard context.text.count <= 20_000 else {
+                showImproveHUD("Слишком длинный текст (макс. 20 000)", icon: "exclamationmark.triangle.fill",
+                               accent: .warning, duration: 4)
+                return
+            }
+
+            isImproving = true
+            let token = UUID()
+            improveToken = token
+            showImproveHUD("Улучшаю текст…", icon: "sparkles",
+                           accent: .neutral, duration: 0, busy: true)
+            Log.write("improve: capture \(context.source == .accessibility ? "ax" : "clipboard"), \(context.text.count) символов")
+
+            let prompt = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
+            AIClient.generate(settings: settings, system: prompt, text: context.text) { [weak self] result in
+                guard let self, self.improveToken == token else { return }
+
+                switch result {
+                case .success(let improved):
+                    let outcome = SelectionService.replace(context, with: improved)
+                    self.isImproving = false
+                    self.improveToken = nil
+                    switch outcome {
+                    case .replaced, .pasted:
+                        self.showImproveHUD("Готово", icon: "checkmark.circle.fill",
+                                            accent: .success, duration: 2)
+                    case .copied:
+                        self.showImproveHUD("Улучшено и скопировано", icon: "info.circle.fill",
+                                            accent: .info, duration: 4)
+                    }
+                    Log.write("improve: готово, \(improved.count) символов")
+                case .failure(let error):
+                    self.isImproving = false
+                    self.improveToken = nil
+                    self.showImproveHUD(error.localizedDescription, icon: "exclamationmark.triangle.fill",
+                                        accent: .warning, duration: 5)
+                    Log.write("improve: ошибка \(error.localizedDescription)")
+                }
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 90) { [weak self] in
+                guard let self, self.improveToken == token, self.isImproving else { return }
+                self.isImproving = false
+                self.improveToken = nil
+                self.showImproveHUD("Модель не ответила", icon: "exclamationmark.triangle.fill",
+                                    accent: .warning, duration: 5)
+            }
+        }
+    }
+
+    private func showImproveHUD(_ text: String, icon: String,
+                                accent: HUDContent.Accent, duration: TimeInterval,
+                                busy: Bool = false) {
+        let normalized = text.replacingOccurrences(of: "\n", with: " ")
+        let display = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
+        let content = HUDContent(text: display, busy: busy, icon: icon, hudIcon: icon,
+                                 accent: accent, autoHideAfter: nil)
+        hud.present(content)
+        setIcon(icon)
+        closeAt = duration > 0 ? Date().addingTimeInterval(duration) : nil
+        Log.write("improve: hud \(text)")
     }
 
     private func showMissingModel(path: String?) {
@@ -335,6 +447,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateHotkeyTitles(_ settings: Settings) {
         toggleItem?.title = "Диктовка   \(settings.hotkeyToggle.display)"
+        improveItem?.title = "Улучшить текст   \(settings.hotkeyImprove.display)"
     }
 
 

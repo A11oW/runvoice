@@ -9,7 +9,14 @@ import UniformTypeIdentifiers
 
 final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let fixText = NSTextView()
+    private let improveText = NSTextView()
     private var promptTestLabel: NSTextField!
+    private var improveTestLabel: NSTextField!
+    private var improveEnabledCheck: NSButton!
+    private var improveGroup: NSStackView!
+    private var promptSeparator: NSBox!
+    private var improveSeparator: NSBox!
+    private var aiScroll: NSScrollView!
     private var tabView: NSTabView!
     private var languagePopup: NSPopUpButton!
     private var micPopup: NSPopUpButton!
@@ -36,6 +43,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var resetButton: NSButton!
     private var versionLabel: NSTextField!
     private var toggleHotkeyButton: NSButton!
+    private var improveHotkeyButton: NSButton!
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var modelsStack: NSStackView!
@@ -73,6 +81,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var captureMonitor: Any?
     private var captureTarget: NSButton?
     private var toggleHotkey = HotKeySetting()
+    private var improveHotkey = HotKeySetting.improveDefault
 
     private var loadedSettings = Settings()
     private var loadedLaunchAtLogin = false
@@ -153,6 +162,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     func selectTab(_ identifier: String) {
         tabView.selectTabViewItem(withIdentifier: identifier)
+    }
+
+    /// Для отладочного скриншота: показать блок улучшения текста на вкладке «Постобработка».
+    func scrollAIToImprove() {
+        guard let aiScroll, let document = aiScroll.documentView, let improveGroup else { return }
+        let rect = improveGroup.convert(improveGroup.bounds, to: document)
+        let maxY = max(0, document.bounds.height - aiScroll.contentView.bounds.height)
+        let y = min(max(0, rect.minY - 24), maxY)
+        aiScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        aiScroll.reflectScrolledClipView(aiScroll.contentView)
     }
 
     private func build() {
@@ -351,6 +370,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let doc = FlippedView()
         doc.translatesAutoresizingMaskIntoConstraints = false
         scroll.documentView = doc
+        aiScroll = scroll
 
         let stack = NSStackView()
         stack.orientation = .vertical
@@ -413,12 +433,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         aiHint.font = .systemFont(ofSize: 11)
         aiHint.textColor = .secondaryLabelColor
 
-        let separator = NSBox()
-        separator.boxType = .separator
+        promptSeparator = NSBox()
+        promptSeparator.boxType = .separator
         promptGroup = buildPromptSection()
 
+        improveSeparator = NSBox()
+        improveSeparator.boxType = .separator
+        improveGroup = buildImproveSection()
+
         let rows: [NSView] = [modeRow, providerGroup, modelGroup, baseURLGroup,
-                              apiKeyGroup, testRow, aiHint, separator, promptGroup]
+                              apiKeyGroup, testRow, aiHint, promptSeparator, promptGroup,
+                              improveSeparator, improveGroup]
         for row in rows {
             stack.addArrangedSubview(row)
             row.translatesAutoresizingMaskIntoConstraints = false
@@ -445,6 +470,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         baseURLGroup?.isHidden = mode != "direct"
         apiKeyGroup?.isHidden = mode != "direct"
         promptGroup?.isHidden = mode == "off"
+        promptSeparator?.isHidden = mode == "off"
+        improveGroup?.isHidden = mode == "off"
+        improveSeparator?.isHidden = mode == "off"
         testButton?.isEnabled = mode != "off"
         testRow?.isHidden = mode == "off"
         testResultLabel?.stringValue = ""
@@ -1231,6 +1259,70 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     // MARK: - Prompt
 
+    private func buildImproveSection() -> NSStackView {
+        let section = NSStackView()
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 6
+
+        let header = label("Улучшение выделенного текста", bold: true)
+        improveEnabledCheck = NSButton(checkboxWithTitle: "Включить улучшение выделенного текста",
+                                       target: nil, action: nil)
+        let hint = label("Провайдер и модель — из «Постобработки». Пустое поле заменяется встроенным промптом. Хоткей — в разделе «Хоткеи».")
+
+        let reset = NSButton(title: "Сбросить к встроенному", target: self, action: #selector(resetImprovePromptToDefault))
+        reset.bezelStyle = .rounded
+        let test = NSButton(title: "Проверить на примере", target: self, action: #selector(testImprovePrompt))
+        test.bezelStyle = .rounded
+        let buttons = NSStackView(views: [reset, test])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        improveTestLabel = label("")
+        improveTestLabel.lineBreakMode = .byWordWrapping
+        improveTestLabel.maximumNumberOfLines = 2
+
+        let scroll = makeScroll(improveText)
+        scroll.heightAnchor.constraint(equalToConstant: 170).isActive = true
+
+        section.addArrangedSubview(header)
+        section.addArrangedSubview(improveEnabledCheck)
+        section.addArrangedSubview(hint)
+        section.addArrangedSubview(buttons)
+        section.addArrangedSubview(scroll)
+        section.addArrangedSubview(improveTestLabel)
+
+        for view in [header, hint, scroll, improveTestLabel] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        }
+        return section
+    }
+
+    @objc private func resetImprovePromptToDefault() {
+        improveText.string = DefaultPrompts.improve
+    }
+
+    @objc private func testImprovePrompt() {
+        let settings = currentSettings()
+        let prompt = improveText.string.isEmpty ? DefaultPrompts.improve : improveText.string
+        improveTestLabel.stringValue = "Проверяю…"
+        improveTestLabel.textColor = .secondaryLabelColor
+        AIClient.generate(settings: settings, system: prompt,
+                          text: "это текст который нужно улучшить он содержит ошибки и повторы",
+                          apiKey: apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let text):
+                self.improveTestLabel.stringValue = "✓ \(text)"
+                self.improveTestLabel.textColor = .systemGreen
+            case .failure(let error):
+                self.improveTestLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                self.improveTestLabel.textColor = .systemOrange
+            }
+        }
+    }
+
     private func buildPromptSection() -> NSStackView {
         let section = NSStackView()
         section.orientation = .vertical
@@ -1302,13 +1394,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func buildHotkeys() -> NSView {
         let view = NSView()
         let toggleLabel = label("Диктовка")
+        let improveLabel = label("Улучшение текста")
         let hint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
         let note = label("Нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
 
         toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
         toggleHotkeyButton.bezelStyle = .rounded
+        improveHotkeyButton = NSButton(title: improveHotkey.display, target: self, action: #selector(captureImprove))
+        improveHotkeyButton.bezelStyle = .rounded
 
-        let views: [NSView] = [toggleLabel, hint, note, toggleHotkeyButton]
+        let views: [NSView] = [toggleLabel, improveLabel, hint, note,
+                               toggleHotkeyButton, improveHotkeyButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -1321,7 +1417,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             toggleHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
 
-            hint.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 22),
+            improveLabel.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 18),
+            improveLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            improveHotkeyButton.centerYAnchor.constraint(equalTo: improveLabel.centerYAnchor),
+            improveHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            improveHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
+
+            hint.topAnchor.constraint(equalTo: improveLabel.bottomAnchor, constant: 22),
             hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             note.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 4),
             note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
@@ -1333,6 +1435,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     // MARK: - Горячие клавиши
 
     @objc private func captureToggle() { startCapture(button: toggleHotkeyButton) }
+    @objc private func captureImprove() { startCapture(button: improveHotkeyButton) }
 
     private func startCapture(button: NSButton) {
         stopCapture()
@@ -1349,7 +1452,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         if let monitor = captureMonitor { NSEvent.removeMonitor(monitor) }
         captureMonitor = nil
         if let button = captureTarget {
-            button.title = toggleHotkey.display
+            button.title = (button === toggleHotkeyButton) ? toggleHotkey.display : improveHotkey.display
         }
         captureTarget = nil
         onCaptureStateChanged?(false)
@@ -1388,6 +1491,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
         if captureTarget === toggleHotkeyButton {
             toggleHotkey = setting
+        } else {
+            improveHotkey = setting
         }
         stopCapture()
     }
@@ -1654,6 +1759,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private func currentSettings() -> Settings {
         var settings = loadedSettings
         settings.promptFix = fixText.string
+        settings.promptImprove = improveText.string
+        settings.improveEnabled = improveEnabledCheck.state == .on
         settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
         settings.microphone = micPopup.titleOfSelectedItem ?? ""
         settings.provider = providerField.stringValue.trimmingCharacters(in: .whitespaces)
@@ -1676,6 +1783,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.historyMaxItems = max(1, min(1000, historyItemsField.integerValue))
         settings.historyMaxDays = max(1, min(3650, historyDaysField.integerValue))
         settings.hotkeyToggle = toggleHotkey
+        settings.hotkeyImprove = improveHotkey
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
         settings.hiddenModelPaths = hiddenModelPaths
@@ -1692,6 +1800,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let settings = SettingsStore.load()
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
         promptTestLabel?.stringValue = ""
+        improveTestLabel?.stringValue = ""
         micTestLabel?.stringValue = ""
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
@@ -1713,6 +1822,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         toggleHotkey = settings.hotkeyToggle
         toggleHotkeyButton.title = toggleHotkey.display
+        improveHotkey = settings.hotkeyImprove
+        improveHotkeyButton.title = improveHotkey.display
+
+        improveText.string = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
+        improveEnabledCheck.state = settings.improveEnabled ? .on : .off
 
         modelDirs = settings.whisperModelDirs
         hiddenModelPaths = settings.hiddenModelPaths
@@ -1732,6 +1846,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         loadedSettings = settings
         loadedSettings.promptFix = fixText.string
+        loadedSettings.promptImprove = improveText.string
+        loadedSettings.improveEnabled = improveEnabledCheck.state == .on
         loadedSettings.whisperModelPath = selectedModelPath
         if loadedSettings.microphone.isEmpty {
             loadedSettings.microphone = micPopup.titleOfSelectedItem ?? ""
@@ -1751,6 +1867,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         case "hotkeys":
             toggleHotkey = HotKeySetting()
             toggleHotkeyButton.title = toggleHotkey.display
+            improveHotkey = HotKeySetting.improveDefault
+            improveHotkeyButton.title = improveHotkey.display
         case "ai":
             providerField.stringValue = "deepseek"
             modelField.stringValue = "deepseek-flash"
@@ -1758,7 +1876,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             apiKeyField.stringValue = ""
             modeControl.selectedSegment = 0
             fixText.string = DefaultPrompts.fix
+            improveText.string = DefaultPrompts.improve
+            improveEnabledCheck.state = .on
             promptTestLabel?.stringValue = ""
+            improveTestLabel?.stringValue = ""
             aiModeChanged()
         case "models":
             modelDirs = []
@@ -1787,6 +1908,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     @objc private func saveSettings() {
         let settings = currentSettings()
+
+        if toggleHotkey.keyCode == improveHotkey.keyCode,
+           toggleHotkey.modifiers == improveHotkey.modifiers {
+            let alert = NSAlert()
+            alert.messageText = "Сочетания совпадают"
+            alert.informativeText = "Диктовка и улучшение текста должны иметь разные хоткеи."
+            alert.runModal()
+            return
+        }
 
         if settings.processingMode == "direct" {
             if settings.baseURL.isEmpty {
