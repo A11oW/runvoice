@@ -5,6 +5,8 @@ import QuartzCore
 final class HUDController {
     private let statusItem: NSStatusItem
     private var panel: NSPanel!
+    private var stopPanel: StopPanel!
+    private var stopButton: StopButton!
     private var bubble: BubbleView!
     private var iconView: NSImageView!
     private var label: NSTextField!
@@ -20,6 +22,10 @@ final class HUDController {
     private let tailHeight: CGFloat = 9
     private let minWidth: CGFloat = 220
     private let maxWidth: CGFloat = 420
+    private let stopWidth: CGFloat = 72
+    private let stopHeight: CGFloat = 26
+
+    var onStop: (() -> Void)?
 
     init(statusItem: NSStatusItem) {
         self.statusItem = statusItem
@@ -28,7 +34,10 @@ final class HUDController {
 
     func setEnabled(_ value: Bool) {
         enabled = value
-        if !value { panel?.orderOut(nil) }
+        if !value {
+            panel?.orderOut(nil)
+            stopPanel?.orderOut(nil)
+        }
     }
 
     func present(_ content: HUDContent) {
@@ -52,14 +61,21 @@ final class HUDController {
         }
 
         let labelY: CGFloat = content.showLevel ? 28 : 22
-        let width = preferredWidth(for: content.text, showLevel: content.showLevel)
-        resize(to: width, labelY: labelY)
+        let width = preferredWidth(for: content.text,
+                                   showLevel: content.showLevel,
+                                   showStop: content.showStop)
+        resize(to: width, labelY: labelY, showStop: content.showStop)
         place()
 
         let wasVisible = panel.isVisible
         // orderFrontRegardless нужен при каждом показе: панель могла остаться
         // на другом Space/дисплее, хотя сама считает себя видимой.
         panel.orderFrontRegardless()
+        if content.showStop {
+            showStopPanel()
+        } else {
+            hideStopPanel()
+        }
         if !wasVisible {
             Log.write("showHUD frame=\(panel.frame) width=\(width)")
         }
@@ -72,6 +88,7 @@ final class HUDController {
     func dismiss() {
         stopClock()
         stopPulse()
+        hideStopPanel()
         panel?.orderOut(nil)
     }
 
@@ -92,31 +109,67 @@ final class HUDController {
         levelBar.level = content.showLevel ? level : 0
 
         let labelY: CGFloat = content.showLevel ? 28 : 22
-        let width = preferredWidth(for: content.text, showLevel: content.showLevel)
-        resize(to: width, labelY: labelY)
+        let width = preferredWidth(for: content.text,
+                                   showLevel: content.showLevel,
+                                   showStop: content.showStop)
+        resize(to: width, labelY: labelY, showStop: content.showStop)
         place()
         panel.orderFrontRegardless()
+        if content.showStop {
+            showStopPanel()
+        } else {
+            hideStopPanel()
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            if let view = self.panel.contentView,
-               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
-                view.cacheDisplay(in: view.bounds, to: rep)
-                let image = NSImage(size: view.bounds.size)
-                image.lockFocus()
-                NSColor.windowBackgroundColor.setFill()
-                view.bounds.fill()
-                if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
-                    ctx.draw(cg, in: view.bounds)
+            if let image = self.renderImage(of: self.panel.contentView, opaque: true) {
+                if content.showStop {
+                    self.drawStopBadge(on: image)
                 }
-                image.unlockFocus()
                 if let tiff = image.tiffRepresentation,
                    let bitmap = NSBitmapImageRep(data: tiff),
                    let png = bitmap.representation(using: .png, properties: [:]) {
                     try? png.write(to: URL(fileURLWithPath: path))
                 }
             }
+            self.hideStopPanel()
             completion()
         }
+    }
+
+    private func renderImage(of view: NSView?, opaque: Bool) -> NSImage? {
+        guard let view,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let image = NSImage(size: view.bounds.size)
+        image.lockFocus()
+        if opaque {
+            NSColor.windowBackgroundColor.setFill()
+            view.bounds.fill()
+        }
+        if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.draw(cg, in: view.bounds)
+        }
+        image.unlockFocus()
+        return image
+    }
+
+    private func drawStopBadge(on image: NSImage) {
+        image.lockFocus()
+        defer { image.unlockFocus() }
+        let rect = NSRect(x: image.size.width - stopWidth - 14,
+                          y: 19, width: stopWidth, height: stopHeight)
+        NSColor.systemRed.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        let title = "Стоп" as NSString
+        let size = title.size(withAttributes: attributes)
+        title.draw(at: NSPoint(x: rect.midX - size.width / 2,
+                               y: rect.midY - size.height / 2),
+                   withAttributes: attributes)
     }
 
     // MARK: - Часы записи
@@ -149,23 +202,27 @@ final class HUDController {
 
     // MARK: - Компоновка
 
-    private func preferredWidth(for text: String, showLevel: Bool) -> CGFloat {
+    private func preferredWidth(for text: String, showLevel: Bool, showStop: Bool = false) -> CGFloat {
         let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
-        let minimum = showLevel ? 260 : minWidth
-        return min(max(ceil(textWidth) + 80, minimum), maxWidth)
+        let extra = showStop ? stopWidth + 16 : 0
+        let minimum = (showLevel ? 260 : minWidth) + extra
+        return min(max(ceil(textWidth) + 80 + extra, minimum), maxWidth + extra)
     }
 
-    private func resize(to width: CGFloat, labelY: CGFloat) {
+    private func resize(to width: CGFloat, labelY: CGFloat, showStop: Bool = false) {
         let height = bodyHeight + tailHeight
         if abs(panel.frame.width - width) > 0.5 {
             panel.setContentSize(NSSize(width: width, height: height))
             bubble.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
-        label.frame = NSRect(x: 50, y: labelY, width: width - 66, height: 20)
+        let extra = showStop ? stopWidth + 16 : 0
+        label.frame = NSRect(x: 50, y: labelY,
+                             width: max(40, width - 66 - extra), height: 20)
         iconView.frame = NSRect(x: 18, y: labelY, width: 20, height: 20)
         timerLabel.frame = NSRect(x: 50, y: 8, width: 44, height: 12)
-        levelBar.frame = NSRect(x: 100, y: 12, width: width - 116, height: 4)
+        levelBar.frame = NSRect(x: 100, y: 12,
+                                width: max(20, width - 116 - extra), height: 4)
     }
 
     private func setup() {
@@ -189,6 +246,31 @@ final class HUDController {
         panel.isMovable = false
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+
+        stopPanel = StopPanel(contentRect: NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight),
+                              styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+        stopPanel.isFloatingPanel = true
+        stopPanel.becomesKeyOnlyIfNeeded = true
+        stopPanel.level = .statusBar
+        stopPanel.backgroundColor = .clear
+        stopPanel.isOpaque = false
+        stopPanel.hasShadow = false
+        stopPanel.ignoresMouseEvents = false
+        stopPanel.hidesOnDeactivate = false
+        stopPanel.isMovable = false
+        stopPanel.animationBehavior = .none
+        stopPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+
+        stopButton = StopButton(title: "Стоп", target: self, action: #selector(stopPressed))
+        stopButton.frame = NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight)
+        stopButton.bezelStyle = .rounded
+        stopButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        stopButton.bezelColor = .systemRed
+        stopButton.contentTintColor = .white
+        stopButton.toolTip = "Остановить запись и отменить диктовку"
+        stopButton.setAccessibilityLabel("Остановить запись")
+        stopPanel.contentView = stopButton
 
         iconView = NSImageView(frame: NSRect(x: 18, y: 22, width: 20, height: 20))
         iconView.imageScaling = .scaleProportionallyDown
@@ -235,6 +317,36 @@ final class HUDController {
         guard enabled, panel.isVisible else { return }
         place()
         panel.orderFrontRegardless()
+        if stopPanel?.isVisible == true {
+            placeStopPanel()
+            stopPanel.orderFrontRegardless()
+        }
+    }
+
+    private func showStopPanel() {
+        guard enabled else { return }
+        placeStopPanel()
+        stopButton.isEnabled = true
+        stopPanel.orderFrontRegardless()
+    }
+
+    private func hideStopPanel() {
+        stopPanel?.orderOut(nil)
+    }
+
+    private func placeStopPanel() {
+        let frame = panel.frame
+        let x = frame.maxX - stopWidth - 14
+        let y = frame.minY + 19
+        stopPanel.setFrame(NSRect(x: x, y: y, width: stopWidth, height: stopHeight),
+                           display: false)
+    }
+
+    @objc private func stopPressed() {
+        guard stopButton.isEnabled else { return }
+        stopButton.isEnabled = false
+        hideStopPanel()
+        onStop?()
     }
 
     private func place() {
@@ -303,4 +415,14 @@ final class HUDController {
             NotificationCenter.default.removeObserver(screenObserver)
         }
     }
+}
+
+
+private final class StopPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class StopButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

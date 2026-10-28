@@ -4,6 +4,7 @@
 # Использование:
 #   dictate.sh toggle        # ⌥Space: начать запись / остановить и вставить
 #   dictate.sh start|stop    # явные команды (для отладки)
+#   dictate.sh cancel        # отменить запись без распознавания и вставки
 #
 # Отладка:
 #   DICTATE_DRY_RUN=1             не вставлять, только вывести RAW/FIXED
@@ -460,7 +461,26 @@ stop_and_insert() {
   status done
 }
 
+# Отмена записи: остановить ffmpeg, удалить звук и не запускать распознавание/AI.
+cancel_recording() {
+  if ! recording; then
+    log "cancel: запись не идёт"
+    return 0
+  fi
+  stop_recorders
+  rm -f "$STATE/pid" "$PCM" "$WAV" "$OUT" "$OUT.txt" \
+        "$STATE/last_result.json" "$STATE/last_result.json.tmp" "$LASTF"
+  log "cancel: запись отменена"
+  status info "Запись отменена"
+}
+
 # =========================================================
+# 0) отмена записи — до debounce/lock, чтобы кнопка срабатывала сразу.
+if [ "$ACTION" = "cancel" ]; then
+  cancel_recording
+  exit 0
+fi
+
 # 0) тест микрофона: 1 секунда записи, печатает index/level.
 if [ "$ACTION" = "mic-test" ]; then
   if [ -d "$LOCK" ]; then echo "error=busy"; exit 0; fi
@@ -524,5 +544,5 @@ case "$ACTION" in
   start)  start_recording ;;
   stop)   stop_and_insert ;;
   toggle) if recording; then stop_and_insert; else start_recording; fi ;;
-  *) echo "usage: dictate.sh [toggle|start|stop]" >&2; exit 2 ;;
+  *) echo "usage: dictate.sh [toggle|start|stop|cancel]" >&2; exit 2 ;;
 esac

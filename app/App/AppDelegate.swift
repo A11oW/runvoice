@@ -35,6 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         hud = HUDController(statusItem: statusItem)
         hud.setEnabled(saved.showHUD)
+        hud.onStop = { [weak self] in
+            self?.cancelDictationFromHUD()
+        }
         hotkeys.onAction = { [weak self] in
             self?.run()
         }
@@ -187,7 +190,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      hudIcon: "mic", accent: .neutral, autoHideAfter: nil), nil, 0),
             ("recording", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                                      hudIcon: "mic", accent: .neutral,
-                                     autoHideAfter: nil, showLevel: true), "00:12", 0.62),
+                                     autoHideAfter: nil, showLevel: true,
+                                     showStop: true), "00:12", 0.62),
             ("transcribing", HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
                                         hudIcon: "waveform", accent: .neutral,
                                         autoHideAfter: nil), nil, 0),
@@ -309,6 +313,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showMissingModel(path: path)
         } catch {
             showAlert("Не удалось запустить dictate.sh: \(error.localizedDescription)")
+        }
+    }
+
+    private func cancelDictationFromHUD() {
+        guard ["preparing", "recording"].contains(lastStateKey) else { return }
+        do {
+            try runner.cancel()
+            Log.write("cancel: запрошена отмена записи из HUD")
+        } catch {
+            let message = "Не удалось отменить запись"
+            let content = HUDContent(text: message, busy: false,
+                                     icon: "exclamationmark.triangle",
+                                     hudIcon: "exclamationmark.triangle.fill",
+                                     accent: .warning, autoHideAfter: nil)
+            hud.present(content)
+            setIcon("exclamationmark.triangle")
+            closeAt = Date().addingTimeInterval(4)
+            Log.write("cancel: ошибка \(error.localizedDescription)")
         }
     }
 

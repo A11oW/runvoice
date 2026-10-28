@@ -17,6 +17,13 @@ final class DictationRunner {
         try launch(script: script, action: "toggle", model: model, settings: settings)
     }
 
+    /// Немедленная отмена текущей записи без распознавания и вставки.
+    func cancel() throws {
+        guard let script = Paths.script else { throw Failure.missingScript }
+        let settings = SettingsStore.load()
+        try launch(script: script, action: "cancel", model: nil, settings: settings)
+    }
+
     /// Прогрев whisper-server после сохранения настроек.
     /// Не блокирует UI: скрипт запускается в фоне и сам ждёт готовности сервера.
     func warmUp() {
@@ -31,7 +38,7 @@ final class DictationRunner {
         }
     }
 
-    private func launch(script: URL, action: String, model: WhisperModelFile, settings: Settings) throws {
+    private func launch(script: URL, action: String, model: WhisperModelFile?, settings: Settings) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script.path, action]
@@ -41,13 +48,15 @@ final class DictationRunner {
         try process.run()
     }
 
-    private func makeEnvironment(model: WhisperModelFile, settings: Settings) -> [String: String] {
+    private func makeEnvironment(model: WhisperModelFile?, settings: Settings) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["DICTATE_STATE_DIR"] = Paths.state.path
         environment["HUD_BIN"] = "/nonexistent"   // окно рисует само приложение
         environment["DICTATE_NOTIFY"] = "0"
         environment["DICTATE_NO_PASTE"] = "1"     // ⌘V отправляет само приложение
-        environment["WHISPER_MODEL"] = model.path
+        if let model {
+            environment["WHISPER_MODEL"] = model.path
+        }
 
         if let server = WhisperModelStore.bundledServer {
             environment["WHISPER_SERVER_BIN"] = server.path
