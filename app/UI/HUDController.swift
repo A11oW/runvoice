@@ -13,6 +13,8 @@ final class HUDController {
     private var clockTimer: Timer?
     private var startedAt: Date?
     private var enabled = true
+    private var spaceObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
 
     private let bodyHeight: CGFloat = 64
     private let tailHeight: CGFloat = 9
@@ -54,8 +56,11 @@ final class HUDController {
         resize(to: width, labelY: labelY)
         place()
 
-        if !panel.isVisible {
-            panel.orderFrontRegardless()
+        let wasVisible = panel.isVisible
+        // orderFrontRegardless нужен при каждом показе: панель могла остаться
+        // на другом Space/дисплее, хотя сама считает себя видимой.
+        panel.orderFrontRegardless()
+        if !wasVisible {
             Log.write("showHUD frame=\(panel.frame) width=\(width)")
         }
     }
@@ -183,7 +188,7 @@ final class HUDController {
         panel.hidesOnDeactivate = false
         panel.isMovable = false
         panel.animationBehavior = .none
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         iconView = NSImageView(frame: NSRect(x: 18, y: 22, width: 20, height: 20))
         iconView.imageScaling = .scaleProportionallyDown
@@ -204,11 +209,32 @@ final class HUDController {
         levelBar = LevelBarView(frame: NSRect(x: 100, y: 12, width: width - 116, height: 4))
         levelBar.isHidden = true
 
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.followActiveSpace()
+        }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.followActiveSpace()
+        }
+
         bubble.addSubview(iconView)
         bubble.addSubview(label)
         bubble.addSubview(timerLabel)
         bubble.addSubview(levelBar)
         panel.contentView = bubble
+    }
+
+    private func followActiveSpace() {
+        guard enabled, panel.isVisible else { return }
+        place()
+        panel.orderFrontRegardless()
     }
 
     private func place() {
@@ -267,5 +293,14 @@ final class HUDController {
 
     private func stopPulse() {
         iconView.layer?.removeAnimation(forKey: "pulse")
+    }
+
+    deinit {
+        if let spaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver)
+        }
+        if let screenObserver {
+            NotificationCenter.default.removeObserver(screenObserver)
+        }
     }
 }

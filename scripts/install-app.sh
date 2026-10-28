@@ -11,6 +11,11 @@ if [ ! -w "$DEST" ]; then
   mkdir -p "$DEST"
 fi
 
+# Старый процесс нужно остановить до замены .app: иначе он продолжит
+# работать со старым кодом/окнами HUD до следующего входа.
+pkill -x Runvoice 2>/dev/null || true
+sleep 0.3
+
 rm -rf "$DEST/Runvoice.app"
 cp -R "$REPO/dist/Runvoice.app" "$DEST/Runvoice.app"
 

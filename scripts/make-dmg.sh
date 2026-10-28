@@ -34,6 +34,7 @@ if ! mkdir -p "$DEST_DIR" 2>/dev/null || [ ! -w "$DEST_DIR" ]; then
 fi
 
 pkill -x Runvoice 2>/dev/null || true
+sleep 0.3
 rm -rf "$DEST"
 ditto "$SRC" "$DEST"
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
