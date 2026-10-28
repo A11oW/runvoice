@@ -8,7 +8,7 @@
 | Состояние | Что показывает |
 |---|---|
 | ![](hud-preparing.png) | `preparing` — «Готовлю микрофон…» |
-| ![](hud-recording.png) | `recording` — «Слушаю…», таймер, уровень микрофона и кнопка «Стоп» |
+| ![](hud-recording.png) | `recording` — «Слушаю…», таймер, уровень микрофона и иконка остановки |
 | ![](hud-transcribing.png) | `transcribing` — «Распознаю…» |
 | ![](hud-fixing.png) | `fixing` — «Обрабатываю текст…» |
 | ![](hud-done.png) | `done` — «Готово», зелёная галочка |

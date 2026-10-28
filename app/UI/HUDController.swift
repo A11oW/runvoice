@@ -22,8 +22,8 @@ final class HUDController {
     private let tailHeight: CGFloat = 9
     private let minWidth: CGFloat = 220
     private let maxWidth: CGFloat = 420
-    private let stopWidth: CGFloat = 72
-    private let stopHeight: CGFloat = 26
+    private let stopWidth: CGFloat = 32
+    private let stopHeight: CGFloat = 32
 
     var onStop: (() -> Void)?
 
@@ -158,18 +158,16 @@ final class HUDController {
         image.lockFocus()
         defer { image.unlockFocus() }
         let rect = NSRect(x: image.size.width - stopWidth - 14,
-                          y: 19, width: stopWidth, height: stopHeight)
+                          y: (bodyHeight - stopHeight) / 2,
+                          width: stopWidth, height: stopHeight)
         NSColor.systemRed.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.white,
-        ]
-        let title = "Стоп" as NSString
-        let size = title.size(withAttributes: attributes)
-        title.draw(at: NSPoint(x: rect.midX - size.width / 2,
-                               y: rect.midY - size.height / 2),
-                   withAttributes: attributes)
+        NSBezierPath(ovalIn: rect.insetBy(dx: 2, dy: 2)).fill()
+        let side: CGFloat = 9
+        let square = NSRect(x: rect.midX - side / 2,
+                            y: rect.midY - side / 2,
+                            width: side, height: side)
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: square, xRadius: 2, yRadius: 2).fill()
     }
 
     // MARK: - Часы записи
@@ -262,12 +260,11 @@ final class HUDController {
         stopPanel.animationBehavior = .none
         stopPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        stopButton = StopButton(title: "Стоп", target: self, action: #selector(stopPressed))
-        stopButton.frame = NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight)
-        stopButton.bezelStyle = .rounded
-        stopButton.font = .systemFont(ofSize: 12, weight: .semibold)
-        stopButton.bezelColor = .systemRed
-        stopButton.contentTintColor = .white
+        stopButton = StopButton(frame: NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight))
+        stopButton.target = self
+        stopButton.action = #selector(stopPressed)
+        stopButton.title = ""
+        stopButton.isBordered = false
         stopButton.toolTip = "Остановить запись и отменить диктовку"
         stopButton.setAccessibilityLabel("Остановить запись")
         stopPanel.contentView = stopButton
@@ -337,7 +334,7 @@ final class HUDController {
     private func placeStopPanel() {
         let frame = panel.frame
         let x = frame.maxX - stopWidth - 14
-        let y = frame.minY + 19
+        let y = frame.minY + (bodyHeight - stopHeight) / 2
         stopPanel.setFrame(NSRect(x: x, y: y, width: stopWidth, height: stopHeight),
                            display: false)
     }
@@ -424,5 +421,43 @@ private final class StopPanel: NSPanel {
 }
 
 private final class StopButton: NSButton {
+    private var hovering = false
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self,
+                                       userInfo: nil))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        needsDisplay = true
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let color = hovering
+            ? (NSColor.systemRed.blended(withFraction: 0.12, of: .white) ?? .systemRed)
+            : .systemRed
+        color.setFill()
+        NSBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2)).fill()
+
+        let side: CGFloat = 9
+        let square = NSRect(x: bounds.midX - side / 2,
+                            y: bounds.midY - side / 2,
+                            width: side, height: side)
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: square, xRadius: 2, yRadius: 2).fill()
+    }
 }
