@@ -20,6 +20,16 @@ set -euo pipefail
 SRC="$(cd -- "$(dirname -- "$0")" && pwd)/Runvoice.app"
 DEST="${RUNVOICE_DEST:-/Applications/Runvoice.app}"
 
+case "$DEST" in
+  /Applications/Runvoice.app|"$HOME/Applications/Runvoice.app") ;;
+  *)
+    echo "Недопустимый RUNVOICE_DEST: $DEST"
+    echo "Разрешены только /Applications/Runvoice.app и $HOME/Applications/Runvoice.app."
+    read -r -p "Нажмите Enter, чтобы закрыть…" _
+    exit 1
+    ;;
+esac
+
 if [ ! -d "$SRC" ]; then
   echo "Runvoice.app не найден рядом со скриптом."
   read -r -p "Нажмите Enter, чтобы закрыть…" _
@@ -35,7 +45,7 @@ fi
 
 pkill -x Runvoice 2>/dev/null || true
 sleep 0.3
-rm -rf "$DEST"
+rm -rf -- "$DEST"
 ditto "$SRC" "$DEST"
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
 

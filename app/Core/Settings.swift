@@ -242,6 +242,8 @@ enum SettingsStore {
         guard let data = try? Data(contentsOf: url) else {
             return Settings()
         }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: url.path)
         guard let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
             return Settings()
         }
@@ -265,6 +267,8 @@ enum SettingsStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(settings) {
             try? data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: url.path)
         }
     }
 }

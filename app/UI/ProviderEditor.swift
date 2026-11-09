@@ -230,7 +230,7 @@ final class ProviderEditorWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func save() {
-        let candidate = currentProvider()
+        var candidate = currentProvider()
         guard !candidate.name.isEmpty else {
             alert("Укажите название провайдера.")
             return
@@ -249,9 +249,10 @@ final class ProviderEditorWindow: NSWindowController, NSWindowDelegate {
                 alert("Укажите базовый URL для своего API.")
                 return
             }
-            guard candidate.baseURL.lowercased().hasPrefix("http://")
-                    || candidate.baseURL.lowercased().hasPrefix("https://") else {
-                alert("URL должен начинаться с http:// или https://.")
+            do {
+                candidate.baseURL = try AIProviderURL.validateBase(candidate.baseURL)
+            } catch {
+                alert(error.localizedDescription)
                 return
             }
         }

@@ -2209,9 +2209,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                 guard !base.isEmpty else {
                     return "Укажите базовый URL для «\(name)»."
                 }
-                guard base.lowercased().hasPrefix("http://")
-                        || base.lowercased().hasPrefix("https://") else {
-                    return "URL провайдера «\(name)» должен начинаться с http:// или https://."
+                do {
+                    _ = try AIProviderURL.validateBase(base)
+                } catch {
+                    return "Провайдер «\(name)»: \(error.localizedDescription)"
                 }
             }
         }

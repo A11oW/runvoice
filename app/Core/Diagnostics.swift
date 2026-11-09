@@ -6,16 +6,32 @@ enum OpenCodeLocator {
     static func find() -> String? {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
+
+        // Сначала стандартные установки, затем PATH, только потом npm-кэш.
+        for path in ["/opt/homebrew/bin/opencode", "/usr/local/bin/opencode"] {
+            if isSafeExecutable(path) { return path }
+        }
+        if let path = Dependency.locateExecutable("opencode"), isSafeExecutable(path) {
+            return path
+        }
+
         let base = home.appendingPathComponent(".npm/_npx")
         if let dirs = try? fm.contentsOfDirectory(at: base, includingPropertiesForKeys: nil) {
             for dir in dirs {
                 let path = dir.appendingPathComponent("node_modules/.bin/opencode").path
-                if fm.isExecutableFile(atPath: path) { return path }
+                if isSafeExecutable(path) { return path }
             }
         }
-        let brew = "/opt/homebrew/bin/opencode"
-        if fm.isExecutableFile(atPath: brew) { return brew }
         return nil
+    }
+
+    private static func isSafeExecutable(_ path: String) -> Bool {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: path),
+              let attrs = try? fm.attributesOfItem(atPath: path),
+              let mode = attrs[.posixPermissions] as? NSNumber else { return false }
+        // Не запускаем файлы, доступные на запись группе или всем.
+        return (mode.intValue & 0o022) == 0
     }
 }
 

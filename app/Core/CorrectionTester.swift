@@ -5,6 +5,7 @@ enum AIClient {
     enum AIError: LocalizedError {
         case noProvider
         case noBaseURL
+        case invalidBaseURL(String)
         case noOpenCode
         case badResponse(String)
         case emptyAnswer
@@ -13,6 +14,7 @@ enum AIClient {
             switch self {
             case .noProvider: return "Не выбран AI-провайдер"
             case .noBaseURL: return "Не задан базовый URL для своего API"
+            case .invalidBaseURL(let text): return text
             case .noOpenCode: return "OpenCode CLI не найден"
             case .badResponse(let text): return "Некорректный ответ: \(text)"
             case .emptyAnswer: return "Модель вернула пустой ответ"
@@ -42,17 +44,21 @@ enum AIClient {
 
         switch provider.kind {
         case .openai:
-            let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !base.isEmpty else {
-                finish(.failure(AIError.noBaseURL), timedCompletion)
+            let base: String
+            do {
+                base = try AIProviderURL.validateBase(provider.baseURL)
+            } catch {
+                finish(.failure(AIError.invalidBaseURL(error.localizedDescription)), timedCompletion)
                 return
             }
             openAIRequest(provider: provider, system: system, text: text,
                           baseURL: base, apiKey: apiKey, completion: timedCompletion)
         case .anthropic:
-            let base = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !base.isEmpty else {
-                finish(.failure(AIError.noBaseURL), timedCompletion)
+            let base: String
+            do {
+                base = try AIProviderURL.validateBase(provider.baseURL)
+            } catch {
+                finish(.failure(AIError.invalidBaseURL(error.localizedDescription)), timedCompletion)
                 return
             }
             anthropicRequest(provider: provider, system: system, text: text,
@@ -101,16 +107,14 @@ enum AIClient {
         request.httpMethod = "POST"
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let apiKey, !apiKey.isEmpty {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        } else if let key = Keychain.value(for: provider.keychainAccount), !key.isEmpty {
-            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        } else if let key = ProcessInfo.processInfo.environment["OC_API_KEY"], !key.isEmpty {
+        if let key = sanitizedKey(apiKey)
+            ?? sanitizedKey(Keychain.value(for: provider.keychainAccount))
+            ?? sanitizedKey(ProcessInfo.processInfo.environment["OC_API_KEY"]) {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = data
 
-        URLSession.shared.dataTask(with: request) { data, _, error in
+        session.dataTask(with: request) { data, _, error in
             if let error {
                 finish(.failure(error), completion)
                 return
@@ -172,16 +176,14 @@ enum AIClient {
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if let apiKey, !apiKey.isEmpty {
-            request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-        } else if let key = Keychain.value(for: provider.keychainAccount), !key.isEmpty {
-            request.setValue(key, forHTTPHeaderField: "x-api-key")
-        } else if let key = ProcessInfo.processInfo.environment["OC_API_KEY"], !key.isEmpty {
+        if let key = sanitizedKey(apiKey)
+            ?? sanitizedKey(Keychain.value(for: provider.keychainAccount))
+            ?? sanitizedKey(ProcessInfo.processInfo.environment["OC_API_KEY"]) {
             request.setValue(key, forHTTPHeaderField: "x-api-key")
         }
         request.httpBody = data
 
-        URLSession.shared.dataTask(with: request) { data, _, error in
+        session.dataTask(with: request) { data, _, error in
             if let error {
                 finish(.failure(error), completion)
                 return
@@ -264,6 +266,24 @@ enum AIClient {
         }
     }
 
+    private static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 90
+        configuration.timeoutIntervalForResource = 90
+        return URLSession(configuration: configuration,
+                          delegate: RedirectGuard(),
+                          delegateQueue: nil)
+    }()
+
+    private static func sanitizedKey(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let key = value
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.isEmpty ? nil : key
+    }
+
     private static func finish(_ result: Result<String, Error>,
                                _ completion: @escaping (Result<String, Error>) -> Void) {
         DispatchQueue.main.async { completion(result) }
@@ -281,5 +301,25 @@ enum CorrectionTester {
         let system = prompt.isEmpty ? DefaultPrompts.fix : prompt
         AIClient.generate(provider: provider, system: system, text: sample,
                           apiKey: apiKey, completion: completion)
+    }
+}
+
+
+private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        guard let original = task.originalRequest?.url,
+              let target = request.url,
+              original.scheme?.lowercased() == target.scheme?.lowercased(),
+              original.host?.lowercased() == target.host?.lowercased(),
+              original.port == target.port,
+              (try? AIProviderURL.validateBase(target.absoluteString)) != nil else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }

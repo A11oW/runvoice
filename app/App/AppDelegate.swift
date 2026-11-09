@@ -59,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // сбросить возможный «зависший» статус от прошлого запуска
         try? "idle".write(to: Paths.status, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: Paths.status.path)
 
         let t = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)

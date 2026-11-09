@@ -108,6 +108,8 @@ enum WhisperModelStore {
     static var modelsDirectory: URL {
         let dir = Paths.support.appendingPathComponent("models", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700],
+                                               ofItemAtPath: dir.path)
         return dir
     }
 

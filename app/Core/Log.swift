@@ -7,6 +7,11 @@ enum Log {
 
     static func write(_ text: String) {
         let line = "\(Date().timeIntervalSince1970) \(text)\n"
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil,
+                          attributes: [.posixPermissions: 0o600])
+        }
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
             handle.write(line.data(using: .utf8)!)
@@ -14,5 +19,7 @@ enum Log {
         } else {
             try? line.write(to: url, atomically: true, encoding: .utf8)
         }
+        try? fm.setAttributes([.posixPermissions: 0o600],
+                              ofItemAtPath: url.path)
     }
 }

@@ -87,15 +87,18 @@ final class DictationRunner {
                 environment["OC_PROVIDER"] = provider.providerID
             case .openai, .anthropic:
                 let baseURL = provider.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-                if baseURL.isEmpty {
-                    environment["DICTATE_USE_OC"] = "0"
-                } else {
+                if let safeURL = try? AIProviderURL.validateBase(baseURL) {
                     environment["DICTATE_USE_OC"] = "1"
                     environment["DICTATE_AI_KIND"] = provider.kind.rawValue
-                    environment["OC_BASE_URL"] = baseURL
+                    environment["OC_BASE_URL"] = safeURL
                     if let key = Keychain.value(for: provider.keychainAccount), !key.isEmpty {
                         environment["OC_API_KEY"] = key
+                            .replacingOccurrences(of: "\r", with: "")
+                            .replacingOccurrences(of: "\n", with: "")
                     }
+                } else {
+                    environment["DICTATE_USE_OC"] = "0"
+                    Log.write("dictation: небезопасный base URL — без AI")
                 }
             }
             Log.write("dictation profile: \(provider.name), \(provider.kind.rawValue), model=\(provider.model)")

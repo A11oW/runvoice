@@ -5,6 +5,7 @@ import Security
 enum Keychain {
     static let service = "ai.opencode.runvoice"
     static let directAPIKeyAccount = "direct-api-key"
+    private static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 
     static func value(for account: String) -> String? {
         let query: [String: Any] = [
@@ -28,12 +29,26 @@ enum Keychain {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        let attributes: [String: Any] = [kSecValueData as String: data]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        var attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: accessibility,
+        ]
+        var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecParam {
+            // Некоторые старые связки ключей не позволяют менять accessibility
+            // у существующего элемента; данные сохраняем без потери.
+            attributes.removeValue(forKey: kSecAttrAccessible as String)
+            status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+            Log.write("keychain: не удалось обновить accessibility")
+        }
         if status == errSecItemNotFound {
             var item = query
             item[kSecValueData as String] = data
-            SecItemAdd(item as CFDictionary, nil)
+            item[kSecAttrAccessible as String] = accessibility
+            let addStatus = SecItemAdd(item as CFDictionary, nil)
+            if addStatus != errSecSuccess {
+                Log.write("keychain: ошибка добавления \(addStatus)")
+            }
         }
     }
 

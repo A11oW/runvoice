@@ -33,6 +33,8 @@ final class HistoryStore {
             entries = []
             return
         }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: url.path)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         entries = (try? decoder.decode([HistoryEntry].self, from: data)) ?? []
