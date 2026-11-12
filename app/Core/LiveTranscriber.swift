@@ -16,8 +16,14 @@ final class LiveTranscriber {
     private var generation = UUID()
     private var modelPath = ""
     private var language = "ru"
+    private var prompt = ""
+    private var usesMemory = false
+    private var pcm = Data()
+    private var totalBytes: UInt64 = 0
     private var lastByteCount: UInt64 = 0
     private var lastText = ""
+    private var stabilizer = LivePreviewStabilizer()
+    private var confirmOnSilence = false
     private var lastWarmup = Date.distantPast
 
     init(directory: URL, serverURL: URL, session: URLSession? = nil,
@@ -35,12 +41,18 @@ final class LiveTranscriber {
         self.interval = interval
     }
 
-    func start(modelPath: String, language: String) {
+    func start(modelPath: String, language: String, vocabulary: [String] = [], inMemory: Bool = false) {
         stop()
         self.modelPath = modelPath
         self.language = language.isEmpty ? "ru" : language
+        prompt = SpeechVocabulary.prompt(vocabulary)
+        usesMemory = inMemory
+        pcm.removeAll(keepingCapacity: true)
+        totalBytes = 0
         lastByteCount = 0
         lastText = ""
+        stabilizer = LivePreviewStabilizer()
+        confirmOnSilence = false
         lastWarmup = .distantPast
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.recognize()
@@ -57,6 +69,14 @@ final class LiveTranscriber {
         timer = nil
         task?.cancel()
         task = nil
+        pcm.removeAll(keepingCapacity: true)
+    }
+
+    func append(_ data: Data) {
+        guard usesMemory, timer != nil else { return }
+        pcm.append(data)
+        totalBytes += UInt64(data.count)
+        if pcm.count > 192_000 { pcm.removeFirst(pcm.count - 192_000) }
     }
 
     private func ensureServer() {
@@ -78,8 +98,22 @@ final class LiveTranscriber {
             ensureServer()
             return
         }
-        guard let audio = Self.readPreview(from: directory.appendingPathComponent("rec.pcm"),
-                                            afterByteCount: lastByteCount) else { return }
+        let preview: AudioPreview?
+        if usesMemory {
+            preview = totalBytes >= max(25_600, lastByteCount + 19_200)
+                ? AudioPreview(byteCount: totalBytes, wav: Self.wav(pcm: pcm)) : nil
+        } else {
+            preview = Self.readPreview(from: directory.appendingPathComponent("rec.pcm"), afterByteCount: lastByteCount)
+        }
+        guard let audio = preview else { return }
+        let newBytes = min(audio.wav.count - 44, Int(audio.byteCount - lastByteCount))
+        let hasNewSpeech = Self.containsSpeech(audio.wav.suffix(newBytes))
+        if !hasNewSpeech && !confirmOnSilence {
+            // Новая тишина не повод снова декодировать старые слова: именно
+            // такие окна часто порождают повторения и пунктуационные петли.
+            lastByteCount = audio.byteCount
+            return
+        }
 
         let boundary = "Runvoice-" + UUID().uuidString
         var body = Data()
@@ -97,6 +131,8 @@ final class LiveTranscriber {
         // 512 кадров энкодера покрывают 10.24 с, с запасом для 6-секундного preview.
         // Полное распознавание после остановки сохраняет исходный аудиоконтекст.
         field("audio_ctx", "512")
+        field("suppress_nst", "true")
+        if !prompt.isEmpty { field("prompt", prompt) }
         body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"preview.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8))
         body.append(audio.wav)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
@@ -123,14 +159,12 @@ final class LiveTranscriber {
                     return
                 }
                 self.lastByteCount = audio.byteCount
-                var text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                // На первом обрывке <1.5 с Whisper может дописать неуслышанный
-                // конец фразы. Сначала показываем первое слово; следующий
-                // снимок с большим контекстом раскрывает остальной текст.
-                if self.lastText.isEmpty, audio.byteCount < 48_000 {
-                    text = text.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
-                }
-                guard !text.isEmpty, text != self.lastText else { return }
+                self.confirmOnSilence = hasNewSpeech
+                let start = audio.byteCount - UInt64(audio.wav.count - 44)
+                guard let text = self.stabilizer.update(result.text, windowStart: start,
+                                                        firstWordOnly: audio.byteCount < 48_000,
+                                                        settled: !hasNewSpeech),
+                      text != self.lastText else { return }
                 self.lastText = text
                 self.onUpdate?(text)
             }
@@ -140,6 +174,22 @@ final class LiveTranscriber {
     }
 
     private struct PreviewResult: Decodable { let text: String }
+
+    /// Простой energy gate только для preview, не заменяет VAD итогового ASR.
+    static func containsSpeech(_ pcm: Data) -> Bool {
+        guard pcm.count >= 2 else { return false }
+        var sum: Double = 0
+        var peak: Double = 0
+        pcm.withUnsafeBytes { raw in
+            let samples = raw.bindMemory(to: Int16.self)
+            for sample in samples {
+                let value = Double(Int16(littleEndian: sample)) / 32768
+                sum += value * value
+                peak = max(peak, abs(value))
+            }
+        }
+        return sqrt(sum / Double(pcm.count / 2)) >= 0.0015 || peak >= 0.01
+    }
 
     struct AudioPreview {
         let byteCount: UInt64

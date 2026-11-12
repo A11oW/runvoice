@@ -94,7 +94,7 @@ make_one() {
 
   cat > "$stage/README.txt" <<EOF
 Runvoice $version
-Версия для $arch_title, macOS 13+.
+Версия для $arch_title, macOS 15+.
 
 СПОСОБ 1 — проще
   Правый клик по «Установить Runvoice.command» → «Открыть».

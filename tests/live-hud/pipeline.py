@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import wave
 
 ROOT = Path(__file__).resolve().parents[2]
 TEXT = "Используй Cypress вместо Playwright."
@@ -86,9 +87,48 @@ exec /bin/bash "$1" stop
                 recorder.wait(timeout=3)
         assert len(requests) == 2, "На каждую остановку — ровно одно финальное распознавание"
         assert all(b'name="no_timestamps"\r\n\r\ntrue' in body for body in requests)
+        for streaming in (False, True):
+            state = base / ("native-streaming" if streaming else "native-whisper")
+            state.mkdir()
+            model = state / "model.bin"
+            model.write_bytes(b"test-model")
+            (state / "whisper-server.model").write_text(f"{model}|/test/server")
+            wav = state / "native.wav"
+            with wave.open(str(wav), "wb") as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(16000)
+                audio.writeframes(b"\x10\x00" * 16_000)
+            transcript = state / "native.txt"
+            transcript.write_text(TEXT)
+            marker = state / "unexpected-external-process"
+            env = {**environment, "DICTATE_STATE_DIR": str(state), "WHISPER_MODEL": str(model),
+                   "WHISPER_PROMPT": "Cypress, Playwright", "TEST_CLIPBOARD_MARKER": str(marker)}
+            if streaming:
+                env["DICTATE_MODEL_NAME"] = "Nemotron Multilingual 0.6B"
+            native_wrapper = """
+pbcopy() { printf clipboard > "$TEST_CLIPBOARD_MARKER"; return 99; }
+pbpaste() { printf clipboard > "$TEST_CLIPBOARD_MARKER"; return 99; }
+ffmpeg() { printf ffmpeg > "$TEST_CLIPBOARD_MARKER"; return 99; }
+export -f pbcopy pbpaste ffmpeg
+exec /bin/bash "$@"
+"""
+            args = [str(ROOT / "bin/dictate.sh"), "finish", str(wav)]
+            if streaming:
+                args.append(str(transcript))
+            before = len(requests)
+            subprocess.run(["/bin/bash", "-c", native_wrapper, "test", *args], env=env,
+                           check=True, timeout=15, capture_output=True)
+            result = json.loads((state / "last_result.json").read_text())
+            assert result["raw"] == result["fixed"] == TEXT
+            assert result["model"] == ("Nemotron Multilingual 0.6B" if streaming else "model.bin")
+            assert not marker.exists(), "Native finish не запускает ffmpeg или clipboard CLI"
+            assert len(requests) == before + (0 if streaming else 1), "Готовый потоковый текст не распознаётся повторно"
+            if not streaming:
+                assert b'Cypress, Playwright' in requests[-1]
 finally:
     server.shutdown()
     server.server_close()
     thread.join(timeout=2)
 
-print("OK: 2 финальных handoff, RAW/FIXED, тайминги, права файлов, без pbcopy/pbpaste")
+print("OK: 4 handoff (CLI, native Whisper, streaming), словарь, тайминги, права; streaming без повторного ASR")

@@ -1,73 +1,60 @@
 import Foundation
 
-/// Проверка выбранного микрофона: 1 секунда записи через dictate.sh mic-test.
+/// Проверяет тот же нативный тракт и устройство, что использует диктовка.
 enum MicTester {
-    enum TestError: LocalizedError {
-        case missingScript
-        case busy
-        case notFound
-        case failed(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .missingScript: return "Не найден dictate.sh"
-            case .busy: return "Идёт диктовка — повторите позже"
-            case .notFound: return "Микрофон не найден"
-            case .failed(let text): return text
+    private static var active: NativeAudioRecorder?
+    static func test(micName: String, deviceUID: String = "", completion: @escaping (Result<String, Error>) -> Void) {
+        let state = (try? String(contentsOf: Paths.status, encoding: .utf8)).flatMap(DictationState.init(raw:))
+        guard active == nil, !["preparing", "recording", "transcribing", "fixing"].contains(state?.key ?? "") else {
+            completion(.failure(TestError.busy)); return
+        }
+        let recorder = NativeAudioRecorder()
+        active = recorder
+        let url = Paths.state.appendingPathComponent("mic-test-\(UUID().uuidString).wav")
+        var peak: Float = 0
+        var finished = false
+        func complete(_ result: Result<String, Error>) {
+            guard !finished else { return }
+            finished = true
+            active = nil
+            recorder.onAudio = nil
+            recorder.onFailure = nil
+            try? FileManager.default.removeItem(at: url)
+            completion(result)
+        }
+        recorder.onAudio = { data in
+            data.withUnsafeBytes { bytes in
+                for sample in bytes.bindMemory(to: Int16.self) {
+                    peak = max(peak, abs(Float(Int16(littleEndian: sample)) / 32768))
+                }
+            }
+        }
+        recorder.onFailure = { error in
+            recorder.stop(discard: true) { _ in complete(.failure(error)) }
+        }
+        recorder.start(microphone: micName, deviceUID: deviceUID, url: url) { result in
+            switch result {
+            case .failure(let error): complete(.failure(error))
+            case .success:
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard !finished else { return }
+                    recorder.stop(discard: true) { result in
+                        switch result {
+                        case .failure(let error): complete(.failure(error))
+                        case .success(let recording):
+                            guard recording.frames >= 3200 else {
+                                complete(.failure(NativeAudioRecorder.Failure.empty)); return
+                            }
+                            let db = 20 * log10(max(peak, 0.00001))
+                            complete(.success(String(format: "%.1f", db)))
+                        }
+                    }
+                }
             }
         }
     }
-
-    static func test(micName: String,
-                     completion: @escaping (Result<String, Error>) -> Void) {
-        guard let script = Paths.script else {
-            completion(.failure(TestError.missingScript))
-            return
-        }
-
-        var environment = ProcessInfo.processInfo.environment
-        environment["DICTATE_STATE_DIR"] = Paths.state.path
-        if !micName.isEmpty { environment["MIC_NAME"] = micName }
-        let base = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        environment["PATH"] = base + ":" + (environment["PATH"] ?? "")
-
-        DispatchQueue.global(qos: .userInitiated).async {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/bash")
-            process.arguments = [script.path, "mic-test"]
-            process.environment = environment
-            let out = Pipe()
-            let err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                DispatchQueue.main.async { completion(.failure(error)) }
-                return
-            }
-
-            let output = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let errorOutput = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            let level = output.split(separator: "\n")
-                .first { $0.hasPrefix("level=") }
-                .map { String($0.dropFirst("level=".count)) }
-            if output.contains("error=busy") {
-                DispatchQueue.main.async { completion(.failure(TestError.busy)) }
-                return
-            }
-            if output.contains("error=notfound") {
-                DispatchQueue.main.async { completion(.failure(TestError.notFound)) }
-                return
-            }
-            guard let level, level != "unknown", level != "" else {
-                let message = errorOutput.isEmpty ? "не удалось измерить уровень" : String(errorOutput.prefix(200))
-                DispatchQueue.main.async { completion(.failure(TestError.failed(message))) }
-                return
-            }
-            DispatchQueue.main.async { completion(.success(level)) }
-        }
+    enum TestError: LocalizedError {
+        case busy
+        var errorDescription: String? { "Идёт диктовка или проверка — повторите позже" }
     }
 }

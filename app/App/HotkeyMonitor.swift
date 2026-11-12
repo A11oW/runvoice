@@ -7,27 +7,39 @@ import CoreGraphics
 final class HotkeyMonitor {
     var onAction: ((NSPoint) -> Void)?
     var onImprove: ((NSPoint) -> Void)?
+    var recordingSessionIDProvider: (() -> UUID?)?
+    var onFinishRecording: ((UUID) -> Void)?
+    var onCancelRecording: ((UUID) -> Void)?
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var toggleHotkey = HotKeySetting()
     private var improveHotkey = HotKeySetting()
     private var suspended = false
+    private var stopRecordingOnEnter = false
+    private var cancelRecordingOnEscape = false
+    private var dictationKeys = DictationKeyPolicy()
 
     func start(settings: Settings) {
-        toggleHotkey = settings.hotkeyToggle
-        improveHotkey = settings.hotkeyImprove
+        configure(settings: settings)
         installTap()
         Log.write("hotkeys configured: \(toggleHotkey.display), \(improveHotkey.display)")
     }
 
     /// Переустановить tap после смены сочетания — без перезапуска приложения.
     func reload(settings: Settings) {
-        toggleHotkey = settings.hotkeyToggle
-        improveHotkey = settings.hotkeyImprove
+        configure(settings: settings)
         removeTap()
         installTap()
         Log.write("hotkeys reconfigured: \(toggleHotkey.display), \(improveHotkey.display)")
+    }
+
+    /// Отделено от установки системного tap для проверки маршрутизации событий.
+    func configure(settings: Settings) {
+        toggleHotkey = settings.hotkeyToggle
+        improveHotkey = settings.hotkeyImprove
+        stopRecordingOnEnter = settings.stopRecordingOnEnter
+        cancelRecordingOnEscape = settings.cancelRecordingOnEscape
     }
 
     func setSuspended(_ value: Bool) {
@@ -41,7 +53,7 @@ final class HotkeyMonitor {
     private func installTap() {
         removeTap()
 
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        let mask = CGEventMask((1 << CGEventType.keyDown.rawValue) | (1 << CGEventType.keyUp.rawValue))
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
@@ -56,7 +68,7 @@ final class HotkeyMonitor {
                     return Unmanaged.passUnretained(event)
                 }
 
-                if monitor.shouldConsume(event) { return nil }
+                if monitor.shouldConsume(event, type: type) { return nil }
                 return Unmanaged.passUnretained(event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -85,12 +97,32 @@ final class HotkeyMonitor {
         tap = nil
     }
 
-    private func shouldConsume(_ event: CGEvent) -> Bool {
-        if suspended { return false }
-
+    func shouldConsume(_ event: CGEvent, type: CGEventType) -> Bool {
+        guard type == .keyDown || type == .keyUp else { return false }
         let keyCode = UInt32(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        let modified = !flags.intersection([.maskControl, .maskShift, .maskAlternate, .maskCommand]).isEmpty
+        let decision = dictationKeys.handle(type == .keyDown ? .down : .up,
+                                           keyCode: UInt16(keyCode), isRepeat: isRepeat, modified: modified,
+                                           finishOnEnter: stopRecordingOnEnter,
+                                           cancelOnEscape: cancelRecordingOnEscape, suspended: suspended,
+                                           recordingSessionID: recordingSessionIDProvider?())
+        switch decision {
+        case .consume: return true
+        case .finish(let sessionID):
+            Log.write("hotkey fired: finish by Enter")
+            DispatchQueue.main.async { [weak self] in self?.onFinishRecording?(sessionID) }
+            return true
+        case .cancel(let sessionID):
+            Log.write("hotkey fired: cancel by Esc")
+            DispatchQueue.main.async { [weak self] in self?.onCancelRecording?(sessionID) }
+            return true
+        case .passThrough: break
+        }
+        // keyUp обслуживает только уже захваченный Enter/Esc. Основные хоткеи
+        // по-прежнему вызываются один раз на keyDown, не при отпускании.
+        guard type == .keyDown, !suspended else { return false }
 
         func matches(_ hotkey: HotKeySetting) -> Bool {
             let mods = hotkey.modifiers

@@ -1,5 +1,4 @@
 import AppKit
-import QuartzCore
 
 /// Карточка в позиции, зафиксированной при запуске операции.
 final class HUDController {
@@ -7,28 +6,36 @@ final class HUDController {
     private var stopPanel: StopPanel!
     private var stopButton: StopButton!
     private var bubble: BubbleView!
-    private var iconView: NSImageView!
+    private var iconView: HUDStatusIconView!
+    private var spinner: HUDSpinnerView!
+    private var spinnerRunning = false
+    private var applicationIconView: NSImageView!
+    private var displayedApplication: HUDApplication?
     private var label: NSTextField!
     private var transcriptLabel: NSTextField!
     private var timerLabel: NSTextField!
-    private var levelBar: LevelBarView!
+    private var waveform: WaveformView!
     private var clockTimer: Timer?
     private var startedAt: Date?
-    private var enabled = true
     private var spaceObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private var currentContent: HUDContent?
     private var sessionPosition: HUDSessionPosition?
-    private var stopY: CGFloat = 16
+    private var stopOrigin = NSPoint.zero
     private var measuredTranscript = ""
     private var measuredWidth: CGFloat = 0
     private var transcriptHeight: CGFloat = 0
+    private var reservedTranscriptLines = 0
+    private var previewOptions = RecognitionPreview()
+    private var measuredLineCount = 0
 
-    private var bodyHeight: CGFloat = 64
-    private let cardWidth: CGFloat = 400
-    private let maximumHeight: CGFloat = 176
-    private let stopWidth: CGFloat = 32
-    private let stopHeight: CGFloat = 32
+    private var bodyHeight = HUDLayout.rowHeight
+    private let cardWidth = HUDLayout.recordingWidth
+    private var maximumHeight: CGFloat {
+        previewOptions.enabled ? HUDLayout.maximumHeight(lines: previewOptions.lineCount) : HUDLayout.rowHeight
+    }
+    private let stopWidth = HUDLayout.iconSize
+    private let stopHeight = HUDLayout.iconSize
 
     var onStop: (() -> Void)?
 
@@ -36,38 +43,35 @@ final class HUDController {
         setup()
     }
 
-    /// Вызывается до запуска записи: fallback использует мышь в момент хоткея,
-    /// а не её положение после подготовки микрофона или ответа Whisper.
+    /// Использует мышь в момент хоткея, до подготовки микрофона и ответа ASR.
     func beginSession(mouseLocation: NSPoint) {
-        let anchor = HUDAnchor.caretRect()
-            ?? NSRect(origin: mouseLocation, size: NSSize(width: 1, height: 18))
+        reservedTranscriptLines = 0
+        measuredWidth = -1
+        transcriptLabel.stringValue = ""
+        waveform.reset()
+        let anchor = NSRect(origin: mouseLocation, size: .zero)
         let visible = screen(for: anchor)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let width = min(cardWidth, visible.width - 16)
         sessionPosition = HUDSessionPosition(anchor: anchor, visibleFrame: visible,
-                                             reservedSize: NSSize(width: width, height: maximumHeight))
+                                             reservedSize: NSSize(width: width, height: min(maximumHeight, visible.height - 16)))
     }
 
-    func setEnabled(_ value: Bool) {
-        enabled = value
-        if !value {
-            dismiss()
+    func setPreviewOptions(_ options: RecognitionPreview) {
+        guard options != previewOptions else { return }
+        let enabledChanged = options.enabled != previewOptions.enabled
+        previewOptions = options
+        reservedTranscriptLines = 0
+        measuredWidth = -1
+        transcriptLabel.stringValue = ""
+        if var content = currentContent {
+            if enabledChanged { content.transcript = "" }
+            present(content)
         }
     }
 
     func present(_ content: HUDContent) {
-        guard enabled else {
-            panel?.orderOut(nil)
-            return
-        }
-
-        label.stringValue = content.text
-        iconView.image = symbol(content.hudIcon)
-        iconView.contentTintColor = accentColor(content.accent)
-        if content.busy { startPulse() } else { stopPulse() }
-
-        levelBar.isHidden = !content.showLevel
-        if !content.showLevel { levelBar.level = 0 }
+        configure(content)
 
         if content.showLevel {
             if startedAt == nil { startClock() }
@@ -93,13 +97,14 @@ final class HUDController {
         }
     }
 
-    func setLevel(_ level: CGFloat) {
-        levelBar.level = level
+    func setSpectrum(_ levels: [CGFloat]) {
+        guard currentContent?.showLevel == true else { return }
+        waveform.setSpectrum(levels)
     }
 
     func dismiss() {
         stopClock()
-        stopPulse()
+        setSpinnerRunning(false)
         hideStopPanel()
         currentContent = nil
         panel?.orderOut(nil)
@@ -111,18 +116,34 @@ final class HUDController {
                   timer: String? = "00:07",
                   level: CGFloat = 0.65,
                   completion: @escaping () -> Void) {
-        label.stringValue = content.text
-        iconView.image = symbol(content.hudIcon)
-        iconView.contentTintColor = accentColor(content.accent)
-        stopPulse()
+        configure(content)
 
         timerLabel.isHidden = (timer == nil)
         timerLabel.stringValue = timer ?? ""
-        levelBar.isHidden = !content.showLevel
-        levelBar.level = content.showLevel ? level : 0
-
         currentContent = content
         layout(content)
+        waveform.setSnapshotLevel(content.showLevel ? level : 0)
+        var centers: [String: CGFloat] = [:]
+        if content.showLevel {
+            centers["timer"] = timerLabel.frame.midY
+            centers["spectrum"] = waveform.frame.midY
+            if content.showStop { centers["stop"] = stopOrigin.y + stopHeight / 2 }
+        } else {
+            centers[content.showSpinner ? "spinner" : "icon"] = content.showSpinner ? spinner.frame.midY : iconView.frame.midY
+            centers["title"] = label.frame.midY
+            if content.delivery?.application != nil { centers["application"] = applicationIconView.frame.midY }
+        }
+        let metadata: [String: Any] = [
+            "text": content.displayText, "width": panel.frame.width, "height": panel.frame.height,
+            "titleWidth": label.frame.width, "titleFittingWidth": label.fittingSize.width,
+            "titleFont": label.font?.pointSize ?? 0,
+            "preview": transcriptLabel.stringValue, "lineLimit": transcriptLabel.maximumNumberOfLines,
+            "rowCenters": centers, "spectrumWidth": waveform.frame.width, "spectrumHeight": waveform.frame.height,
+            "spinnerRunning": spinner.isAnimating
+        ]
+        if let json = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]) {
+            try? json.write(to: URL(fileURLWithPath: path).deletingPathExtension().appendingPathExtension("json"))
+        }
         place()
         panel.orderFrontRegardless()
         if content.showStop {
@@ -149,7 +170,13 @@ final class HUDController {
 
     private func renderImage(of view: NSView?, opaque: Bool) -> NSImage? {
         guard let view,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+              let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                        pixelsWide: Int(view.bounds.width * 2), pixelsHigh: Int(view.bounds.height * 2),
+                                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                        isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        // Независимо от дисплея, на котором осталась мышь: снимки всегда 2×,
+        // без растягивания растрового кэша с внешнего экрана 1×.
+        rep.size = view.bounds.size
         view.cacheDisplay(in: view.bounds, to: rep)
         let image = NSImage(size: view.bounds.size)
         image.lockFocus()
@@ -167,17 +194,42 @@ final class HUDController {
     private func drawStopBadge(on image: NSImage) {
         image.lockFocus()
         defer { image.unlockFocus() }
-        let rect = NSRect(x: image.size.width - stopWidth - 14,
-                          y: stopY,
-                          width: stopWidth, height: stopHeight)
-        NSColor.systemRed.setFill()
-        NSBezierPath(ovalIn: rect.insetBy(dx: 2, dy: 2)).fill()
-        let side: CGFloat = 9
-        let square = NSRect(x: rect.midX - side / 2,
-                            y: rect.midY - side / 2,
-                            width: side, height: side)
-        NSColor.white.setFill()
-        NSBezierPath(roundedRect: square, xRadius: 2, yRadius: 2).fill()
+        StopButton.drawBadge(in: NSRect(origin: stopOrigin, size: NSSize(width: stopWidth, height: stopHeight)),
+                             hovering: false)
+    }
+
+    private func configure(_ content: HUDContent) {
+        let title = NSMutableAttributedString(string: content.displayText,
+                                              attributes: [.font: HUDLayout.titleFont, .foregroundColor: NSColor.white])
+        if let delivery = content.delivery {
+            let suffix = " · \(delivery.words)"
+            title.addAttribute(.foregroundColor, value: NSColor(white: 1, alpha: 0.64),
+                               range: NSRange(location: title.length - suffix.utf16.count, length: suffix.utf16.count))
+        }
+        label.attributedStringValue = title
+        label.toolTip = content.displayText
+        label.isHidden = content.showLevel
+        iconView.isHidden = content.showLevel || content.showSpinner
+        spinner.isHidden = !content.showSpinner
+        setSpinnerRunning(content.showSpinner)
+        iconView.setSymbol(content.hudIcon)
+        iconView.tint = accentColor(content.accent)
+        let application = content.delivery?.application
+        applicationIconView.isHidden = application == nil
+        if displayedApplication != application {
+            displayedApplication = application
+            applicationIconView.image = application?.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
+                ?? (application == nil ? nil : NSImage(systemSymbolName: "app", accessibilityDescription: nil))
+        }
+        waveform.isHidden = !content.showLevel
+        panel.setAccessibilityLabel(content.showLevel ? "Запись звука" : content.displayText)
+    }
+
+    private func setSpinnerRunning(_ running: Bool) {
+        guard running != spinnerRunning else { return }
+        spinnerRunning = running
+        if running { spinner.startAnimation(nil) }
+        else { spinner.stopAnimation(nil) }
     }
 
     // MARK: - Часы записи
@@ -212,52 +264,53 @@ final class HUDController {
 
     private func layout(_ content: HUDContent) {
         if sessionPosition == nil { beginSession(mouseLocation: NSEvent.mouseLocation) }
-        let showTranscript = !content.transcript.isEmpty
-        let width = min(cardWidth, (sessionPosition?.visibleFrame.width ?? 1440) - 16)
-        let extra: CGFloat = content.showStop ? stopWidth + 16 : 0
-        let textWidth = max(40, width - 68)
-        let font = NSFont.systemFont(ofSize: 13)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byWordWrapping
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraph]
-        func textHeight(_ text: String) -> CGFloat {
-            ceil((text as NSString).boundingRect(
-                with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: attributes).height)
-        }
-        if measuredTranscript != content.transcript || measuredWidth != textWidth {
+        let showTranscript = previewOptions.enabled && content.showLevel && !content.transcript.isEmpty
+        let maximumWidth = min(cardWidth, (sessionPosition?.visibleFrame.width ?? 1440) - 16)
+        let showsApplication = content.delivery?.application != nil
+        let width = content.showLevel ? maximumWidth
+            : HUDLayout.compactWidth(titleWidth: label.fittingSize.width, showsApplication: showsApplication, maximum: maximumWidth)
+        let textWidth = max(40, width - HUDLayout.padding * 2)
+        let availableHeight = sessionPosition?.availableHeight ?? 900
+        let linesOnScreen = max(1, Int((availableHeight - HUDLayout.rowHeight - 10) / HUDTranscriptLayout.lineHeight))
+        let lineCount = min(previewOptions.lineCount, linesOnScreen)
+        transcriptLabel.maximumNumberOfLines = lineCount
+        if measuredTranscript != content.transcript || measuredWidth != textWidth || measuredLineCount != lineCount {
             measuredTranscript = content.transcript
             measuredWidth = textWidth
-            // Бабл показывает последние строки, не разрастается на весь экран.
-            var transcript = String(content.transcript.suffix(600)).trimmingCharacters(in: .whitespacesAndNewlines)
-            var shortened = content.transcript.count > transcript.count
-            let heightLimit: CGFloat = 102
-            while !transcript.isEmpty, textHeight((shortened ? "…" : "") + transcript) > heightLimit {
-                transcript.removeFirst()
-                shortened = true
-            }
-            transcriptLabel.stringValue = (shortened ? "…" : "") + transcript
-            transcriptHeight = showTranscript ? max(18, textHeight(transcriptLabel.stringValue)) : 0
+            measuredLineCount = lineCount
+            let snippet = HUDTranscriptLayout.fit(showTranscript ? content.transcript : "", width: textWidth,
+                                                   keeping: transcriptLabel.stringValue, lineCount: lineCount)
+            transcriptLabel.stringValue = snippet.text
+            // При записи карточка только растёт до выбранного числа строк и больше
+            // не сжимается вслед за короткой/пересмотренной гипотезой.
+            if showTranscript { reservedTranscriptLines = min(lineCount, max(reservedTranscriptLines, snippet.lines)) }
+            transcriptHeight = showTranscript ? CGFloat(reservedTranscriptLines) * HUDTranscriptLayout.lineHeight + 4 : 0
         }
         transcriptLabel.isHidden = !showTranscript
-        bodyHeight = showTranscript ? 44 + transcriptHeight + (content.showLevel ? 30 : 16) : 64
+        bodyHeight = showTranscript ? HUDLayout.rowHeight + transcriptHeight + 6 : HUDLayout.rowHeight
         let height = bodyHeight
         if panel.frame.size != NSSize(width: width, height: height) {
             panel.setContentSize(NSSize(width: width, height: height))
             bubble.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
-        let bodyY: CGFloat = 0
-        let labelY = bodyY + (showTranscript ? bodyHeight - 36 : (content.showLevel ? 28 : 22))
-        label.frame = NSRect(x: 50, y: labelY,
-                             width: max(40, width - 66 - extra), height: 20)
-        iconView.frame = NSRect(x: 18, y: labelY, width: 20, height: 20)
-        transcriptLabel.frame = NSRect(x: 50, y: bodyY + (content.showLevel ? 30 : 16),
-                                       width: textWidth, height: transcriptHeight)
-        timerLabel.frame = NSRect(x: 50, y: bodyY + 8, width: 44, height: 12)
-        levelBar.frame = NSRect(x: 100, y: bodyY + 12,
-                                width: max(20, width - 116 - extra), height: 4)
-        stopY = labelY - 6
+        let centerY = height - HUDLayout.rowHeight / 2
+        iconView.frame = NSRect(x: HUDLayout.padding, y: centerY - 10, width: 20, height: 20)
+        spinner.frame = NSRect(x: HUDLayout.padding + 2, y: centerY - 8, width: 16, height: 16)
+        applicationIconView.frame = NSRect(x: 42, y: centerY - 8, width: 16, height: 16)
+        let titleX: CGFloat = showsApplication ? 64 : 42
+        let titleHeight = ceil(label.fittingSize.height)
+        label.frame = NSRect(x: titleX, y: centerY - titleHeight / 2,
+                             width: max(0, width - titleX - HUDLayout.padding), height: titleHeight)
+        transcriptLabel.frame = NSRect(x: HUDLayout.padding, y: 10, width: textWidth, height: transcriptHeight)
+        let timerHeight = ceil(timerLabel.fittingSize.height)
+        timerLabel.frame = NSRect(x: 42, y: centerY - timerHeight / 2, width: 56, height: timerHeight)
+        if content.showLevel {
+            let spectrumWidth = min(HUDLayout.spectrumSize.width, max(12, width - 122))
+            waveform.frame = NSRect(x: width - HUDLayout.padding - spectrumWidth,
+                                    y: centerY - HUDLayout.spectrumSize.height / 2,
+                                    width: spectrumWidth, height: HUDLayout.spectrumSize.height)
+        }
+        stopOrigin = NSPoint(x: HUDLayout.padding, y: centerY - stopHeight / 2)
     }
 
     private func setup() {
@@ -305,29 +358,34 @@ final class HUDController {
         stopButton.setAccessibilityLabel("Остановить запись")
         stopPanel.contentView = stopButton
 
-        iconView = NSImageView(frame: NSRect(x: 18, y: 22, width: 20, height: 20))
-        iconView.imageScaling = .scaleProportionallyDown
-        iconView.wantsLayer = true
+        iconView = HUDStatusIconView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
+        spinner = HUDSpinnerView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
+        spinner.isHidden = true
+        applicationIconView = NSImageView(frame: .zero)
+        applicationIconView.imageScaling = .scaleProportionallyDown
+        applicationIconView.contentTintColor = .white
 
         label = NSTextField(labelWithString: "")
         label.frame = NSRect(x: 50, y: 22, width: width - 66, height: 20)
-        label.font = .systemFont(ofSize: 14, weight: .semibold)
+        label.font = HUDLayout.titleFont
         label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
 
         transcriptLabel = NSTextField(wrappingLabelWithString: "")
         transcriptLabel.font = .systemFont(ofSize: 13)
+        transcriptLabel.maximumNumberOfLines = previewOptions.lineCount
+        transcriptLabel.lineBreakMode = .byWordWrapping
         transcriptLabel.textColor = NSColor(white: 1, alpha: 0.88)
         transcriptLabel.isHidden = true
 
         timerLabel = NSTextField(labelWithString: "")
         timerLabel.frame = NSRect(x: 50, y: 8, width: 44, height: 12)
-        timerLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
-        timerLabel.textColor = NSColor(white: 1, alpha: 0.6)
+        timerLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        timerLabel.textColor = NSColor(white: 1, alpha: 0.82)
         timerLabel.isHidden = true
 
-        levelBar = LevelBarView(frame: NSRect(x: 100, y: 12, width: width - 116, height: 4))
-        levelBar.isHidden = true
+        waveform = WaveformView(frame: .zero)
+        waveform.isHidden = true
 
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
@@ -345,15 +403,17 @@ final class HUDController {
         }
 
         bubble.addSubview(iconView)
+        bubble.addSubview(spinner)
+        bubble.addSubview(applicationIconView)
         bubble.addSubview(label)
         bubble.addSubview(transcriptLabel)
         bubble.addSubview(timerLabel)
-        bubble.addSubview(levelBar)
+        bubble.addSubview(waveform)
         panel.contentView = bubble
     }
 
     private func followActiveSpace() {
-        guard enabled, panel.isVisible else { return }
+        guard panel.isVisible else { return }
         place()
         panel.orderFrontRegardless()
         if stopPanel?.isVisible == true {
@@ -363,7 +423,6 @@ final class HUDController {
     }
 
     private func showStopPanel() {
-        guard enabled else { return }
         placeStopPanel()
         stopButton.isEnabled = true
         stopPanel.orderFrontRegardless()
@@ -375,8 +434,8 @@ final class HUDController {
 
     private func placeStopPanel() {
         let frame = panel.frame
-        let x = frame.maxX - stopWidth - 14
-        let y = frame.minY + stopY
+        let x = frame.minX + stopOrigin.x
+        let y = frame.minY + stopOrigin.y
         stopPanel.setFrame(NSRect(x: x, y: y, width: stopWidth, height: stopHeight),
                            display: false)
     }
@@ -400,7 +459,7 @@ final class HUDController {
            !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(position.visibleFrame) }),
            let screen = NSScreen.screens.first {
             sessionPosition = HUDSessionPosition(
-                anchor: NSRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY, width: 1, height: 18),
+                anchor: NSRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY, width: 0, height: 0),
                 visibleFrame: screen.visibleFrame,
                 reservedSize: NSSize(width: min(cardWidth, screen.visibleFrame.width - 16), height: maximumHeight))
             if let content = currentContent { layout(content) }
@@ -411,12 +470,6 @@ final class HUDController {
 
     // MARK: - Иконка
 
-    private func symbol(_ name: String) -> NSImage? {
-        let config = NSImage.SymbolConfiguration(pointSize: 17, weight: .medium)
-        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(config)
-    }
-
     private func accentColor(_ accent: HUDContent.Accent) -> NSColor {
         switch accent {
         case .neutral: return NSColor(white: 1, alpha: 0.9)
@@ -424,21 +477,6 @@ final class HUDController {
         case .info: return .systemBlue
         case .warning: return .systemOrange
         }
-    }
-
-    private func startPulse() {
-        guard iconView.layer?.animation(forKey: "pulse") == nil else { return }
-        let pulse = CABasicAnimation(keyPath: "opacity")
-        pulse.fromValue = 1.0
-        pulse.toValue = 0.35
-        pulse.duration = 0.8
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        iconView.layer?.add(pulse, forKey: "pulse")
-    }
-
-    private func stopPulse() {
-        iconView.layer?.removeAnimation(forKey: "pulse")
     }
 
     deinit {
@@ -485,17 +523,15 @@ private final class StopButton: NSButton {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let color = hovering
-            ? (NSColor.systemRed.blended(withFraction: 0.12, of: .white) ?? .systemRed)
-            : .systemRed
-        color.setFill()
-        NSBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2)).fill()
+        Self.drawBadge(in: bounds, hovering: hovering)
+    }
 
-        let side: CGFloat = 9
-        let square = NSRect(x: bounds.midX - side / 2,
-                            y: bounds.midY - side / 2,
-                            width: side, height: side)
-        NSColor.white.setFill()
-        NSBezierPath(roundedRect: square, xRadius: 2, yRadius: 2).fill()
+    static func drawBadge(in rect: NSRect, hovering: Bool) {
+        HUDIconDrawing.filledCircle(in: rect, color: NSColor(white: 1, alpha: hovering ? 1 : 0.85)) {
+            let side: CGFloat = 6
+            let square = NSRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side)
+            NSColor.white.setFill()
+            NSBezierPath(roundedRect: square, xRadius: 1, yRadius: 1).fill()
+        }
     }
 }

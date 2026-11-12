@@ -35,7 +35,7 @@ ARM_CLI="$ARM_BUILD/bin/whisper-cli"
 X86_SERVER="$X86_BUILD/bin/whisper-server"
 X86_CLI="$X86_BUILD/bin/whisper-cli"
 STAMP="$BUILD/whisper-build.stamp"
-WANT="v1.9.5-macos13-universal"
+WANT="v1.9.5-macos15-universal"
 
 if [ "$(cat "$STAMP" 2>/dev/null || true)" != "$WANT" ]; then
   rm -rf "$ARM_BUILD" "$X86_BUILD"
@@ -45,10 +45,11 @@ command -v cmake >/dev/null 2>&1 || {
   echo "нужен cmake: brew install cmake" >&2; exit 1; }
 
 if [ ! -x "$ARM_SERVER" ] || [ ! -x "$ARM_CLI" ]; then
-  echo "==> whisper.cpp: arm64 (Metal, macOS 13+)"
+  echo "==> whisper.cpp: arm64 (Metal, macOS 15+)"
   cmake -B "$ARM_BUILD" -S "$SRC" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
     -DBUILD_SHARED_LIBS=OFF \
     -DWHISPER_BUILD_SERVER=ON \
     -DWHISPER_BUILD_EXAMPLES=ON \
@@ -60,11 +61,11 @@ if [ ! -x "$ARM_SERVER" ] || [ ! -x "$ARM_CLI" ]; then
 fi
 
 if [ ! -x "$X86_SERVER" ] || [ ! -x "$X86_CLI" ]; then
-  echo "==> whisper.cpp: x86_64 (CPU, macOS 13+)"
+  echo "==> whisper.cpp: x86_64 (CPU, macOS 15+)"
   cmake -B "$X86_BUILD" -S "$SRC" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
     -DBUILD_SHARED_LIBS=OFF \
     -DWHISPER_BUILD_SERVER=ON \
     -DWHISPER_BUILD_EXAMPLES=ON \

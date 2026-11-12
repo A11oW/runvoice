@@ -16,6 +16,11 @@ fi
 
 mkdir -p "$DIST" "$BUILD"
 
+echo "==> потоковый ASR (Apple Silicon)"
+swift build --package-path "$REPO/streaming" --scratch-path "$BUILD/streaming" \
+  -c release --product RunvoiceASR --arch arm64
+ASR="$BUILD/streaming/arm64-apple-macosx/release/RunvoiceASR"
+
 echo "==> иконка"
 "$REPO/scripts/make-icon.sh" "$BUILD/AppIcon.icns"
 
@@ -43,11 +48,20 @@ build_variant() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
   cp "$BUILD/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
-  swiftc -O -target "$arch-apple-macos13.0" \
+  swiftc -O -target "$arch-apple-macos15.0" \
     -o "$app/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
 
   cp "$REPO/app/Info.plist" "$app/Contents/Info.plist"
   cp "$REPO/bin/dictate.sh" "$app/Contents/Resources/dictate.sh"
+  cp "$REPO/resources/warmup.wav" "$app/Contents/Resources/warmup.wav"
+  if [ "$arch" = "arm64" ]; then
+    cp "$ASR" "$app/Contents/Resources/RunvoiceASR"
+    codesign --force --sign "$SIGN_ID" "$app/Contents/Resources/RunvoiceASR" >/dev/null
+    mkdir -p "$app/Contents/Resources/licenses"
+    cp "$BUILD/streaming/checkouts/FluidAudio/LICENSE" "$app/Contents/Resources/licenses/FluidAudio-LICENSE"
+    cp "$BUILD/streaming/checkouts/FluidAudio/ThirdPartyLicenses/fastcluster-LICENSE.md" \
+      "$app/Contents/Resources/licenses/fastcluster-LICENSE.md"
+  fi
 
   if ! cc -O2 -arch "$arch" -framework ApplicationServices \
         -o "$app/Contents/Resources/pastev" "$REPO/bin/pastev.c" 2>/dev/null; then

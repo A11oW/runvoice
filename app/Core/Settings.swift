@@ -112,24 +112,32 @@ struct Settings: Codable, Equatable {
     var whisperModelPath = ""
     var whisperModelDirs: [String] = []
     var hiddenModelPaths: [String] = []
+    var recognitionEngine = "whisper"
+    var speechVocabulary: [String] = []
     var language = "ru"
     var microphone = ""
+    var microphoneUID = ""
     var restoreClipboard = false
-    var showHUD = true
+    var previewEnabled = true
+    var previewLineCount = RecognitionPreview.defaultLineCount
     var historyEnabled = true
     var historyMaxItems = 100
     var historyMaxDays = 30
     var hotkeyToggle = HotKeySetting()
     var hotkeyImprove = HotKeySetting.improveDefault
+    var stopRecordingOnEnter = false
+    var cancelRecordingOnEscape = false
 
     enum CodingKeys: String, CodingKey {
         case promptFix, promptImprove, improveEnabled
         case providers, dictationProviderID, improveProviderID
         case whisperModelPath, whisperModelDirs, hiddenModelPaths
-        case language, microphone
-        case restoreClipboard, showHUD
+        case recognitionEngine, speechVocabulary
+        case language, microphone, microphoneUID
+        case restoreClipboard
+        case previewEnabled, previewLineCount
         case historyEnabled, historyMaxItems, historyMaxDays
-        case hotkeyToggle, hotkeyImprove
+        case hotkeyToggle, hotkeyImprove, stopRecordingOnEnter, cancelRecordingOnEscape
     }
 
     /// Поля старого формата — только для миграции.
@@ -152,6 +160,12 @@ struct Settings: Codable, Equatable {
         providers.first { $0.id == improveProviderID }
     }
 
+    var recognitionPreview: RecognitionPreview {
+        RecognitionPreview(enabled: previewEnabled, lineCount: previewLineCount)
+    }
+
+    var showsRecognitionPreview: Bool { previewEnabled }
+
     init(from decoder: Decoder) throws {
         self.init()
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -171,16 +185,24 @@ struct Settings: Codable, Equatable {
         whisperModelPath = try c.decodeIfPresent(String.self, forKey: .whisperModelPath) ?? ""
         whisperModelDirs = try c.decodeIfPresent([String].self, forKey: .whisperModelDirs) ?? []
         hiddenModelPaths = try c.decodeIfPresent([String].self, forKey: .hiddenModelPaths) ?? []
+        recognitionEngine = try c.decodeIfPresent(String.self, forKey: .recognitionEngine) == "nemotron"
+            ? "nemotron" : "whisper"
+        speechVocabulary = SpeechVocabulary.normalize(try c.decodeIfPresent([String].self, forKey: .speechVocabulary) ?? [])
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
         microphone = try c.decodeIfPresent(String.self, forKey: .microphone) ?? ""
+        microphoneUID = try c.decodeIfPresent(String.self, forKey: .microphoneUID) ?? ""
         restoreClipboard = try c.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? false
-        showHUD = try c.decodeIfPresent(Bool.self, forKey: .showHUD) ?? true
+        previewEnabled = try c.decodeIfPresent(Bool.self, forKey: .previewEnabled) ?? true
+        previewLineCount = RecognitionPreview.clamp(try c.decodeIfPresent(Int.self, forKey: .previewLineCount)
+                                                   ?? RecognitionPreview.defaultLineCount)
         historyEnabled = try c.decodeIfPresent(Bool.self, forKey: .historyEnabled) ?? true
         historyMaxItems = max(1, try c.decodeIfPresent(Int.self, forKey: .historyMaxItems) ?? 100)
         historyMaxDays = max(1, try c.decodeIfPresent(Int.self, forKey: .historyMaxDays) ?? 30)
         hotkeyToggle = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyToggle) ?? HotKeySetting()
         hotkeyImprove = try c.decodeIfPresent(HotKeySetting.self, forKey: .hotkeyImprove)
             ?? HotKeySetting.improveDefault
+        stopRecordingOnEnter = try c.decodeIfPresent(Bool.self, forKey: .stopRecordingOnEnter) ?? false
+        cancelRecordingOnEscape = try c.decodeIfPresent(Bool.self, forKey: .cancelRecordingOnEscape) ?? false
 
         // Если профиль удалён или JSON частично повреждён — не оставляем
         // несуществующий выбор.

@@ -12,7 +12,8 @@ final class DictationPasteboard {
         self.restoreDelay = restoreDelay
     }
 
-    func deliver(_ text: String, restoreClipboard: Bool, sendPaste: () -> Bool) {
+    @discardableResult
+    func deliver(_ text: String, restoreClipboard: Bool, sendPaste: () -> Bool) -> Bool {
         generation = UUID()
         let token = generation
         pendingRestore?.cancel()
@@ -22,7 +23,7 @@ final class DictationPasteboard {
         let changeCount = pasteboard.changeCount
         let sent = sendPaste()
         // Без Accessibility текст остаётся доступен для ручного ⌘V.
-        guard restoreClipboard, sent else { return }
+        guard restoreClipboard, sent else { return sent }
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.generation == token,
                   self.pasteboard.changeCount == changeCount else { return }
@@ -36,6 +37,7 @@ final class DictationPasteboard {
         }
         pendingRestore = work
         DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay, execute: work)
+        return sent
     }
 
     private func snapshot() -> [[NSPasteboard.PasteboardType: Data]] {

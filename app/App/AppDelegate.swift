@@ -6,24 +6,21 @@ import CoreGraphics
 
 // MARK: - Приложение
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var hud: HUDController!
     private var timer: Timer?
     private let hotkeys = HotkeyMonitor()
     private let runner = DictationRunner()
-    private let micLevel = MicLevelMonitor()
     private let dictationPasteboard = DictationPasteboard()
-    private lazy var liveTranscriber: LiveTranscriber = {
-        let configured = Int(ProcessInfo.processInfo.environment["WHISPER_SERVER_PORT"] ?? "") ?? 8799
-        let port = (1...65535).contains(configured) ? configured : 8799
-        return LiveTranscriber(directory: Paths.state,
-                               serverURL: URL(string: "http://127.0.0.1:\(port)")!)
-    }()
+    private lazy var dictation = DictationSession(runner: runner)
+    private var wakeObserver: NSObjectProtocol?
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
     private var improveItem: NSMenuItem?
+    private lazy var statusHint = StatusHintController()
+    private var startupHintPending = true
 
     private var lastStateKey = ""
     private var lastState: DictationState?
@@ -37,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         // Снимки не включают микрофон/хоткеи и не сбрасывают статус живой диктовки.
         if startSnapshotMode() { return }
+        if MicrophoneDiagnostics.startIfRequested() { return }
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
         WhisperModelStore.cleanupPartialDownloads()
@@ -47,14 +45,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
         hud = HUDController()
-        hud.setEnabled(saved.showHUD)
+        hud.setPreviewOptions(saved.recognitionPreview)
         hud.onStop = { [weak self] in
             self?.cancelDictationFromHUD()
         }
-        liveTranscriber.onNeedsServer = { [weak self] in self?.runner.warmUp() }
-        liveTranscriber.onUpdate = { [weak self] text in
+        dictation.onTranscript = { [weak self] text in
             guard let self, self.lastStateKey == "recording",
-                  var content = self.lastState?.hud else { return }
+                  var content = self.lastState?.hud,
+                  let text = LivePreviewText.clean(text) else { return }
             if self.liveTranscript.isEmpty {
                 Log.write("performance: first_preview_ms=\(Int(Date().timeIntervalSince(self.liveStartedAt) * 1000))")
             }
@@ -69,10 +67,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeys.onImprove = { [weak self] mouseLocation in
             self?.performImproveSelection(mouseLocation: mouseLocation)
         }
+        hotkeys.recordingSessionIDProvider = { [weak self] in self?.dictation.recordingSessionID }
+        hotkeys.onFinishRecording = { [weak self] sessionID in
+            guard let self, self.dictation.finishRecording(expectedSessionID: sessionID) else { return }
+            self.closeAt = nil
+        }
+        hotkeys.onCancelRecording = { [weak self] sessionID in
+            guard let self, self.dictation.cancelRecording(expectedSessionID: sessionID) else { return }
+            self.closeAt = nil
+        }
         hotkeys.start(settings: saved)
         updateHotkeyTitles(saved)
-        micLevel.onLevel = { [weak self] level in
-            self?.hud.setLevel(level)
+        dictation.onSpectrum = { [weak self] levels in
+            self?.hud.setSpectrum(levels)
         }
         requestPermissions()
 
@@ -91,24 +98,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(t, forMode: .common)
         timer = t
 
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, self.startupHintPending else { return }
+            self.showStartupHint(shortcut: SettingsStore.load().hotkeyToggle.display)
+        }
+
         if CommandLine.arguments.contains("--settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
                 self?.openSettings()
             }
         }
 
-        runner.warmUp()
+        dictation.prewarm()
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.dictation.wake()
+            }
     }
 
     private func startSnapshotMode() -> Bool {
         let arguments = CommandLine.arguments
         guard arguments.contains("--snapshot-states") || arguments.contains("--snapshot")
-                || arguments.contains("--snapshot-hud") else { return false }
+                || arguments.contains("--snapshot-hud") || arguments.contains("--snapshot-hint") else { return false }
         setupStatusItem()
         hud = HUDController()
+        let countIndex = arguments.firstIndex(of: "--snapshot-preview-lines")
+        let count = countIndex.flatMap { $0 + 1 < arguments.count ? Int(arguments[$0 + 1]) : nil }
+            ?? RecognitionPreview.defaultLineCount
+        hud.setPreviewOptions(RecognitionPreview(enabled: !arguments.contains("--snapshot-preview-off"), lineCount: count))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
-            if arguments.contains("--snapshot-states") {
+            if arguments.contains("--snapshot-hint") {
+                self.showStartupHint(shortcut: SettingsStore.load().hotkeyToggle.display)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self.statusHint.snapshot(to: "/tmp/runvoice-startup-hint.png")
+                    NSApp.terminate(nil)
+                }
+            } else if arguments.contains("--snapshot-states") {
                 self.snapshotStates()
             } else if arguments.contains("--snapshot") {
                 self.openSettings()
@@ -135,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setIcon("waveform")
 
         let menu = NSMenu()
+        menu.delegate = self
         let header = NSMenuItem(title: "Runvoice", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
@@ -149,6 +176,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         add(menu, "Выход", #selector(quit))
         statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { hideStartupHint() }
+
+    private func showStartupHint(shortcut: String) {
+        startupHintPending = false
+        guard let button = statusItem.button, let window = button.window, window.isVisible else { return }
+        let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
+        guard anchor.width > 0, anchor.height > 0,
+              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: anchor.midX, y: anchor.midY)) }) else { return }
+        statusHint.show(shortcut: shortcut, anchor: anchor, visibleFrame: screen.visibleFrame)
+    }
+
+    private func hideStartupHint() {
+        startupHintPending = false
+        statusHint.dismiss()
     }
 
     @discardableResult
@@ -172,10 +215,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             settingsWindow?.onSettingsSaved = { [weak self] in
                 guard let self else { return }
-                self.hud.setEnabled(SettingsStore.load().showHUD)
-                if self.lastStateKey == "recording" { self.startLivePreview() }
+                let settings = SettingsStore.load()
+                self.hud.setPreviewOptions(settings.recognitionPreview)
+                self.dictation.updatePreviewSettings(settings)
+                if !settings.showsRecognitionPreview { self.liveTranscript = "" }
                 self.reloadHotkeys()
-                self.runner.warmUp()
+                self.statusHint.update(shortcut: settings.hotkeyToggle.display)
+                self.dictation.prewarm()
             }
         }
         settingsWindow?.show()
@@ -183,6 +229,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func snapshotStates() {
+        let webStormURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.jetbrains.WebStorm")
+        let application = HUDApplication(name: webStormURL == nil ? "TextEdit" : "WebStorm",
+                                        bundleURL: webStormURL ?? URL(fileURLWithPath: "/System/Applications/TextEdit.app"))
         let states: [(name: String, content: HUDContent, timer: String?, level: CGFloat)] = [
             ("preparing", HUDContent(text: "Готовлю микрофон…", busy: true, icon: "mic",
                                      hudIcon: "mic", accent: .neutral, autoHideAfter: nil), nil, 0),
@@ -190,32 +239,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      hudIcon: "mic", accent: .neutral,
                                      autoHideAfter: nil, showLevel: true,
                                      showStop: true), "00:12", 0.62),
+            ("recording-quiet", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                     hudIcon: "mic", accent: .neutral,
+                                     autoHideAfter: nil, showLevel: true,
+                                     showStop: true), "00:12", 0.14),
+            ("recording-silent", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                     hudIcon: "mic", accent: .neutral,
+                                     autoHideAfter: nil, showLevel: true,
+                                     showStop: true), "00:12", 0),
             ("recording-live", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                                           hudIcon: "mic", accent: .neutral,
                                           autoHideAfter: nil, showLevel: true, showStop: true,
                                           transcript: "Используй Cypress вместо Playwright. Добавь проверку авторизации и запусти тесты в GitHub Actions."), "00:18", 0.62),
-            ("transcribing", HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
-                                        hudIcon: "waveform", accent: .neutral,
-                                        autoHideAfter: nil,
-                                        transcript: "Используй Cypress вместо Playwright."), nil, 0),
-            ("fixing", HUDContent(text: "Обрабатываю текст…", busy: true, icon: "ellipsis",
-                                  hudIcon: "ellipsis", accent: .neutral,
-                                  autoHideAfter: nil,
-                                  transcript: "Используй Cypress вместо Playwright."), nil, 0),
-            ("done", HUDContent(text: "Готово", busy: false, icon: "checkmark",
-                                hudIcon: "checkmark.circle.fill",
-                                accent: .success, autoHideAfter: nil,
-                                transcript: "Используй Cypress вместо Playwright."), nil, 0),
-            ("info", HUDContent(text: "запись не идёт", busy: false, icon: "info.circle",
+            ("recording-long", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                          hudIcon: "mic", accent: .neutral,
+                                          autoHideAfter: nil, showLevel: true, showStop: true,
+                                          transcript: "Это длинная проверка предварительного распознавания речи. "
+                                            + "Сначала мы проверяем первое предложение и продолжаем говорить. "
+                                            + "Добавляем тесты Cypress для формы авторизации и запускаем их в GitHub Actions. "
+                                            + "Проверяем корректное переключение между русскими словами и английскими названиями. "
+                                            + "Затем открываем настройки, выбираем число видимых строк и сохраняем результат. "
+                                            + "Во время записи доступны таймер, уровень микрофона и кнопка остановки. "
+                                            + "Предыдущий текст постепенно уходит за границы карточки. "
+                                            + "На экране остаётся выбранное количество последних строк, подтверждённых соседними фрагментами записи."), "02:18", 0.62),
+            ("transcribing", DictationState.transcribing.hud!, nil, 0),
+            ("fixing", DictationState.fixing(message: "Этот текст не должен появиться в карточке").hud!, nil, 0),
+            ("done", HUDContent.completed(text: "Раз два три раз два три", application: application), nil, 0),
+            ("done-short", HUDContent.completed(text: "Готово", application: HUDApplication(name: "Safari",
+                                        bundleURL: NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari"))), nil, 0),
+            ("done-long", HUDContent.completed(text: String(repeating: "слово ", count: 123),
+                                        application: HUDApplication(name: "Visual Studio Code",
+                                        bundleURL: NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode"))), nil, 0),
+            ("done-copied", HUDContent.completed(text: "Итоговый текст доступен в буфере", application: nil, pasted: false), nil, 0),
+            ("info", HUDContent(text: "Запись не идёт", busy: false, icon: "info.circle",
                                 hudIcon: "info.circle.fill",
                                 accent: .info, autoHideAfter: nil), nil, 0),
-            ("error", HUDContent(text: "речь не распознана (тишина?)", busy: false,
+            ("error", HUDContent(text: "Речь не распознана (тишина?)", busy: false,
                                  icon: "exclamationmark.triangle",
                                  hudIcon: "exclamationmark.triangle.fill",
                                  accent: .warning, autoHideAfter: nil), nil, 0),
             ("improve", HUDContent(text: "Улучшаю текст…", busy: true, icon: "sparkles",
                                    hudIcon: "sparkles", accent: .neutral,
-                                   autoHideAfter: nil), nil, 0),
+                                   autoHideAfter: nil, showSpinner: true), nil, 0),
             ("improve-copied", HUDContent(text: "Улучшено и скопировано", busy: false,
                                           icon: "info.circle",
                                           hudIcon: "info.circle.fill",
@@ -259,32 +324,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        capture(to: "/tmp/runvoice-settings.png")
-        settingsWindow?.selectTab("ai")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            capture(to: "/tmp/runvoice-settings-ai.png")
-            self.settingsWindow?.scrollAIToImprove()
+        let captures: [(String, String)] = [
+            ("general", "/tmp/runvoice-settings.png"),
+            ("models", "/tmp/runvoice-settings-models.png"),
+            ("dictionary", "/tmp/runvoice-settings-dictionary.png"),
+            ("providers", "/tmp/runvoice-settings-providers.png"),
+            ("ai", "/tmp/runvoice-settings-ai.png"),
+            ("improve", "/tmp/runvoice-settings-improve.png"),
+            ("history", "/tmp/runvoice-settings-history.png"),
+            ("hotkeys", "/tmp/runvoice-settings-hotkeys.png"),
+        ]
+        func next(_ index: Int) {
+            guard index < captures.count else { NSApp.terminate(nil); return }
+            let (tab, path) = captures[index]
+            self.settingsWindow?.selectTab(tab == "improve" ? "ai" : tab)
+            if tab == "dictionary" { self.settingsWindow?.prepareDictionarySnapshot() }
+            if tab == "improve" { self.settingsWindow?.scrollAIToImprove() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                capture(to: "/tmp/runvoice-settings-improve.png")
-                self.settingsWindow?.selectTab("models")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    capture(to: "/tmp/runvoice-settings-models.png")
-                    self.settingsWindow?.selectTab("providers")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        capture(to: "/tmp/runvoice-settings-providers.png")
-                        self.settingsWindow?.selectTab("history")
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            capture(to: "/tmp/runvoice-settings-history.png")
-                            self.settingsWindow?.selectTab("hotkeys")
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                                capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                                NSApp.terminate(nil)
-                            }
-                        }
-                    }
-                }
+                capture(to: path)
+                next(index + 1)
             }
         }
+        next(0)
     }
 
     @objc private func openAccessibility() {
@@ -305,53 +366,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Запуск пайплайна
 
     private func run(mouseLocation: NSPoint? = nil) {
+        hideStartupHint()
+        guard !["transcribing", "fixing"].contains(lastStateKey) else { return }
         if isImproving {
             showImproveHUD("Идёт улучшение текста", icon: "info.circle.fill",
                            accent: .info, duration: 2.5)
             return
         }
-        let stopping = lastStateKey == "recording"
-        if !["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
+        if !dictation.isBusy {
             hud.beginSession(mouseLocation: mouseLocation ?? NSEvent.mouseLocation)
         }
-        // Whisper.cpp прерывает вычисления при закрытии HTTP-соединения.
-        // Освобождаем его сразу на хоткее, до запуска финального распознавания.
-        if stopping { liveTranscriber.stop() }
         do {
-            try runner.run { [weak self] in
-                // Очень быстрый повтор может быть отклонён debounce скрипта.
-                // В таком случае запись ещё идёт и предпросмотр нужно вернуть.
-                guard stopping, let self, self.lastStateKey == "recording",
-                      let raw = try? String(contentsOf: Paths.status, encoding: .utf8),
-                      DictationState(raw: raw)?.key == "recording" else { return }
-                self.startLivePreview()
-            }
+            try dictation.toggle()
+            if dictation.isBusy { closeAt = nil }
         } catch DictationRunner.Failure.missingScript {
             showAlert("В ресурсах приложения не найден dictate.sh")
         } catch DictationRunner.Failure.missingModel(let path) {
             showMissingModel(path: path)
         } catch {
-            showAlert("Не удалось запустить dictate.sh: \(error.localizedDescription)")
+            showAlert(error.localizedDescription)
         }
     }
 
     private func cancelDictationFromHUD() {
         guard ["preparing", "recording"].contains(lastStateKey) else { return }
-        liveTranscriber.stop()
-        do {
-            try runner.cancel()
-            Log.write("cancel: запрошена отмена записи из HUD")
-        } catch {
-            let message = "Не удалось отменить запись"
-            let content = HUDContent(text: message, busy: false,
-                                     icon: "exclamationmark.triangle",
-                                     hudIcon: "exclamationmark.triangle.fill",
-                                     accent: .warning, autoHideAfter: nil)
-            hud.present(content)
-            setIcon("exclamationmark.triangle")
-            closeAt = Date().addingTimeInterval(4)
-            Log.write("cancel: ошибка \(error.localizedDescription)")
-        }
+        dictation.cancel()
+        Log.write("cancel: запрошена отмена нативной записи из HUD")
     }
 
     @objc private func improveSelection() {
@@ -359,9 +399,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performImproveSelection(mouseLocation: NSPoint) {
+        hideStartupHint()
         guard !isImproving else { return }
 
-        if ["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
+        if dictation.isBusy || ["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
             showImproveHUD("Идёт диктовка", icon: "info.circle.fill",
                            accent: .info, duration: 2.5)
             return
@@ -411,8 +452,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.improveToken = nil
                     switch outcome {
                     case .replaced, .pasted:
-                        self.showImproveHUD("Готово", icon: "checkmark.circle.fill",
-                                            accent: .success, duration: 2)
+                        let application = self.hudApplication(NSRunningApplication(processIdentifier: context.pid))
+                        self.hud.present(.completed(text: improved, application: application))
+                        self.setIcon(StatusItemSymbol.idle)
+                        self.closeAt = Date().addingTimeInterval(1)
                     case .copied:
                         self.showImproveHUD("Улучшено и скопировано", icon: "info.circle.fill",
                                             accent: .info, duration: 4)
@@ -443,9 +486,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let normalized = text.replacingOccurrences(of: "\n", with: " ")
         let display = normalized.count > 120 ? String(normalized.prefix(117)) + "…" : normalized
         let content = HUDContent(text: display, busy: busy, icon: icon, hudIcon: icon,
-                                 accent: accent, autoHideAfter: nil)
+                                 accent: accent, autoHideAfter: nil, showSpinner: busy)
         hud.present(content)
-        setIcon(icon)
+        setIcon(StatusItemSymbol.idle)
         closeAt = duration > 0 ? Date().addingTimeInterval(duration) : nil
         Log.write("improve: hud \(text)")
     }
@@ -473,13 +516,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return false
         }
         let key: CGKeyCode = 9   // физическая клавиша V
-        let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true)
-        let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
-        down?.flags = .maskCommand
-        up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false) else { return false }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
         usleep(30_000)
-        up?.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
         Log.write("paste: app cgEvent")
         return true
     }
@@ -505,12 +548,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-    private func completeDictation(fallbackText: String) {
+    private func hudApplication(_ application: NSRunningApplication?) -> HUDApplication? {
+        guard let application, let name = application.localizedName, !name.isEmpty else { return nil }
+        return HUDApplication(name: name, bundleURL: application.bundleURL)
+    }
+
+    private func completeDictation(fallbackText: String) -> HUDContent? {
         let result = HistoryStore.consumeLastResult()
         let text = result?.fixed ?? fallbackText
-        guard !text.isEmpty else { return }
-        dictationPasteboard.deliver(text, restoreClipboard: SettingsStore.load().restoreClipboard) {
-            self.postPaste()
+        guard !text.isEmpty else { return nil }
+        var application: HUDApplication?
+        let sent = dictationPasteboard.deliver(text, restoreClipboard: SettingsStore.load().restoreClipboard) {
+            // До CGEvent сохраняем только метаданные. Иконка и подсчёт слов — после
+            // отправки ⌘V, чтобы оформление результата не задерживало вставку.
+            application = self.hudApplication(NSWorkspace.shared.frontmostApplication)
+            return self.postPaste()
         }
         if let ready = result?.readyAtMilliseconds {
             Log.write("performance: ready_to_paste_ms=\(max(0, Int(Date().timeIntervalSince1970 * 1000 - ready)))")
@@ -523,10 +575,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         model: result.model, date: date)
             }
         }
+        return .completed(text: text, application: application, pasted: sent)
     }
 
     private func hideHUD() {
-        micLevel.stop()
         hud.dismiss()
         closeAt = nil
         setIcon("waveform")     // после завершения — значок приложения
@@ -536,8 +588,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tick() {
         let trust = AXIsProcessTrusted()
         if trust != lastTrust {
+            let previousTrust = lastTrust
             lastTrust = trust
             Log.write("accessibility=\(trust)")
+            if trust, previousTrust == false {
+                // После обновления подписи macOS может запросить доступ заново.
+                // Регистрируем hotkey сразу после выдачи разрешения.
+                reloadHotkeys()
+            }
         }
         if let closeAt, Date() >= closeAt { hideHUD(); return }
         guard let raw = try? String(contentsOf: Paths.status, encoding: .utf8) else { return }
@@ -553,8 +611,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(_ state: DictationState) {
         guard var content = state.hud else {
-            liveTranscriber.stop()
-            micLevel.stop()
             hideHUD()
             return
         }
@@ -563,38 +619,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if case .recording = state {
             liveTranscript = ""
             liveStartedAt = Date()
-            startLivePreview()
-        } else {
-            liveTranscriber.stop()
         }
-        if case .transcribing = state { content.transcript = liveTranscript }
+        setIcon(state.statusItemSymbol)
 
         if case .done(let text) = state {
-            completeDictation(fallbackText: text)
-        }
-
-        if content.showLevel {
-            micLevel.start()
-        } else {
-            micLevel.stop()
+            content = completeDictation(fallbackText: text) ?? content
         }
 
         hud.present(content)
-        setIcon(content.icon)
 
         if let delay = content.autoHideAfter {
             closeAt = Date().addingTimeInterval(delay)
         }
-    }
-
-    private func startLivePreview() {
-        let settings = SettingsStore.load()
-        guard settings.showHUD,
-              let model = WhisperModelStore.activeModel(settings: settings) else {
-            liveTranscriber.stop()
-            return
-        }
-        liveTranscriber.start(modelPath: model.path, language: settings.language)
     }
 
     private func setIcon(_ name: String) {
@@ -605,8 +641,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        liveTranscriber.stop()
-        micLevel.stop()
+        dictation.shutdown()
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     }
 
     // MARK: - Разрешения

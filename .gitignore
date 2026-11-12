@@ -5,6 +5,7 @@ bin/dictatehud
 # Артефакты сборки приложения
 dist/
 .build/
+.swiftpm/
 
 # Не относится к инструменту
 .opencode/

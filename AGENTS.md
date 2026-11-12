@@ -47,7 +47,7 @@ make dmg                 # два DMG + .sha256
 - `dist/Runvoice.app` — копия для текущей машины (host).
 - Модели Whisper в бандл не входят; VAD-модель входит.
 - `whisper-server`/`whisper-cli` — статические, без Homebrew.
-- Минимальная macOS — 13.0.
+- Минимальная macOS — 15.0.
 
 ## Важные особенности
 

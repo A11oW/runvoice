@@ -2,6 +2,7 @@ import Foundation
 
 /// Запускает bin/dictate.sh с окружением, собранным из настроек приложения.
 final class DictationRunner {
+    private var activePipeline: Process?
     enum Failure: Swift.Error {
         case missingScript
         case missingModel(path: String?)
@@ -17,6 +18,24 @@ final class DictationRunner {
         try launch(script: script, action: "toggle", model: model, settings: settings, completion: completion)
     }
 
+    /// GUI уже записал WAV; готовый потоковый текст пропускает повторный ASR.
+    func finish(audio: URL, transcript: String?, settings: Settings,
+                completion: @escaping () -> Void) throws {
+        guard let script = Paths.script else { throw Failure.missingScript }
+        let model = WhisperModelStore.activeModel(settings: settings)
+        if transcript == nil, model == nil { throw Failure.missingModel(path: nil) }
+        var arguments = [audio.path]
+        if let transcript {
+            let url = audio.deletingPathExtension().appendingPathExtension("txt")
+            try transcript.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            arguments.append(url.path)
+        }
+        try launch(script: script, action: "finish", model: model, settings: settings,
+                   arguments: arguments, modelName: transcript == nil ? nil : "Nemotron Multilingual 0.6B",
+                   completion: completion)
+    }
+
     /// Немедленная отмена текущей записи без распознавания и вставки.
     func cancel() throws {
         guard let script = Paths.script else { throw Failure.missingScript }
@@ -24,14 +43,19 @@ final class DictationRunner {
         try launch(script: script, action: "cancel", model: nil, settings: settings)
     }
 
+    func stopProcessing() {
+        if activePipeline?.isRunning == true { activePipeline?.terminate() }
+        activePipeline = nil
+    }
+
     /// Прогрев whisper-server после сохранения настроек.
     /// Не блокирует UI: скрипт запускается в фоне и сам ждёт готовности сервера.
-    func warmUp() {
+    func warmUp(settings: Settings? = nil, completion: (() -> Void)? = nil) {
         guard let script = Paths.script else { return }
-        let settings = SettingsStore.load()
+        let settings = settings ?? SettingsStore.load()
         guard let model = WhisperModelStore.activeModel(settings: settings) else { return }
         do {
-            try launch(script: script, action: "warmup", model: model, settings: settings)
+            try launch(script: script, action: "warmup", model: model, settings: settings, completion: completion)
             Log.write("warmup: запущен")
         } catch {
             Log.write("warmup: не удалось запустить (\(error.localizedDescription))")
@@ -39,18 +63,24 @@ final class DictationRunner {
     }
 
     private func launch(script: URL, action: String, model: WhisperModelFile?, settings: Settings,
+                        arguments: [String] = [], modelName: String? = nil,
                         completion: (() -> Void)? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path, action]
+        process.arguments = [script.path, action] + arguments
         process.environment = makeEnvironment(model: model, settings: settings,
                                                needsAI: action != "warmup" && action != "cancel")
+        if let modelName { process.environment?["DICTATE_MODEL_NAME"] = modelName }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        if let completion {
-            process.terminationHandler = { _ in DispatchQueue.main.async(execute: completion) }
+        process.terminationHandler = { [weak self] finished in
+            DispatchQueue.main.async {
+                if self?.activePipeline === finished { self?.activePipeline = nil }
+                completion?()
+            }
         }
         try process.run()
+        if action == "finish" { activePipeline = process }
     }
 
     private func makeEnvironment(model: WhisperModelFile?, settings: Settings, needsAI: Bool) -> [String: String] {
@@ -112,13 +142,19 @@ final class DictationRunner {
             if needsAI { Log.write("dictation profile: без AI (сырой текст)") }
         }
 
+        let vocabulary = SpeechVocabulary.prompt(settings.speechVocabulary)
+        var fixPrompt = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
+        if !vocabulary.isEmpty {
+            fixPrompt += "\nТехнические термины: \(vocabulary). Если эти названия произнесены, сохрани их написание. Не добавляй отсутствующие в речи термины."
+        }
         let forwarded: [(String, String?)] = [
-            ("DICTATE_PROMPT_FIX", settings.promptFix.isEmpty ? nil : settings.promptFix),
+            ("DICTATE_PROMPT_FIX", fixPrompt),
             ("WHISPER_LANG", settings.language.isEmpty ? nil : settings.language),
+            ("WHISPER_PROMPT", vocabulary),
             ("DICTATE_RESTORE_CLIPBOARD", settings.restoreClipboard ? "1" : nil),
         ]
         for (key, value) in forwarded {
-            if let value { environment[key] = value }
+            environment[key] = value
         }
 
         let base = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
