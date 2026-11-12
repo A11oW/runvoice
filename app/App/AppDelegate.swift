@@ -123,6 +123,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if CommandLine.arguments.contains("--snapshot-transcribe-summary") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.showTranscribe()
+                self?.transcribeWindow?.showSummarySample(
+                    transcript: """
+                    Сегодня мы разберём, как устроена локальная расшифровка аудио. \
+                    Модель Whisper работает прямо на этом компьютере: запись не \
+                    отправляется в облако. Выберите файл или перетащите его в окно, \
+                    дождитесь результата и скопируйте готовый текст.
+                    """,
+                    summary: """
+                    • Расшифровка аудио выполняется локально моделью Whisper.
+                    • Запись не отправляется в облако.
+                    • Файл можно выбрать вручную или перетащить в окно.
+                    • Готовый текст доступен для редактирования и копирования.
+                    """,
+                    fileName: "лекция-2026-11-12.m4a",
+                    prompt: "Сделай саммари в 4 пунктах, деловой стиль.")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self?.snapshotWindow(self?.transcribeWindow?.window,
+                                         to: "/tmp/runvoice-transcribe-summary.png")
+                    NSApp.terminate(nil)
+                }
+            }
+        }
 
         ensureStatusItemVisible()
     }
@@ -201,7 +226,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showTranscribe() {
         if transcribeWindow == nil {
-            transcribeWindow = AudioTranscribeWindow(runner: runner)
+            let window = AudioTranscribeWindow(runner: runner)
+            window.onOpenSettings = { [weak self] in
+                self?.showSettings(tab: "ai")
+            }
+            transcribeWindow = window
         }
         transcribeWindow?.show()
     }
@@ -313,31 +342,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         capture(to: "/tmp/runvoice-settings.png")
+
+        let steps: [(tab: String?, scroll: ((SettingsWindow) -> Void)?, path: String)] = [
+            (nil, nil, "/tmp/runvoice-settings-ai.png"),
+            (nil, { $0.scrollAIToImprove() }, "/tmp/runvoice-settings-improve.png"),
+            (nil, { $0.scrollAIToSummary() }, "/tmp/runvoice-settings-summary.png"),
+            ("models", nil, "/tmp/runvoice-settings-models.png"),
+            ("providers", nil, "/tmp/runvoice-settings-providers.png"),
+            ("history", nil, "/tmp/runvoice-settings-history.png"),
+            ("hotkeys", nil, "/tmp/runvoice-settings-hotkeys.png"),
+        ]
+
         settingsWindow?.selectTab("ai")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            capture(to: "/tmp/runvoice-settings-ai.png")
-            self.settingsWindow?.scrollAIToImprove()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                capture(to: "/tmp/runvoice-settings-improve.png")
-                self.settingsWindow?.selectTab("models")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    capture(to: "/tmp/runvoice-settings-models.png")
-                    self.settingsWindow?.selectTab("providers")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        capture(to: "/tmp/runvoice-settings-providers.png")
-                        self.settingsWindow?.selectTab("history")
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                            capture(to: "/tmp/runvoice-settings-history.png")
-                            self.settingsWindow?.selectTab("hotkeys")
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                                capture(to: "/tmp/runvoice-settings-hotkeys.png")
-                                NSApp.terminate(nil)
-                            }
-                        }
-                    }
+        func step(_ index: Int) {
+            guard index < steps.count else {
+                NSApp.terminate(nil)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self else { return }
+                if let tab = steps[index].tab {
+                    self.settingsWindow?.selectTab(tab)
+                }
+                if let scroll = steps[index].scroll, let window = self.settingsWindow {
+                    scroll(window)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    capture(to: steps[index].path)
+                    step(index + 1)
                 }
             }
         }
+        step(0)
     }
 
     @objc private func openAccessibility() {

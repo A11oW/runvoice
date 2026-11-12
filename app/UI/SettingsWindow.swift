@@ -10,10 +10,13 @@ import UniformTypeIdentifiers
 final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let fixText = NSTextView()
     private let improveText = NSTextView()
+    private let summaryText = NSTextView()
     private var promptTestLabel: NSTextField!
     private var improveTestLabel: NSTextField!
+    private var summaryTestLabel: NSTextField!
     private var improveEnabledCheck: NSButton!
     private var improveGroup: NSStackView!
+    private var summaryGroup: NSStackView!
     private var promptSeparator: NSBox!
     private var improveSeparator: NSBox!
     private var aiScroll: NSScrollView!
@@ -183,8 +186,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     /// Для отладочного скриншота: показать блок улучшения текста на вкладке «Постобработка».
     func scrollAIToImprove() {
-        guard let aiScroll, let document = aiScroll.documentView, let improveGroup else { return }
-        let rect = improveGroup.convert(improveGroup.bounds, to: document)
+        scrollAITo(improveGroup)
+    }
+
+    func scrollAIToSummary() {
+        scrollAITo(summaryGroup)
+    }
+
+    private func scrollAITo(_ group: NSStackView?) {
+        guard let aiScroll, let document = aiScroll.documentView, let group else { return }
+        let rect = group.convert(group.bounds, to: document)
         let maxY = max(0, document.bounds.height - aiScroll.contentView.bounds.height)
         let y = min(max(0, rect.minY - 24), maxY)
         aiScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
@@ -685,9 +696,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         improveSeparator.boxType = .separator
         improveGroup = buildImproveSection()
 
+        let summarySeparator = NSBox()
+        summarySeparator.boxType = .separator
+        summaryGroup = buildSummarySection()
+
         let rows: [NSView] = [dictationHeader, dictationProviderPopup, dictationHint,
                               dictationProviderNote, promptSeparator, promptGroup,
-                              improveSeparator, improveGroup]
+                              improveSeparator, improveGroup, summarySeparator, summaryGroup]
         for row in rows {
             stack.addArrangedSubview(row)
             row.translatesAutoresizingMaskIntoConstraints = false
@@ -1556,6 +1571,73 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
+    private func buildSummarySection() -> NSStackView {
+        let section = NSStackView()
+        section.orientation = .vertical
+        section.alignment = .leading
+        section.spacing = 6
+
+        let header = label("Саммари расшифровки аудио", bold: true)
+        let hint = label("Используется провайдер для улучшения текста. Пустое поле заменяется встроенным промптом. Кастомный промпт в окне расшифровки заменяет этот текст для финального саммари.")
+        hint.lineBreakMode = .byWordWrapping
+        hint.maximumNumberOfLines = 3
+
+        let reset = NSButton(title: "Сбросить к встроенному",
+                             target: self, action: #selector(resetSummaryPromptToDefault))
+        reset.bezelStyle = .rounded
+        let test = NSButton(title: "Проверить на примере",
+                            target: self, action: #selector(testSummaryPrompt))
+        test.bezelStyle = .rounded
+        let buttons = NSStackView(views: [reset, test])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+
+        let scroll = makeScroll(summaryText)
+        scroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
+
+        summaryTestLabel = label("")
+        summaryTestLabel.lineBreakMode = .byWordWrapping
+        summaryTestLabel.maximumNumberOfLines = 2
+
+        section.addArrangedSubview(header)
+        section.addArrangedSubview(hint)
+        section.addArrangedSubview(buttons)
+        section.addArrangedSubview(scroll)
+        section.addArrangedSubview(summaryTestLabel)
+
+        for view in [header, hint, scroll, summaryTestLabel] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
+        }
+        return section
+    }
+
+    @objc private func resetSummaryPromptToDefault() {
+        summaryText.string = DefaultPrompts.summary
+    }
+
+    @objc private func testSummaryPrompt() {
+        guard let provider = providers.first(where: { $0.id == improveProviderID }) else {
+            summaryTestLabel.stringValue = "Выберите провайдера для улучшения текста."
+            summaryTestLabel.textColor = .systemOrange
+            return
+        }
+        let prompt = summaryText.string.isEmpty ? DefaultPrompts.summary : summaryText.string
+        summaryTestLabel.stringValue = "Проверяю…"
+        summaryTestLabel.textColor = .secondaryLabelColor
+        CorrectionTester.test(provider: provider, prompt: prompt) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let text):
+                self.summaryTestLabel.stringValue = "✓ \(text)"
+                self.summaryTestLabel.textColor = .systemGreen
+            case .failure(let error):
+                self.summaryTestLabel.stringValue = "⚠️ \(error.localizedDescription)"
+                self.summaryTestLabel.textColor = .systemOrange
+            }
+        }
+    }
+
     private func buildPromptSection() -> NSStackView {
         let section = NSStackView()
         section.orientation = .vertical
@@ -1978,6 +2060,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         var settings = loadedSettings
         settings.promptFix = fixText.string
         settings.promptImprove = improveText.string
+        settings.promptSummary = summaryText.string
         settings.improveEnabled = improveEnabledCheck.state == .on
         settings.providers = providers
         settings.dictationProviderID = providers.contains(where: { $0.id == dictationProviderID })
@@ -2012,6 +2095,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
         promptTestLabel?.stringValue = ""
         improveTestLabel?.stringValue = ""
+        summaryTestLabel?.stringValue = ""
         micTestLabel?.stringValue = ""
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
@@ -2040,6 +2124,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         improveHotkeyButton.title = improveHotkey.display
 
         improveText.string = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
+        summaryText.string = settings.promptSummary.isEmpty ? DefaultPrompts.summary : settings.promptSummary
         improveEnabledCheck.state = settings.improveEnabled ? .on : .off
         updateAIProviderState()
 
@@ -2062,6 +2147,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         loadedSettings = settings
         loadedSettings.promptFix = fixText.string
         loadedSettings.promptImprove = improveText.string
+        loadedSettings.promptSummary = summaryText.string
         loadedSettings.improveEnabled = improveEnabledCheck.state == .on
         loadedSettings.whisperModelPath = selectedModelPath
         if loadedSettings.microphone.isEmpty {
@@ -2095,9 +2181,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         case "ai":
             fixText.string = DefaultPrompts.fix
             improveText.string = DefaultPrompts.improve
+            summaryText.string = DefaultPrompts.summary
             improveEnabledCheck.state = .on
             promptTestLabel?.stringValue = ""
             improveTestLabel?.stringValue = ""
+            summaryTestLabel?.stringValue = ""
             updateAIProviderState()
         case "models":
             modelDirs = []

@@ -1,8 +1,8 @@
 # Скриншоты Runvoice
 
-Сняты встроенным отладочным рендером приложения (`--snapshot-states`, `--snapshot`
-и `--snapshot-transcribe`), поэтому не требуют разрешения Screen Recording.
-Тёмная тема.
+Сняты встроенным отладочным рендером приложения (`--snapshot-states`, `--snapshot`,
+`--snapshot-transcribe` и `--snapshot-transcribe-summary`), поэтому не требуют
+разрешения Screen Recording. Тёмная тема.
 
 ## Состояния HUD
 
@@ -22,7 +22,8 @@
 
 | Окно | Файл |
 |---|---|
-| Расшифровка аудиофайла (выбор, drag & drop, текст, копирование) | [transcribe.png](transcribe.png) |
+| Расшифровка аудиофайла (режим, выбор, drag & drop, текст, копирование) | [transcribe.png](transcribe.png) |
+| Саммари расшифровки (кастомный промпт, кнопка, результат) | [transcribe-summary.png](transcribe-summary.png) |
 
 ## Настройки
 
@@ -33,6 +34,7 @@
 | Провайдеры (OpenCode / OpenAI / Anthropic, модели, ключи, проверка) | [settings-providers.png](settings-providers.png) |
 | Постобработка (выбор провайдеров, промпты) | [settings-ai.png](settings-ai.png) |
 | Постобработка → улучшение выделенного текста | [settings-improve.png](settings-improve.png) |
+| Постобработка → промпт саммари аудио | [settings-summary.png](settings-summary.png) |
 | История (список, копирование, лимиты) | [settings-history.png](settings-history.png) |
 | Хоткеи (диктовка, улучшение, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
 
@@ -45,9 +47,10 @@ open -a /Applications/Runvoice.app --args --snapshot-states
 # вкладки настроек
 open -a /Applications/Runvoice.app --args --snapshot
 
-# окно расшифровки аудио
+# окна расшифровки и саммари
 open -a /Applications/Runvoice.app --args --snapshot-transcribe
+open -a /Applications/Runvoice.app --args --snapshot-transcribe-summary
 ```
 
-Файлы появятся в `/tmp/runvoice-state-*.png`, `/tmp/runvoice-settings*.png` и
-`/tmp/runvoice-transcribe.png`.
+Файлы появятся в `/tmp/runvoice-state-*.png`, `/tmp/runvoice-settings*.png`,
+`/tmp/runvoice-transcribe.png` и `/tmp/runvoice-transcribe-summary.png`.
