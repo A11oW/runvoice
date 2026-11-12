@@ -7,14 +7,14 @@ final class DictationRunner {
         case missingModel(path: String?)
     }
 
-    func run() throws {
+    func run(completion: (() -> Void)? = nil) throws {
         guard let script = Paths.script else { throw Failure.missingScript }
 
         let settings = SettingsStore.load()
         guard let model = WhisperModelStore.activeModel(settings: settings) else {
             throw Failure.missingModel(path: settings.whisperModelPath.isEmpty ? nil : settings.whisperModelPath)
         }
-        try launch(script: script, action: "toggle", model: model, settings: settings)
+        try launch(script: script, action: "toggle", model: model, settings: settings, completion: completion)
     }
 
     /// Немедленная отмена текущей записи без распознавания и вставки.
@@ -38,17 +38,22 @@ final class DictationRunner {
         }
     }
 
-    private func launch(script: URL, action: String, model: WhisperModelFile?, settings: Settings) throws {
+    private func launch(script: URL, action: String, model: WhisperModelFile?, settings: Settings,
+                        completion: (() -> Void)? = nil) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script.path, action]
-        process.environment = makeEnvironment(model: model, settings: settings)
+        process.environment = makeEnvironment(model: model, settings: settings,
+                                               needsAI: action != "warmup" && action != "cancel")
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        if let completion {
+            process.terminationHandler = { _ in DispatchQueue.main.async(execute: completion) }
+        }
         try process.run()
     }
 
-    private func makeEnvironment(model: WhisperModelFile?, settings: Settings) -> [String: String] {
+    private func makeEnvironment(model: WhisperModelFile?, settings: Settings, needsAI: Bool) -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["DICTATE_STATE_DIR"] = Paths.state.path
         environment["HUD_BIN"] = "/nonexistent"   // окно рисует само приложение
@@ -78,7 +83,7 @@ final class DictationRunner {
             environment.removeValue(forKey: key)
         }
 
-        if let provider = settings.dictationProvider {
+        if needsAI, let provider = settings.dictationProvider {
             environment["OC_MODEL_ID"] = provider.model
             switch provider.kind {
             case .opencode:
@@ -104,7 +109,7 @@ final class DictationRunner {
             Log.write("dictation profile: \(provider.name), \(provider.kind.rawValue), model=\(provider.model)")
         } else {
             environment["DICTATE_USE_OC"] = "0"
-            Log.write("dictation profile: без AI (сырой текст)")
+            if needsAI { Log.write("dictation profile: без AI (сырой текст)") }
         }
 
         let forwarded: [(String, String?)] = [

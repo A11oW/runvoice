@@ -1,6 +1,6 @@
 REPO := $(CURDIR)
 
-.PHONY: all install app install-app dmg clean reload
+.PHONY: all install app install-app dmg clean reload test-live-hud
 
 all: bin/pastev bin/dictatehud
 
@@ -17,6 +17,9 @@ install: all
 # GUI-приложение (menu bar, свои хоткеи)
 app:
 	./scripts/build-app.sh
+
+test-live-hud:
+	bash scripts/test-live-hud.sh
 
 install-app: app
 	./scripts/install-app.sh

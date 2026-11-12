@@ -13,17 +13,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeys = HotkeyMonitor()
     private let runner = DictationRunner()
     private let micLevel = MicLevelMonitor()
+    private let dictationPasteboard = DictationPasteboard()
+    private lazy var liveTranscriber: LiveTranscriber = {
+        let configured = Int(ProcessInfo.processInfo.environment["WHISPER_SERVER_PORT"] ?? "") ?? 8799
+        let port = (1...65535).contains(configured) ? configured : 8799
+        return LiveTranscriber(directory: Paths.state,
+                               serverURL: URL(string: "http://127.0.0.1:\(port)")!)
+    }()
     private var settingsWindow: SettingsWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
     private var improveItem: NSMenuItem?
 
     private var lastStateKey = ""
+    private var lastState: DictationState?
+    private var liveTranscript = ""
+    private var liveStartedAt = Date()
     private var closeAt: Date?
     private var isImproving = false
     private var improveToken: UUID?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        // Снимки не включают микрофон/хоткеи и не сбрасывают статус живой диктовки.
+        if startSnapshotMode() { return }
         Log.write("launch status=\(Paths.status.path) screens=\(NSScreen.screens.count)")
         let saved = SettingsStore.load()
         WhisperModelStore.cleanupPartialDownloads()
@@ -33,16 +46,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.write("accessibility=\(AXIsProcessTrusted())")
         Log.write("deps " + Dependency.allCases.map { "\($0.title)=\($0.isOK() ? "ok" : "missing")" }.joined(separator: ", "))
         setupStatusItem()
-        hud = HUDController(statusItem: statusItem)
+        hud = HUDController()
         hud.setEnabled(saved.showHUD)
         hud.onStop = { [weak self] in
             self?.cancelDictationFromHUD()
         }
-        hotkeys.onAction = { [weak self] in
-            self?.run()
+        liveTranscriber.onNeedsServer = { [weak self] in self?.runner.warmUp() }
+        liveTranscriber.onUpdate = { [weak self] text in
+            guard let self, self.lastStateKey == "recording",
+                  var content = self.lastState?.hud else { return }
+            if self.liveTranscript.isEmpty {
+                Log.write("performance: first_preview_ms=\(Int(Date().timeIntervalSince(self.liveStartedAt) * 1000))")
+            }
+            self.liveTranscript = text
+            self.closeAt = nil
+            content.transcript = text
+            self.hud.present(content)
         }
-        hotkeys.onImprove = { [weak self] in
-            self?.improveSelection()
+        hotkeys.onAction = { [weak self] mouseLocation in
+            self?.run(mouseLocation: mouseLocation)
+        }
+        hotkeys.onImprove = { [weak self] mouseLocation in
+            self?.performImproveSelection(mouseLocation: mouseLocation)
         }
         hotkeys.start(settings: saved)
         updateHotkeyTitles(saved)
@@ -62,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                ofItemAtPath: Paths.status.path)
 
-        let t = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in self?.tick() }
+        let t = Timer(timeInterval: 0.06, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
 
@@ -72,62 +97,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        if CommandLine.arguments.contains("--snapshot-hud") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+        runner.warmUp()
+    }
+
+    private func startSnapshotMode() -> Bool {
+        let arguments = CommandLine.arguments
+        guard arguments.contains("--snapshot-states") || arguments.contains("--snapshot")
+                || arguments.contains("--snapshot-hud") else { return false }
+        setupStatusItem()
+        hud = HUDController()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            if arguments.contains("--snapshot-states") {
+                self.snapshotStates()
+            } else if arguments.contains("--snapshot") {
+                self.openSettings()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.snapshotSettings() }
+            } else {
                 let content = HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                                          hudIcon: "mic", accent: .neutral,
-                                         autoHideAfter: nil, showLevel: true)
-                self?.hud.snapshot(to: "/tmp/runvoice-hud.png", content: content,
-                                   timer: "00:07", level: 0.65) {
+                                         autoHideAfter: nil, showLevel: true, showStop: true)
+                self.hud.snapshot(to: "/tmp/runvoice-hud.png", content: content) {
                     NSApp.terminate(nil)
                 }
             }
         }
-        if CommandLine.arguments.contains("--snapshot-states") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.snapshotStates()
-            }
-        }
-        if CommandLine.arguments.contains("--snapshot") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                self?.openSettings()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    self?.snapshotSettings()
-                }
-            }
-        }
-
-        ensureStatusItemVisible()
-    }
-
-    /// Если значок не поместился в меню-бар (вырез/переполнение), показываем
-    /// приложение в Dock, чтобы его можно было открыть.
-    private func ensureStatusItemVisible() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            guard let self, !self.statusItemIsVisible() else { return }
-            Log.write("status item hidden (menu bar overflow) — Dock icon enabled")
-            NSApp.setActivationPolicy(.regular)
-        }
-    }
-
-    private func statusItemIsVisible() -> Bool {
-        guard let windows = CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-            return true
-        }
-        let pid = Int(ProcessInfo.processInfo.processIdentifier)
-
-        for window in windows {
-            guard (window[kCGWindowOwnerPID as String] as? Int) == pid,
-                  (window[kCGWindowLayer as String] as? Int) == 25,
-                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
-                  let height = (bounds["Height"] as? NSNumber)?.doubleValue,
-                  height <= 40,
-                  window[kCGWindowIsOnscreen as String] as? Bool == true else {
-                continue
-            }
-            return true
-        }
-        return false
+        return true
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -178,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow?.onSettingsSaved = { [weak self] in
                 guard let self else { return }
                 self.hud.setEnabled(SettingsStore.load().showHUD)
+                if self.lastStateKey == "recording" { self.startLivePreview() }
                 self.reloadHotkeys()
                 self.runner.warmUp()
             }
@@ -194,15 +190,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      hudIcon: "mic", accent: .neutral,
                                      autoHideAfter: nil, showLevel: true,
                                      showStop: true), "00:12", 0.62),
+            ("recording-live", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                          hudIcon: "mic", accent: .neutral,
+                                          autoHideAfter: nil, showLevel: true, showStop: true,
+                                          transcript: "Используй Cypress вместо Playwright. Добавь проверку авторизации и запусти тесты в GitHub Actions."), "00:18", 0.62),
             ("transcribing", HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
                                         hudIcon: "waveform", accent: .neutral,
-                                        autoHideAfter: nil), nil, 0),
+                                        autoHideAfter: nil,
+                                        transcript: "Используй Cypress вместо Playwright."), nil, 0),
             ("fixing", HUDContent(text: "Обрабатываю текст…", busy: true, icon: "ellipsis",
                                   hudIcon: "ellipsis", accent: .neutral,
-                                  autoHideAfter: nil), nil, 0),
+                                  autoHideAfter: nil,
+                                  transcript: "Используй Cypress вместо Playwright."), nil, 0),
             ("done", HUDContent(text: "Готово", busy: false, icon: "checkmark",
                                 hudIcon: "checkmark.circle.fill",
-                                accent: .success, autoHideAfter: nil), nil, 0),
+                                accent: .success, autoHideAfter: nil,
+                                transcript: "Используй Cypress вместо Playwright."), nil, 0),
             ("info", HUDContent(text: "запись не идёт", busy: false, icon: "info.circle",
                                 hudIcon: "info.circle.fill",
                                 accent: .info, autoHideAfter: nil), nil, 0),
@@ -301,14 +304,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Запуск пайплайна
 
-    private func run() {
+    private func run(mouseLocation: NSPoint? = nil) {
         if isImproving {
             showImproveHUD("Идёт улучшение текста", icon: "info.circle.fill",
                            accent: .info, duration: 2.5)
             return
         }
+        let stopping = lastStateKey == "recording"
+        if !["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
+            hud.beginSession(mouseLocation: mouseLocation ?? NSEvent.mouseLocation)
+        }
+        // Whisper.cpp прерывает вычисления при закрытии HTTP-соединения.
+        // Освобождаем его сразу на хоткее, до запуска финального распознавания.
+        if stopping { liveTranscriber.stop() }
         do {
-            try runner.run()
+            try runner.run { [weak self] in
+                // Очень быстрый повтор может быть отклонён debounce скрипта.
+                // В таком случае запись ещё идёт и предпросмотр нужно вернуть.
+                guard stopping, let self, self.lastStateKey == "recording",
+                      let raw = try? String(contentsOf: Paths.status, encoding: .utf8),
+                      DictationState(raw: raw)?.key == "recording" else { return }
+                self.startLivePreview()
+            }
         } catch DictationRunner.Failure.missingScript {
             showAlert("В ресурсах приложения не найден dictate.sh")
         } catch DictationRunner.Failure.missingModel(let path) {
@@ -320,6 +337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func cancelDictationFromHUD() {
         guard ["preparing", "recording"].contains(lastStateKey) else { return }
+        liveTranscriber.stop()
         do {
             try runner.cancel()
             Log.write("cancel: запрошена отмена записи из HUD")
@@ -337,6 +355,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func improveSelection() {
+        performImproveSelection(mouseLocation: NSEvent.mouseLocation)
+    }
+
+    private func performImproveSelection(mouseLocation: NSPoint) {
         guard !isImproving else { return }
 
         if ["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
@@ -344,6 +366,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            accent: .info, duration: 2.5)
             return
         }
+
+        hud.beginSession(mouseLocation: mouseLocation)
 
         let settings = SettingsStore.load()
         guard settings.improveEnabled else {
@@ -443,10 +467,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Отправляет ⌘V из процесса приложения (у него есть Accessibility).
-    private func postPaste() {
+    private func postPaste() -> Bool {
         guard AXIsProcessTrusted() else {
             Log.write("paste: accessibility denied")
-            return
+            return false
         }
         let key: CGKeyCode = 9   // физическая клавиша V
         let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true)
@@ -457,6 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         usleep(30_000)
         up?.post(tap: .cghidEventTap)
         Log.write("paste: app cgEvent")
+        return true
     }
 
     private func showAlert(_ text: String) {
@@ -480,11 +505,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
 
-    private func recordHistory() {
-        guard let result = HistoryStore.consumeLastResult() else { return }
-        let date = result.timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
-        HistoryStore.shared.add(text: result.fixed, raw: result.raw,
-                                model: result.model, date: date)
+    private func completeDictation(fallbackText: String) {
+        let result = HistoryStore.consumeLastResult()
+        let text = result?.fixed ?? fallbackText
+        guard !text.isEmpty else { return }
+        dictationPasteboard.deliver(text, restoreClipboard: SettingsStore.load().restoreClipboard) {
+            self.postPaste()
+        }
+        if let ready = result?.readyAtMilliseconds {
+            Log.write("performance: ready_to_paste_ms=\(max(0, Int(Date().timeIntervalSince1970 * 1000 - ready)))")
+        }
+        // Запись истории не задерживает отправку ⌘V и показ результата.
+        if let result {
+            DispatchQueue.main.async {
+                let date = result.timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                HistoryStore.shared.add(text: result.fixed, raw: result.raw,
+                                        model: result.model, date: date)
+            }
+        }
     }
 
     private func hideHUD() {
@@ -504,8 +542,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let closeAt, Date() >= closeAt { hideHUD(); return }
         guard let raw = try? String(contentsOf: Paths.status, encoding: .utf8) else { return }
         guard let state = DictationState(raw: raw) else { return }
-        guard state.key != lastStateKey else { return }
+        guard state != lastState else { return }
 
+        lastState = state
         lastStateKey = state.key
         closeAt = nil
         Log.write("state=\(state.key) msg=\(state.message)")
@@ -513,15 +552,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func apply(_ state: DictationState) {
-        guard let content = state.hud else {
+        guard var content = state.hud else {
+            liveTranscriber.stop()
             micLevel.stop()
             hideHUD()
             return
         }
 
-        if case .done = state {
-            postPaste()
-            recordHistory()
+        if case .preparing = state { liveTranscript = "" }
+        if case .recording = state {
+            liveTranscript = ""
+            liveStartedAt = Date()
+            startLivePreview()
+        } else {
+            liveTranscriber.stop()
+        }
+        if case .transcribing = state { content.transcript = liveTranscript }
+
+        if case .done(let text) = state {
+            completeDictation(fallbackText: text)
         }
 
         if content.showLevel {
@@ -538,11 +587,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func startLivePreview() {
+        let settings = SettingsStore.load()
+        guard settings.showHUD,
+              let model = WhisperModelStore.activeModel(settings: settings) else {
+            liveTranscriber.stop()
+            return
+        }
+        liveTranscriber.start(modelPath: model.path, language: settings.language)
+    }
+
     private func setIcon(_ name: String) {
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Runvoice")
         image?.isTemplate = true
         statusItem.button?.image = image
         Log.write("icon=\(name)")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        liveTranscriber.stop()
+        micLevel.stop()
     }
 
     // MARK: - Разрешения

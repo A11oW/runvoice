@@ -14,6 +14,7 @@ struct HUDContent {
     let autoHideAfter: TimeInterval?
     var showLevel = false
     var showStop = false
+    var transcript = ""
 }
 
 /// Состояние диктовки, которое приложение читает из файла status.
@@ -21,7 +22,7 @@ enum DictationState: Equatable {
     case preparing
     case recording
     case transcribing
-    case fixing
+    case fixing(message: String)
     case done(message: String)
     case info(message: String)
     case error(message: String)
@@ -39,7 +40,7 @@ enum DictationState: Equatable {
         case "preparing": self = .preparing
         case "recording": self = .recording
         case "transcribing": self = .transcribing
-        case "fixing": self = .fixing
+        case "fixing": self = .fixing(message: message)
         case "done": self = .done(message: message)
         case "info": self = .info(message: message)
         case "error": self = .error(message: message)
@@ -64,7 +65,7 @@ enum DictationState: Equatable {
 
     var message: String {
         switch self {
-        case .done(let message), .info(let message), .error(let message): return message
+        case .fixing(let message), .done(let message), .info(let message), .error(let message): return message
         default: return ""
         }
     }
@@ -82,13 +83,15 @@ enum DictationState: Equatable {
         case .transcribing:
             return HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
                               hudIcon: "waveform", accent: .neutral, autoHideAfter: nil)
-        case .fixing:
+        case .fixing(let message):
             return HUDContent(text: "Обрабатываю текст…", busy: true, icon: "ellipsis",
-                              hudIcon: "ellipsis", accent: .neutral, autoHideAfter: nil)
+                              hudIcon: "ellipsis", accent: .neutral, autoHideAfter: nil,
+                              transcript: message)
         case .done(let message):
-            return HUDContent(text: message.isEmpty ? "Готово" : message,
+            return HUDContent(text: "Готово",
                               busy: false, icon: "checkmark", hudIcon: "checkmark.circle.fill",
-                              accent: .success, autoHideAfter: 2.0)
+                              accent: .success, autoHideAfter: message.isEmpty ? 2.0 : 5.0,
+                              transcript: message)
         case .info(let message):
             return HUDContent(text: message.isEmpty ? "Готово" : message,
                               busy: false, icon: "info.circle", hudIcon: "info.circle.fill",

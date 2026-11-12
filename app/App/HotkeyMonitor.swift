@@ -5,8 +5,8 @@ import CoreGraphics
 /// Глобальные хоткеи через активный CGEventTap.
 /// Сравнивает код клавиши и модификаторы, совпавшие сочетания потребляет.
 final class HotkeyMonitor {
-    var onAction: (() -> Void)?
-    var onImprove: (() -> Void)?
+    var onAction: ((NSPoint) -> Void)?
+    var onImprove: ((NSPoint) -> Void)?
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -108,7 +108,8 @@ final class HotkeyMonitor {
         if matches(improveHotkey) {
             if !isRepeat {
                 Log.write("hotkey fired: improve")
-                DispatchQueue.main.async { self.onImprove?() }
+                let mouseLocation = NSEvent.mouseLocation
+                DispatchQueue.main.async { self.onImprove?(mouseLocation) }
             }
             return true
         }
@@ -116,7 +117,8 @@ final class HotkeyMonitor {
         if matches(toggleHotkey) {
             if !isRepeat {
                 Log.write("hotkey fired: toggle")
-                DispatchQueue.main.async { self.onAction?() }
+                let mouseLocation = NSEvent.mouseLocation
+                DispatchQueue.main.async { self.onAction?(mouseLocation) }
             }
             return true
         }

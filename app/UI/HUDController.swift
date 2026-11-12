@@ -1,15 +1,15 @@
 import AppKit
 import QuartzCore
 
-/// Плавающий бабл статуса, привязанный к иконке в меню-баре.
+/// Карточка в позиции, зафиксированной при запуске операции.
 final class HUDController {
-    private let statusItem: NSStatusItem
     private var panel: NSPanel!
     private var stopPanel: StopPanel!
     private var stopButton: StopButton!
     private var bubble: BubbleView!
     private var iconView: NSImageView!
     private var label: NSTextField!
+    private var transcriptLabel: NSTextField!
     private var timerLabel: NSTextField!
     private var levelBar: LevelBarView!
     private var clockTimer: Timer?
@@ -17,26 +17,41 @@ final class HUDController {
     private var enabled = true
     private var spaceObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
+    private var currentContent: HUDContent?
+    private var sessionPosition: HUDSessionPosition?
+    private var stopY: CGFloat = 16
+    private var measuredTranscript = ""
+    private var measuredWidth: CGFloat = 0
+    private var transcriptHeight: CGFloat = 0
 
-    private let bodyHeight: CGFloat = 64
-    private let tailHeight: CGFloat = 9
-    private let minWidth: CGFloat = 220
-    private let maxWidth: CGFloat = 420
+    private var bodyHeight: CGFloat = 64
+    private let cardWidth: CGFloat = 400
+    private let maximumHeight: CGFloat = 176
     private let stopWidth: CGFloat = 32
     private let stopHeight: CGFloat = 32
 
     var onStop: (() -> Void)?
 
-    init(statusItem: NSStatusItem) {
-        self.statusItem = statusItem
+    init() {
         setup()
+    }
+
+    /// Вызывается до запуска записи: fallback использует мышь в момент хоткея,
+    /// а не её положение после подготовки микрофона или ответа Whisper.
+    func beginSession(mouseLocation: NSPoint) {
+        let anchor = HUDAnchor.caretRect()
+            ?? NSRect(origin: mouseLocation, size: NSSize(width: 1, height: 18))
+        let visible = screen(for: anchor)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let width = min(cardWidth, visible.width - 16)
+        sessionPosition = HUDSessionPosition(anchor: anchor, visibleFrame: visible,
+                                             reservedSize: NSSize(width: width, height: maximumHeight))
     }
 
     func setEnabled(_ value: Bool) {
         enabled = value
         if !value {
-            panel?.orderOut(nil)
-            stopPanel?.orderOut(nil)
+            dismiss()
         }
     }
 
@@ -60,11 +75,8 @@ final class HUDController {
             stopClock()
         }
 
-        let labelY: CGFloat = content.showLevel ? 28 : 22
-        let width = preferredWidth(for: content.text,
-                                   showLevel: content.showLevel,
-                                   showStop: content.showStop)
-        resize(to: width, labelY: labelY, showStop: content.showStop)
+        currentContent = content
+        layout(content)
         place()
 
         let wasVisible = panel.isVisible
@@ -77,7 +89,7 @@ final class HUDController {
             hideStopPanel()
         }
         if !wasVisible {
-            Log.write("showHUD frame=\(panel.frame) width=\(width)")
+            Log.write("showHUD frame=\(panel.frame)")
         }
     }
 
@@ -89,6 +101,7 @@ final class HUDController {
         stopClock()
         stopPulse()
         hideStopPanel()
+        currentContent = nil
         panel?.orderOut(nil)
     }
 
@@ -108,11 +121,8 @@ final class HUDController {
         levelBar.isHidden = !content.showLevel
         levelBar.level = content.showLevel ? level : 0
 
-        let labelY: CGFloat = content.showLevel ? 28 : 22
-        let width = preferredWidth(for: content.text,
-                                   showLevel: content.showLevel,
-                                   showStop: content.showStop)
-        resize(to: width, labelY: labelY, showStop: content.showStop)
+        currentContent = content
+        layout(content)
         place()
         panel.orderFrontRegardless()
         if content.showStop {
@@ -158,7 +168,7 @@ final class HUDController {
         image.lockFocus()
         defer { image.unlockFocus() }
         let rect = NSRect(x: image.size.width - stopWidth - 14,
-                          y: (bodyHeight - stopHeight) / 2,
+                          y: stopY,
                           width: stopWidth, height: stopHeight)
         NSColor.systemRed.setFill()
         NSBezierPath(ovalIn: rect.insetBy(dx: 2, dy: 2)).fill()
@@ -200,35 +210,61 @@ final class HUDController {
 
     // MARK: - Компоновка
 
-    private func preferredWidth(for text: String, showLevel: Bool, showStop: Bool = false) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: 14, weight: .semibold)
-        let textWidth = (text as NSString).size(withAttributes: [.font: font]).width
-        let extra = showStop ? stopWidth + 16 : 0
-        let minimum = (showLevel ? 260 : minWidth) + extra
-        return min(max(ceil(textWidth) + 80 + extra, minimum), maxWidth + extra)
-    }
-
-    private func resize(to width: CGFloat, labelY: CGFloat, showStop: Bool = false) {
-        let height = bodyHeight + tailHeight
-        if abs(panel.frame.width - width) > 0.5 {
+    private func layout(_ content: HUDContent) {
+        if sessionPosition == nil { beginSession(mouseLocation: NSEvent.mouseLocation) }
+        let showTranscript = !content.transcript.isEmpty
+        let width = min(cardWidth, (sessionPosition?.visibleFrame.width ?? 1440) - 16)
+        let extra: CGFloat = content.showStop ? stopWidth + 16 : 0
+        let textWidth = max(40, width - 68)
+        let font = NSFont.systemFont(ofSize: 13)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .paragraphStyle: paragraph]
+        func textHeight(_ text: String) -> CGFloat {
+            ceil((text as NSString).boundingRect(
+                with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attributes).height)
+        }
+        if measuredTranscript != content.transcript || measuredWidth != textWidth {
+            measuredTranscript = content.transcript
+            measuredWidth = textWidth
+            // Бабл показывает последние строки, не разрастается на весь экран.
+            var transcript = String(content.transcript.suffix(600)).trimmingCharacters(in: .whitespacesAndNewlines)
+            var shortened = content.transcript.count > transcript.count
+            let heightLimit: CGFloat = 102
+            while !transcript.isEmpty, textHeight((shortened ? "…" : "") + transcript) > heightLimit {
+                transcript.removeFirst()
+                shortened = true
+            }
+            transcriptLabel.stringValue = (shortened ? "…" : "") + transcript
+            transcriptHeight = showTranscript ? max(18, textHeight(transcriptLabel.stringValue)) : 0
+        }
+        transcriptLabel.isHidden = !showTranscript
+        bodyHeight = showTranscript ? 44 + transcriptHeight + (content.showLevel ? 30 : 16) : 64
+        let height = bodyHeight
+        if panel.frame.size != NSSize(width: width, height: height) {
             panel.setContentSize(NSSize(width: width, height: height))
             bubble.frame = NSRect(x: 0, y: 0, width: width, height: height)
         }
-        let extra = showStop ? stopWidth + 16 : 0
+        let bodyY: CGFloat = 0
+        let labelY = bodyY + (showTranscript ? bodyHeight - 36 : (content.showLevel ? 28 : 22))
         label.frame = NSRect(x: 50, y: labelY,
                              width: max(40, width - 66 - extra), height: 20)
         iconView.frame = NSRect(x: 18, y: labelY, width: 20, height: 20)
-        timerLabel.frame = NSRect(x: 50, y: 8, width: 44, height: 12)
-        levelBar.frame = NSRect(x: 100, y: 12,
+        transcriptLabel.frame = NSRect(x: 50, y: bodyY + (content.showLevel ? 30 : 16),
+                                       width: textWidth, height: transcriptHeight)
+        timerLabel.frame = NSRect(x: 50, y: bodyY + 8, width: 44, height: 12)
+        levelBar.frame = NSRect(x: 100, y: bodyY + 12,
                                 width: max(20, width - 116 - extra), height: 4)
+        stopY = labelY - 6
     }
 
     private func setup() {
         let width: CGFloat = 330
-        let height = bodyHeight + tailHeight
+        let height = bodyHeight
 
         bubble = BubbleView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        bubble.bodyHeight = bodyHeight
 
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                         styleMask: [.borderless, .nonactivatingPanel],
@@ -279,6 +315,11 @@ final class HUDController {
         label.textColor = .white
         label.lineBreakMode = .byTruncatingTail
 
+        transcriptLabel = NSTextField(wrappingLabelWithString: "")
+        transcriptLabel.font = .systemFont(ofSize: 13)
+        transcriptLabel.textColor = NSColor(white: 1, alpha: 0.88)
+        transcriptLabel.isHidden = true
+
         timerLabel = NSTextField(labelWithString: "")
         timerLabel.frame = NSRect(x: 50, y: 8, width: 44, height: 12)
         timerLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
@@ -305,6 +346,7 @@ final class HUDController {
 
         bubble.addSubview(iconView)
         bubble.addSubview(label)
+        bubble.addSubview(transcriptLabel)
         bubble.addSubview(timerLabel)
         bubble.addSubview(levelBar)
         panel.contentView = bubble
@@ -334,7 +376,7 @@ final class HUDController {
     private func placeStopPanel() {
         let frame = panel.frame
         let x = frame.maxX - stopWidth - 14
-        let y = frame.minY + (bodyHeight - stopHeight) / 2
+        let y = frame.minY + stopY
         stopPanel.setFrame(NSRect(x: x, y: y, width: stopWidth, height: stopHeight),
                            display: false)
     }
@@ -346,29 +388,24 @@ final class HUDController {
         onStop?()
     }
 
+    private func screen(for anchor: NSRect) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(NSPoint(x: anchor.midX, y: anchor.midY)) }
+            ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
     private func place() {
-        let size = panel.frame.size
-
-        guard let button = statusItem.button, let window = button.window else {
-            let vf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-                ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-            panel.setFrameOrigin(NSPoint(x: vf.midX - size.width / 2, y: vf.maxY - size.height))
-            bubble.tailX = size.width / 2
-            bubble.needsDisplay = true
-            return
+        if sessionPosition == nil { beginSession(mouseLocation: NSEvent.mouseLocation) }
+        // Только отключение исходного дисплея допускает перенос на оставшийся экран.
+        if let position = sessionPosition,
+           !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(position.visibleFrame) }),
+           let screen = NSScreen.screens.first {
+            sessionPosition = HUDSessionPosition(
+                anchor: NSRect(x: screen.visibleFrame.midX, y: screen.visibleFrame.midY, width: 1, height: 18),
+                visibleFrame: screen.visibleFrame,
+                reservedSize: NSSize(width: min(cardWidth, screen.visibleFrame.width - 16), height: maximumHeight))
+            if let content = currentContent { layout(content) }
         }
-
-        let rectInWindow = button.convert(button.bounds, to: nil)
-        let screenRect = window.convertToScreen(rectInWindow)
-        let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
-        let vf = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-
-        var x = screenRect.midX - size.width / 2
-        x = max(vf.minX + 6, min(x, vf.maxX - size.width - 6))
-
-        // хвостик смотрит в иконку, бабл висит сразу под меню-баром
-        panel.setFrameOrigin(NSPoint(x: x, y: vf.maxY - size.height + 2))
-        bubble.tailX = screenRect.midX - x
+        if let frame = sessionPosition?.frame(for: panel.frame.size) { panel.setFrameOrigin(frame.origin) }
         bubble.needsDisplay = true
     }
 
@@ -405,6 +442,7 @@ final class HUDController {
     }
 
     deinit {
+        clockTimer?.invalidate()
         if let spaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver)
         }
