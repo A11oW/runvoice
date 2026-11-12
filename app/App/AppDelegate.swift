@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let runner = DictationRunner()
     private let micLevel = MicLevelMonitor()
     private var settingsWindow: SettingsWindow?
+    private var transcribeWindow: AudioTranscribeWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
     private var improveItem: NSMenuItem?
@@ -96,6 +97,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        if let index = CommandLine.arguments.firstIndex(of: "--transcribe-file"),
+           index + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.showTranscribe()
+                self?.transcribeWindow?.transcribe(url: URL(fileURLWithPath: path))
+            }
+        }
+        if CommandLine.arguments.contains("--snapshot-transcribe") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.showTranscribe()
+                self?.transcribeWindow?.showSample(
+                    text: """
+                    Сегодня мы разберём, как устроена локальная расшифровка аудио. \
+                    Модель Whisper работает прямо на этом компьютере: запись не \
+                    отправляется в облако. Выберите файл или перетащите его в окно, \
+                    дождитесь результата и скопируйте готовый текст.
+                    """,
+                    fileName: "лекция-2026-11-12.m4a")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self?.snapshotWindow(self?.transcribeWindow?.window,
+                                         to: "/tmp/runvoice-transcribe.png")
+                    NSApp.terminate(nil)
+                }
+            }
+        }
 
         ensureStatusItemVisible()
     }
@@ -146,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         toggleItem = add(menu, "Диктовка", #selector(toggleDictation))
         improveItem = add(menu, "Улучшить текст", #selector(improveSelection))
+        add(menu, "Расшифровать аудио…", #selector(openTranscribe))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
         menu.addItem(.separator())
@@ -168,6 +196,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() { NSApp.terminate(nil) }
 
     @objc private func openSettings() { showSettings(tab: nil) }
+
+    @objc private func openTranscribe() { showTranscribe() }
+
+    private func showTranscribe() {
+        if transcribeWindow == nil {
+            transcribeWindow = AudioTranscribeWindow(runner: runner)
+        }
+        transcribeWindow?.show()
+    }
 
     private func showSettings(tab: String?) {
         if settingsWindow == nil {
@@ -234,6 +271,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         capture(0)
+    }
+
+    private func snapshotWindow(_ window: NSWindow?, to path: String) {
+        guard let view = window?.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let image = NSImage(size: view.bounds.size)
+        image.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        view.bounds.fill()
+        if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.draw(cg, in: view.bounds)
+        }
+        image.unlockFocus()
+        if let tiff = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
     }
 
     private func snapshotSettings() {

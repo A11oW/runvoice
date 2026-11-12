@@ -1,7 +1,8 @@
 # Скриншоты Runvoice
 
-Сняты встроенным отладочным рендером приложения (`--snapshot-states` и `--snapshot`),
-поэтому не требуют разрешения Screen Recording. Тёмная тема.
+Сняты встроенным отладочным рендером приложения (`--snapshot-states`, `--snapshot`
+и `--snapshot-transcribe`), поэтому не требуют разрешения Screen Recording.
+Тёмная тема.
 
 ## Состояния HUD
 
@@ -16,6 +17,12 @@
 | ![](hud-error.png) | `error` — «речь не распознана (тишина?)», оранжевая иконка |
 | ![](hud-improve.png) | `improve` — «Улучшаю текст…», искры |
 | ![](hud-improve-copied.png) | `improve-copied` — «Улучшено и скопировано», синяя иконка |
+
+## Расшифровка аудио
+
+| Окно | Файл |
+|---|---|
+| Расшифровка аудиофайла (выбор, drag & drop, текст, копирование) | [transcribe.png](transcribe.png) |
 
 ## Настройки
 
@@ -37,6 +44,10 @@ open -a /Applications/Runvoice.app --args --snapshot-states
 
 # вкладки настроек
 open -a /Applications/Runvoice.app --args --snapshot
+
+# окно расшифровки аудио
+open -a /Applications/Runvoice.app --args --snapshot-transcribe
 ```
 
-Файлы появятся в `/tmp/runvoice-state-*.png` и `/tmp/runvoice-settings*.png`.
+Файлы появятся в `/tmp/runvoice-state-*.png`, `/tmp/runvoice-settings*.png` и
+`/tmp/runvoice-transcribe.png`.

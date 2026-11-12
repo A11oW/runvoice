@@ -5,6 +5,8 @@
 #   dictate.sh toggle        # ⌥Space: начать запись / остановить и вставить
 #   dictate.sh start|stop    # явные команды (для отладки)
 #   dictate.sh cancel        # отменить запись без распознавания и вставки
+#   dictate.sh transcribe-file <аудио> <результат.txt>
+#                            # расшифровать файл без вставки, HUD и истории
 #
 # Отладка:
 #   DICTATE_DRY_RUN=1             не вставлять, только вывести RAW/FIXED
@@ -522,11 +524,101 @@ cancel_recording() {
   status info "Запись отменена"
 }
 
+# Расшифровка выбранного аудиофайла: <src> <out>.
+# Текст пишется в <out>, ошибка — в <out>.err. HUD, буфер и история не трогаются.
+transcribe_file() {
+  local src="$1" out="$2"
+  if [ -z "$out" ]; then
+    log "import: не задан выходной файл"
+    return 1
+  fi
+  local errf="${out}.err" wav="${out}.wav" child="" text="" rc=0
+  rm -f "$out" "$errf" "$wav" "${out}.json" "${out}.stt" "${out}.stt.txt"
+
+  fail() {
+    printf '%s' "$1" > "$errf"
+    log "import: $1"
+    return 1
+  }
+
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
+    fail "Файл не найден."
+    return 1
+  fi
+  if [ ! -f "$WHISPER_MODEL" ]; then
+    fail "Модель Whisper не найдена — выберите её в Настройки → Распознавание."
+    return 1
+  fi
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    fail "Не найден ffmpeg — без него нельзя прочитать аудиофайл."
+    return 1
+  fi
+
+  cleanup() {
+    [ -n "$child" ] && kill -TERM "$child" 2>/dev/null
+    rm -f "$wav" "${out}.json" "${out}.stt" "${out}.stt.txt"
+  }
+  trap 'cleanup; exit 130' TERM INT
+
+  log "import: start file=$(basename "$src")"
+  ffmpeg -hide_banner -loglevel error -nostdin -y -i "$src" \
+    -vn -ar 16000 -ac 1 -c:a pcm_s16le "$wav" 2>>"$LOG" &
+  child=$!
+  if ! wait "$child"; then
+    child=""
+    trap - TERM INT
+    cleanup
+    fail "Не удалось прочитать аудиофайл. Поддерживаются WAV, MP3, M4A, FLAC, OGG и другие форматы ffmpeg."
+    return 1
+  fi
+  child=""
+
+  if whisper_ensure; then
+    log "import: whisper-server model=$(basename "$WHISPER_MODEL")"
+    local json="${out}.json"
+    curl -s --max-time 7200 -F "file=@$wav" -F "language=$WHISPER_LANG" \
+      -F "response_format=json" "$(whisper_url)/inference" > "$json" 2>>"$LOG" &
+    child=$!
+    wait "$child"; rc=$?
+    child=""
+    if [ "$rc" -eq 0 ]; then
+      text="$(jq -r '.text // empty' "$json" 2>>"$LOG")"
+    fi
+  else
+    log "import: whisper-cli (сервер недоступен)"
+    local v=(); [ -f "$WHISPER_VAD_MODEL" ] && v=(--vad -vm "$WHISPER_VAD_MODEL")
+    "$WHISPER_CLI_BIN" -m "$WHISPER_MODEL" "${v[@]}" -l "$WHISPER_LANG" \
+      -t "$WHISPER_THREADS" -nt -otxt -of "${out}.stt" "$wav" >/dev/null 2>&1 &
+    child=$!
+    wait "$child"; rc=$?
+    child=""
+    [ "$rc" -eq 0 ] && text="$(cat "${out}.stt.txt" 2>/dev/null)"
+  fi
+
+  trap - TERM INT
+  cleanup
+
+  text="$(printf '%s' "$text" | tr '\n' ' ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  if [ -z "$text" ]; then
+    fail "Речь не распознана — возможно, в файле тишина или музыка."
+    return 1
+  fi
+  printf '%s' "$text" > "$out"
+  log "import: done chars=${#text}"
+  return 0
+}
+
 # =========================================================
 # 0) отмена записи — до debounce/lock, чтобы кнопка срабатывала сразу.
 if [ "$ACTION" = "cancel" ]; then
   cancel_recording
   exit 0
+fi
+
+# 0) расшифровка файла — до debounce/lock: это отдельный, не диктовочный сценарий.
+if [ "$ACTION" = "transcribe-file" ]; then
+  transcribe_file "${2:-}" "${3:-}"
+  exit $?
 fi
 
 # 0) тест микрофона: 1 секунда записи, печатает index/level.
