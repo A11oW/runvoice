@@ -70,6 +70,7 @@ struct LivePreviewStabilizer {
     private var previous: [String] = []
     private var stable: [String] = []
     private var displayed = ""
+    private var earlyWord = false
 
     mutating func update(_ raw: String, windowStart: UInt64, firstWordOnly: Bool = true,
                          settled: Bool = false) -> String? {
@@ -80,6 +81,36 @@ struct LivePreviewStabilizer {
             previous = words
             // Ранний первый отклик сохраняется, остальное требует согласования.
             stable = firstWordOnly ? Array(words.prefix(1)) : words
+            earlyWord = firstWordOnly
+            return changed()
+        }
+        if earlyWord {
+            // Первый короткий ответ может быть частью слова (например U вместо
+            // Use). Не превращаем его в вечную привязку: полное начало должно
+            // совпасть в соседних ответах прежде, чем заменить этот фрагмент.
+            var count = 0
+            while count < previous.count, count < words.count,
+                  LivePreviewText.key(previous[count]) == LivePreviewText.key(words[count]) { count += 1 }
+            if settled { count = words.count }
+            let old = stable.first
+            previous = words
+            guard count > 0 else { return nil }
+            stable = Array(words.prefix(count))
+            if let old, LivePreviewText.key(old) == LivePreviewText.key(stable[0]) { stable[0] = old }
+            // Одно слово ещё может быть тем же незавершённым фрагментом.
+            // После подтверждения следующего слова начало становится обычным
+            // стабильным текстом и больше не пересматривается этим путём.
+            earlyWord = stable.count == 1
+            return changed()
+        }
+        // Подтверждаем продолжение от конца уже опубликованного текста.
+        // Более длинное совпадение в старой части окна не должно задерживать
+        // новые слова, совпавшие в двух последовательных гипотезах.
+        if let continuation = Self.continuation(after: stable, previous: settled ? words : previous,
+                                                current: words, windowStart: windowStart) {
+            previous = words
+            stable.append(contentsOf: continuation)
+            stable = Array(stable.suffix(RecognitionPreview.maximumStoredWords))
             return changed()
         }
         let agreed = settled ? words : Self.commonRun(previous, words)
@@ -119,6 +150,32 @@ struct LivePreviewStabilizer {
         guard !text.isEmpty, text != displayed else { return nil }
         displayed = text
         return text
+    }
+
+    /// nil — надёжной привязки нет, нужен прежний путь восстановления окна.
+    /// Пустой массив — привязка есть, но новых подтверждённых слов пока нет.
+    private static func continuation(after stable: [String], previous: [String], current: [String],
+                                     windowStart: UInt64) -> [String]? {
+        let stableKeys = stable.map(LivePreviewText.key)
+        let a = previous.map(LivePreviewText.key), b = current.map(LivePreviewText.key)
+        let maximum = min(stableKeys.count, min(a.count, b.count))
+        let minimum = stable.count == 1 || windowStart == 0 ? 1 : 2
+        guard maximum >= minimum else { return nil }
+        func anchorEnd(_ anchor: ArraySlice<String>, in keys: [String]) -> Int? {
+            for start in stride(from: keys.count - anchor.count, through: 0, by: -1) {
+                if keys[start..<(start + anchor.count)].elementsEqual(anchor) { return start + anchor.count }
+            }
+            return nil
+        }
+        for length in stride(from: maximum, through: minimum, by: -1) {
+            let anchor = stableKeys.suffix(length)
+            guard let oldEnd = anchorEnd(anchor, in: a), let newEnd = anchorEnd(anchor, in: b) else { continue }
+            var count = 0
+            while oldEnd + count < a.count, newEnd + count < b.count,
+                  a[oldEnd + count] == b[newEnd + count] { count += 1 }
+            return Array(current[newEnd..<(newEnd + count)])
+        }
+        return nil
     }
 
     private static func commonRun(_ previous: [String], _ current: [String]) -> [String] {

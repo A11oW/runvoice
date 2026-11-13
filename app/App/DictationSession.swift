@@ -35,6 +35,9 @@ final class DictationSession {
             guard let self else { return }
             self.runner.warmUp(settings: self.settings)
         }
+        live.onTiming = { timing in
+            Log.write("performance: preview_request_ms=\(timing.requestMS) preview_stabilize_ms=\(timing.stabilizationMS) preview_gap_ms=\(timing.updateGapMS.map(String.init) ?? "-") preview_result=\(timing.outcome.rawValue)")
+        }
         fluid.onPartial = { [weak self] text in
             guard let self, self.phase == "recording", self.settings.showsRecognitionPreview else { return }
             self.onTranscript?(text)

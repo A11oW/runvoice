@@ -28,6 +28,7 @@ final class HUDController {
     private var reservedTranscriptLines = 0
     private var previewOptions = RecognitionPreview()
     private var measuredLineCount = 0
+    private var transcriptSnippet: HUDTranscriptLayout.Snippet?
 
     private var bodyHeight = HUDLayout.rowHeight
     private let cardWidth = HUDLayout.recordingWidth
@@ -48,6 +49,7 @@ final class HUDController {
         reservedTranscriptLines = 0
         measuredWidth = -1
         transcriptLabel.stringValue = ""
+        transcriptSnippet = nil
         waveform.reset()
         let anchor = NSRect(origin: mouseLocation, size: .zero)
         let visible = screen(for: anchor)?.visibleFrame
@@ -64,6 +66,7 @@ final class HUDController {
         reservedTranscriptLines = 0
         measuredWidth = -1
         transcriptLabel.stringValue = ""
+        transcriptSnippet = nil
         if var content = currentContent {
             if enabledChanged { content.transcript = "" }
             present(content)
@@ -279,7 +282,8 @@ final class HUDController {
             measuredWidth = textWidth
             measuredLineCount = lineCount
             let snippet = HUDTranscriptLayout.fit(showTranscript ? content.transcript : "", width: textWidth,
-                                                   keeping: transcriptLabel.stringValue, lineCount: lineCount)
+                                                   keeping: transcriptSnippet, lineCount: lineCount)
+            transcriptSnippet = snippet
             transcriptLabel.stringValue = snippet.text
             // При записи карточка только растёт до выбранного числа строк и больше
             // не сжимается вслед за короткой/пересмотренной гипотезой.

@@ -216,11 +216,58 @@ expect(stabilizer.update("Cypress вместо Playwright сегодня", windo
 expect(stabilizer.update("вместо Playwright сегодня", windowStart: 38400, settled: true) == "Используй Cypress вместо Playwright сегодня", "Последний хвост подтверждается на паузе")
 expect(stabilizer.update("вместо Playwright сегодня", windowStart: 57600) == nil, "Одинаковая гипотеза не перерисовывается")
 
+// Длинный старый участок не должен побеждать уже подтверждённое продолжение.
+for (prefix, first, second, third, fourth, confirmed, last) in [
+    ("We carefully discussed every important detail of our large new software project",
+     " then opened Cypress", " afterwards opened Cypress and added tests",
+     " next opened Cypress and added tests today", " now opened Cypress and added tests today for authentication",
+     " and added tests", " today"),
+    ("Сегодня мы подробно обсудили все важные вопросы нашего нового большого рабочего проекта",
+     " затем открыли Cypress", " потом открыли Cypress и добавили тесты",
+     " снова открыли Cypress и добавили тесты авторизации", " теперь открыли Cypress и добавили тесты авторизации приложения",
+     " и добавили тесты", " авторизации"),
+    ("Сегодня мы подробно обсудили все важные вопросы нашего нового большого рабочего проекта",
+     " затем открыли Cypress", " потом открыли Cypress и запустили GitHub Actions",
+     " снова открыли Cypress и запустили GitHub Actions workflow", " теперь открыли Cypress и запустили GitHub Actions workflow для Playwright",
+     " и запустили GitHub Actions", " workflow")
+] {
+    var anchored = LivePreviewStabilizer()
+    let original = prefix + first
+    expect(anchored.update(original, windowStart: 0, firstWordOnly: false) == original, "Исходный стабильный текст")
+    expect(anchored.update(prefix + second, windowStart: 32000) == nil, "Новые слова из одного ответа ещё не опубликованы")
+    expect(anchored.update(prefix + third, windowStart: 64000) == original + confirmed,
+           "Подтверждённое продолжение опубликовано во втором совпавшем ответе")
+    expect(anchored.update(prefix + fourth, windowStart: 96000) == original + confirmed + last,
+           "Старый текст сохраняется, следующий хвост требует собственного подтверждения")
+}
+var conservative = LivePreviewStabilizer()
+_ = conservative.update("We opened Cypress", windowStart: 0, firstWordOnly: false)
+_ = conservative.update("We opened Cypress and added tests", windowStart: 32000)
+expect(conservative.update("We opened Cypress and added checks", windowStart: 64000) == "We opened Cypress and added",
+       "Расхождение внутри продолжения останавливает подтверждение перед спорным словом")
+expect(conservative.update("We opened Cypress and added checks today", windowStart: 96000) == "We opened Cypress and added checks",
+       "Спорное слово появляется только после повторного совпадения")
+var earlyFragment = LivePreviewStabilizer()
+expect(earlyFragment.update("U", windowStart: 0) == "U", "Ранний первый отклик сохранён")
+expect(earlyFragment.update("Use Cypress", windowStart: 0) == nil, "Одного исправленного ответа недостаточно для замены первого фрагмента")
+expect(earlyFragment.update("Use Cypress instead", windowStart: 0) == "Use Cypress", "Подтверждённое полное слово восстанавливает привязку")
+expect(earlyFragment.update("Use Cypress instead of Playwright", windowStart: 0) == "Use Cypress instead", "После восстановления подтверждение продолжается без зависания")
+var pendingFirstWord = LivePreviewStabilizer()
+_ = pendingFirstWord.update("Исп", windowStart: 0)
+_ = pendingFirstWord.update("Используй Cypress", windowStart: 0)
+expect(pendingFirstWord.update("Используй Cypress", windowStart: 0) == "Используй Cypress", "Неполное русское слово восстанавливается по двум ответам")
+var repeatedFragment = LivePreviewStabilizer()
+_ = repeatedFragment.update("U", windowStart: 0)
+_ = repeatedFragment.update("U", windowStart: 0)
+expect(repeatedFragment.update("Use", windowStart: 0) == nil, "Даже повторённый ранний фрагмент требует подтверждения исправления")
+expect(repeatedFragment.update("Use Cypress", windowStart: 0) == "Use", "Полное слово заменяет повторявшийся фрагмент только после совпадения")
+expect(repeatedFragment.update("Use Cypress instead", windowStart: 0) == "Use Cypress", "Подтверждение второго слова завершает восстановление начала")
+
 for width: CGFloat in [200, 332] {
     let long = (1...60).map { "Строка \($0): Используй Cypress вместо Playwright." }.joined(separator: "\n")
     let snippet = HUDTranscriptLayout.fit(long, width: width, lineCount: 4)
     expect(snippet.lines == 4 && snippet.text.contains("60"), "Показаны последние четыре строки")
-    let fittedAgain = HUDTranscriptLayout.fit(snippet.text, width: width, lineCount: 4)
+    let fittedAgain = HUDTranscriptLayout.fit(snippet.sourceText, width: width, keeping: snippet, lineCount: 4)
     expect(fittedAgain.text == snippet.text && fittedAgain.lines <= 4, "Обрезка не вызывает новый перенос и скачок")
 }
 let manyLines = (1...100).map { "Строка \($0): проверяем распознавание и отображение текста." }.joined(separator: "\n")
@@ -228,14 +275,69 @@ expect(HUDTranscriptLayout.fit(manyLines, width: 332).lines == 3, "Default previ
 for count in 1...10 {
     let snippet = HUDTranscriptLayout.fit(manyLines, width: 332, lineCount: count)
     expect(snippet.lines == count, "Выбранный предел строк \(count) поддерживается")
-    expect(HUDTranscriptLayout.fit(snippet.text, width: 332, lineCount: count).text == snippet.text,
+    expect(HUDTranscriptLayout.fit(snippet.sourceText, width: 332, keeping: snippet, lineCount: count).text == snippet.text,
            "Обрезка по \(count) строкам стабильна")
 }
 let firstPage = HUDTranscriptLayout.fit(String(repeating: "Подтверждённые слова продолжают строку. ", count: 12), width: 332)
-let anchoredPage = HUDTranscriptLayout.fit("Сдвинутое окно " + firstPage.text + " Новые слова", width: 332, keeping: firstPage.text)
-let expectedPage = HUDTranscriptLayout.fit(firstPage.text + " Новые слова", width: 332)
+let anchoredPage = HUDTranscriptLayout.fit("Сдвинутое окно " + firstPage.sourceText + " Новые слова", width: 332, keeping: firstPage)
+let expectedPage = HUDTranscriptLayout.fit(firstPage.sourceText + " Новые слова", width: 332, keeping: firstPage)
 expect(anchoredPage.text == expectedPage.text, "Сдвиг начала ASR-окна не переносит видимые строки заново")
 expect(HUDTranscriptLayout.fit("", width: 332).lines == 0, "Пустой preview не занимает строки")
+
+// Измеряем готовую подпись целиком: наивное добавление многоточия после обрезки
+// могло бы вытеснить последнюю строку за пределы поля.
+func renderedPreviewLines(_ text: String, width: CGFloat) -> Int {
+    let storage = NSTextStorage(string: text, attributes: [.font: HUDTranscriptLayout.font])
+    let layout = NSLayoutManager()
+    let container = NSTextContainer(size: NSSize(width: max(20, width - 4), height: .greatestFiniteMagnitude))
+    container.lineFragmentPadding = 0
+    layout.addTextContainer(container)
+    storage.addLayoutManager(layout)
+    layout.ensureLayout(for: container)
+    var count = 0
+    layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, _, _ in count += 1 }
+    return count
+}
+let shortPreview = HUDTranscriptLayout.fit("Используй Cypress", width: 332)
+expect(shortPreview.text == "Используй Cypress" && !shortPreview.leadingTextHidden, "Короткий текст без многоточия")
+let exactPreview = HUDTranscriptLayout.fit("Один\nДва\nТри", width: 332)
+expect(exactPreview.lines == 3 && !exactPreview.leadingTextHidden, "Точно три строки ещё не требуют маркера")
+let overflowPreview = HUDTranscriptLayout.fit("Ноль\nОдин\nДва\nТри", width: 332)
+expect(overflowPreview.text == "... Один\nДва\nТри" && overflowPreview.lines == 3, "При скрытой первой строке появляется один префикс")
+expect(overflowPreview.sourceText == "Один\nДва\nТри", "Служебные точки отделены от текста стабилизации")
+let resetPreview = HUDTranscriptLayout.fit("Новая запись", width: 332)
+expect(!resetPreview.leadingTextHidden && resetPreview.text == "Новая запись", "Новая сессия без предыдущей привязки не наследует маркер")
+let revisedPreview = HUDTranscriptLayout.fit("Исправленная короткая гипотеза", width: 332, keeping: overflowPreview)
+expect(!revisedPreview.leadingTextHidden, "Короткая пересмотренная гипотеза без скрытого начала не наследует маркер")
+let rebasedPreview = HUDTranscriptLayout.fit(overflowPreview.sourceText, width: 332, keeping: overflowPreview)
+expect(rebasedPreview.text == overflowPreview.text, "Сдвиг ASR-буфера к видимому началу сохраняет маркер")
+let emptyPreview = HUDTranscriptLayout.fit(" ", width: 332, keeping: overflowPreview)
+expect(emptyPreview.text.isEmpty && emptyPreview.lines == 0 && !emptyPreview.leadingTextHidden, "Пустой preview очищает маркер")
+for width: CGFloat in [80, 200, 332] {
+    for count in [1, 3, 10] {
+        for source in [manyLines,
+                       String(repeating: "Русский English Cypress Playwright 👨‍👩‍👧‍👦. ", count: 30) + "Последние слова",
+                       String(repeating: "abcdefghij", count: 230) + "END"] {
+            let snippet = HUDTranscriptLayout.fit(source, width: width, lineCount: count)
+            expect(snippet.text.hasPrefix("... ") && snippet.leadingTextHidden, "Скрытое начало обозначено при ширине \(width), строках \(count)")
+            expect(renderedPreviewLines(snippet.text, width: width) <= count && snippet.lines <= count,
+                   "Многоточие входит в лимит строк и не скрывает конец")
+            expect(source.hasSuffix(snippet.sourceText) && !snippet.sourceText.isEmpty, "Видимый фрагмент сохраняет конец исходного текста")
+            let repeated = HUDTranscriptLayout.fit(source, width: width, keeping: snippet, lineCount: count)
+            expect(repeated.text == snippet.text && repeated.lines == snippet.lines, "Повторное обновление не сдвигает строки и не дублирует префикс")
+        }
+    }
+}
+var growingSnippet: HUDTranscriptLayout.Snippet?
+for index in 1...40 {
+    let source = String(repeating: "Добавляем слова в предварительный текст. ", count: index)
+    let snippet = HUDTranscriptLayout.fit(source, width: 332, keeping: growingSnippet)
+    expect(renderedPreviewLines(snippet.text, width: 332) <= 3, "Растущий текст с маркером остаётся в трёх строках")
+    if snippet.leadingTextHidden {
+        expect(snippet.text == "... " + snippet.sourceText, "При обновлении добавляется только один служебный маркер")
+    }
+    growingSnippet = snippet
+}
 expect(!LiveTranscriber.containsSpeech(Data(repeating: 0, count: 32000)), "Новая тишина не вызывает бесконечный ASR")
 expect(LiveTranscriber.containsSpeech(Data(repeating: 0x12, count: 32000)), "Речь проходит energy gate")
 var acrossPause = LivePreviewStabilizer()
@@ -253,8 +355,10 @@ let transcriber = LiveTranscriber(directory: directory,
                                   serverURL: URL(string: "http://127.0.0.1:8799")!,
                                   session: session, interval: 0.04)
 var texts: [String] = []
+var timings: [LiveTranscriber.Timing] = []
 var warmups = 0
 transcriber.onUpdate = { texts.append($0) }
+transcriber.onTiming = { timings.append($0) }
 transcriber.onNeedsServer = { warmups += 1 }
 try Data(repeating: 0x12, count: 64_000).write(to: pcmURL)
 
@@ -353,6 +457,46 @@ spin(0.12)
 expect(FakeWhisper.count == 2, "Длинная тишина не порождает повторные запросы и пунктуацию")
 transcriber.stop()
 
+expect(timings.contains { $0.outcome == .published } && timings.contains { $0.outcome == .unchanged }
+       && timings.contains { $0.outcome == .failed }, "Диагностика различает публикацию, ожидание подтверждения и ошибку")
+expect(timings.allSatisfy { $0.requestMS >= 0 && $0.stabilizationMS >= 0 }, "Метрики длительности неотрицательны")
+expect(timings.contains { $0.updateGapMS != nil }, "Интервал между публикациями измеряется отдельно от первого отклика")
+
+// Длинный таймер делает немедленное продолжение проверяемым без гонки на 100 мс.
+let immediate = LiveTranscriber(directory: directory, serverURL: URL(string: "http://127.0.0.1:8799")!,
+                                session: session, interval: 10)
+FakeWhisper.reset(delay: 0.15)
+try Data(repeating: 0x12, count: 25_600).write(to: pcmURL)
+immediate.start(modelPath: "/model", language: "ru")
+waitFor("Первый запрос занят") { FakeWhisper.count == 1 }
+try Data(repeating: 0x34, count: 96_000).write(to: pcmURL)
+try Data(repeating: 0x56, count: 160_000).write(to: pcmURL)
+waitFor("Накопившийся звук отправлен сразу после ответа, до следующего тика") { FakeWhisper.count == 2 }
+expect(FakeWhisper.bodies.last?.range(of: LiveTranscriber.wav(pcm: Data(repeating: 0x56, count: 160_000))) != nil,
+       "Отправлено самое свежее аудио, промежуточные снимки не стоят в очереди")
+spin(0.2)
+expect(FakeWhisper.count == 2, "Без нового звука немедленное продолжение не создаёт лишний запрос")
+immediate.stop()
+
+FakeWhisper.reset(delay: 0.1)
+try Data(repeating: 0x12, count: 25_600).write(to: pcmURL)
+immediate.onUpdate = { _ in immediate.stop() }
+immediate.start(modelPath: "/model", language: "ru")
+waitFor("Запрос перед отменой в callback") { FakeWhisper.count == 1 }
+try Data(repeating: 0x34, count: 96_000).write(to: pcmURL)
+spin(0.25)
+expect(FakeWhisper.count == 1, "Отмена в onUpdate запрещает немедленный следующий запрос")
+
+let failing = LiveTranscriber(directory: directory, serverURL: URL(string: "http://127.0.0.1:8799")!,
+                              session: session, interval: 0.01)
+FakeWhisper.reset(statuses: Array(repeating: 503, count: 8))
+failing.start(modelPath: "/model", language: "ru")
+waitFor("Ошибка сервера получена") { FakeWhisper.count == 1 }
+spin(0.3)
+expect(FakeWhisper.count == 1, "Проверка каждые 10 мс не создаёт поток повторов при HTTP-ошибке")
+waitFor("После ограниченной паузы повтор разрешён") { FakeWhisper.count == 2 }
+failing.stop()
+
 // Изолированный pasteboard: общий пользовательский буфер не используется.
 let pasteboard = NSPasteboard.withUniqueName()
 defer { pasteboard.releaseGlobally() }
@@ -395,6 +539,8 @@ if let input = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PCM"],
     let expected = ProcessInfo.processInfo.environment["RUNVOICE_TEST_EXPECT"]
     let expectedSuffix = ProcessInfo.processInfo.environment["RUNVOICE_TEST_EXPECT_SUFFIX"]
     var trace: [String] = []
+    var updateTimes: [Int] = []
+    var requestTimings: [LiveTranscriber.Timing] = []
     let started = ProcessInfo.processInfo.systemUptime
     var feeder: Timer?
     let file = streaming ? try FileHandle(forWritingTo: pcmURL) : nil
@@ -416,9 +562,11 @@ if let input = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PCM"],
     }
     live.onUpdate = {
         trace.append($0)
+        updateTimes.append(Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
         transcript = $0
         if firstResult == nil { firstResult = ($0, Int((ProcessInfo.processInfo.systemUptime - started) * 1000)) }
     }
+    live.onTiming = { requestTimings.append($0) }
     live.start(modelPath: "/integration-model",
                language: ProcessInfo.processInfo.environment["RUNVOICE_TEST_LANGUAGE"] ?? "en",
                vocabulary: (ProcessInfo.processInfo.environment["RUNVOICE_TEST_VOCAB"] ?? "").components(separatedBy: ","))
@@ -434,6 +582,21 @@ if let input = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PCM"],
     while !complete(), Date() < end { spin(0.05) }
     live.stop()
     feeder?.invalidate()
+    if ProcessInfo.processInfo.environment["RUNVOICE_TEST_TIMINGS"] == "1" {
+        let gaps = zip(updateTimes, updateTimes.dropFirst()).map { $1 - $0 }.sorted()
+        let requests = requestTimings.map(\.requestMS).sorted()
+        let metrics: [String: Any] = [
+            "audio_seconds": Double(inputPCM.count) / 32_000,
+            "first_ms": updateTimes.first ?? 0, "updates": updateTimes.count,
+            "gap_median_ms": gaps.isEmpty ? 0 : gaps[gaps.count / 2],
+            "gap_p95_ms": gaps.isEmpty ? 0 : gaps[Int(Double(gaps.count - 1) * 0.95)],
+            "gap_max_ms": gaps.last ?? 0, "requests": requests.count,
+            "request_median_ms": requests.isEmpty ? 0 : requests[requests.count / 2],
+            "failed_requests": requestTimings.filter { $0.outcome == .failed }.count,
+        ]
+        let data = try JSONSerialization.data(withJSONObject: metrics, options: [.sortedKeys])
+        FileHandle.standardOutput.write(Data("Whisper preview timings: ".utf8) + data + Data([10]))
+    }
     if ProcessInfo.processInfo.environment["RUNVOICE_TEST_TRACE"] == "1",
        let data = try? JSONEncoder().encode(trace) {
         FileHandle.standardOutput.write(Data("Preview trace: ".utf8) + data + Data([10]))

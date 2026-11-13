@@ -5,6 +5,16 @@ import Foundation
 final class LiveTranscriber {
     var onUpdate: ((String) -> Void)?
     var onNeedsServer: (() -> Void)?
+    var onTiming: ((Timing) -> Void)?
+
+    /// Только числовая диагностика; аудио и распознанные слова сюда не попадают.
+    struct Timing {
+        enum Outcome: String { case published, unchanged, failed }
+        let requestMS: Int
+        let stabilizationMS: Int
+        let updateGapMS: Int?
+        let outcome: Outcome
+    }
 
     private let directory: URL
     private let serverURL: URL
@@ -25,9 +35,11 @@ final class LiveTranscriber {
     private var stabilizer = LivePreviewStabilizer()
     private var confirmOnSilence = false
     private var lastWarmup = Date.distantPast
+    private var retryAfter: TimeInterval = 0
+    private var lastPublishedAt: TimeInterval?
 
     init(directory: URL, serverURL: URL, session: URLSession? = nil,
-         interval: TimeInterval = 0.25) {
+         interval: TimeInterval = 0.1) {
         self.directory = directory
         self.serverURL = serverURL
         ownsSession = session == nil
@@ -54,6 +66,8 @@ final class LiveTranscriber {
         stabilizer = LivePreviewStabilizer()
         confirmOnSilence = false
         lastWarmup = .distantPast
+        retryAfter = 0
+        lastPublishedAt = nil
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.recognize()
         }
@@ -92,7 +106,7 @@ final class LiveTranscriber {
     }
 
     private func recognize() {
-        guard task == nil else { return }
+        guard timer != nil, task == nil, ProcessInfo.processInfo.systemUptime >= retryAfter else { return }
         // Не используем сервер с другой или неизвестной моделью.
         guard serverMatchesModel else {
             ensureServer()
@@ -148,25 +162,41 @@ final class LiveTranscriber {
         request.setValue("close", forHTTPHeaderField: "Connection")
         request.httpBody = body
         let token = generation
+        let requestStartedAt = ProcessInfo.processInfo.systemUptime
         let task = session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 guard let self, self.generation == token, self.timer != nil else { return }
                 self.task = nil
+                let responseAt = ProcessInfo.processInfo.systemUptime
+                let requestMS = Int((responseAt - requestStartedAt) * 1000)
                 guard error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
                       let data,
                       let result = try? JSONDecoder().decode(PreviewResult.self, from: data) else {
+                    self.retryAfter = responseAt + 1
+                    self.onTiming?(Timing(requestMS: requestMS, stabilizationMS: 0, updateGapMS: nil, outcome: .failed))
+                    guard self.generation == token, self.timer != nil else { return }
                     self.ensureServer()
                     return
                 }
                 self.lastByteCount = audio.byteCount
                 self.confirmOnSilence = hasNewSpeech
                 let start = audio.byteCount - UInt64(audio.wav.count - 44)
-                guard let text = self.stabilizer.update(result.text, windowStart: start,
-                                                        firstWordOnly: audio.byteCount < 48_000,
-                                                        settled: !hasNewSpeech),
-                      text != self.lastText else { return }
-                self.lastText = text
-                self.onUpdate?(text)
+                let text = self.stabilizer.update(result.text, windowStart: start,
+                                                 firstWordOnly: audio.byteCount < 48_000,
+                                                 settled: !hasNewSpeech)
+                let stabilizedAt = ProcessInfo.processInfo.systemUptime
+                let changed = text != nil && text != self.lastText
+                let gap = changed ? self.lastPublishedAt.map { Int((stabilizedAt - $0) * 1000) } : nil
+                if changed { self.lastText = text!; self.lastPublishedAt = stabilizedAt }
+                self.onTiming?(Timing(requestMS: requestMS,
+                                      stabilizationMS: Int((stabilizedAt - responseAt) * 1000),
+                                      updateGapMS: gap, outcome: changed ? .published : .unchanged))
+                guard self.generation == token, self.timer != nil else { return }
+                if changed, let text { self.onUpdate?(text) }
+                guard self.generation == token, self.timer != nil else { return }
+                // Пока сервер считал ответ, мог накопиться следующий фрагмент.
+                // Берём самое свежее окно сразу, без ожидания тика и без очереди.
+                self.recognize()
             }
         }
         self.task = task
