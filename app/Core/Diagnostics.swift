@@ -40,7 +40,7 @@ enum Dependency: CaseIterable, Equatable {
 
     /// Что показываем в «Диагностике». Встроенные компоненты (whisper-server,
     /// whisper-cli, VAD) не выводим — они всегда часть бандла.
-    static let diagnosticsCases: [Dependency] = [.ffmpeg, .whisperModel, .opencode]
+    static let diagnosticsCases: [Dependency] = [.whisperModel, .opencode]
 
     /// Поиск исполняемого файла в PATH и типовых каталогах Homebrew.
     static func locateExecutable(_ name: String) -> String? {

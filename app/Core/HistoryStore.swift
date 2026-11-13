@@ -15,6 +15,7 @@ struct LastDictationResult: Decodable {
     let fixed: String
     let model: String?
     let timestamp: TimeInterval?
+    let readyAtMilliseconds: TimeInterval?
 }
 
 final class HistoryStore {

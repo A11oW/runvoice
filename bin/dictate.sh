@@ -53,6 +53,7 @@ fi
 
 WHISPER_LANG="${WHISPER_LANG:-ru}"
 WHISPER_THREADS="${WHISPER_THREADS:-8}"
+WHISPER_PROMPT="${WHISPER_PROMPT:-}"
 MIC_NAME="${MIC_NAME:-}"
 
 OC_PROVIDER="${OC_PROVIDER:-deepseek}"
@@ -115,11 +116,12 @@ notify() {
 # Результат для истории в приложении. Пишем атомарно, чтобы app не прочитал половину.
 save_result() {
   local raw="$1" fixed="$2"
+  local ready="${3:-$(now_ms)}"
   [ -n "$fixed" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   jq -cn --arg raw "$raw" --arg fixed "$fixed" \
-    --arg model "$(basename "${WHISPER_MODEL:-}")" --argjson ts "$(date +%s)" \
-    '{raw: $raw, fixed: $fixed, model: $model, timestamp: $ts}' \
+    --arg model "${DICTATE_MODEL_NAME:-$(basename "${WHISPER_MODEL:-}")}" --argjson ready "$ready" \
+    '{raw: $raw, fixed: $fixed, model: $model, timestamp: ($ready / 1000), readyAtMilliseconds: $ready}' \
     > "$STATE/last_result.json.tmp" 2>/dev/null \
     && mv "$STATE/last_result.json.tmp" "$STATE/last_result.json"
 }
@@ -129,7 +131,10 @@ hud_running() { pgrep -x dictatehud >/dev/null 2>&1; }
 # Если HUD недоступен — откатываемся на системные уведомления.
 status() {
   local st="$1" msg="${2:-}"
-  printf '%s%s' "$st" "${msg:+|$msg}" > "$STATUS"
+  # В сообщении теперь бывает целая расшифровка: читатель не должен увидеть
+  # частичный done и повторно отправить ⌘V после дочитывания того же результата.
+  local temporary="$STATUS.$$.tmp"
+  printf '%s%s' "$st" "${msg:+|$msg}" > "$temporary" && mv -f "$temporary" "$STATUS"
   if [ -x "$HUD_BIN" ]; then
     if ! hud_running; then nohup "$HUD_BIN" "$STATUS" >/dev/null 2>&1 & fi
   else
@@ -155,17 +160,21 @@ is_safe_exec() {
   [ $((8#$tail & 8#022)) -eq 0 ]
 }
 
-if [ -n "${OC_BIN:-}" ] && ! is_safe_exec "$OC_BIN"; then
-  log "opencode: небезопасный OC_BIN — игнор"
-  OC_BIN=""
-fi
-if [ -z "${OC_BIN:-}" ]; then
-  for c in /opt/homebrew/bin/opencode \
-           /usr/local/bin/opencode \
-           "$(command -v opencode 2>/dev/null)" \
-           "$HOME"/.npm/_npx/*/node_modules/.bin/opencode; do
-    [ -n "$c" ] && is_safe_exec "$c" && { OC_BIN="$c"; break; }
-  done
+if [ "${DICTATE_USE_OC:-1}" != "0" ] && \
+   { [ "$ACTION" = "toggle" ] || [ "$ACTION" = "stop" ] || [ "$ACTION" = "finish" ]; } && \
+   [ "${DICTATE_AI_KIND:-opencode}" = "opencode" ]; then
+  if [ -n "${OC_BIN:-}" ] && ! is_safe_exec "$OC_BIN"; then
+    log "opencode: небезопасный OC_BIN — игнор"
+    OC_BIN=""
+  fi
+  if [ -z "${OC_BIN:-}" ]; then
+    for c in /opt/homebrew/bin/opencode \
+             /usr/local/bin/opencode \
+             "$(command -v opencode 2>/dev/null)" \
+             "$HOME"/.npm/_npx/*/node_modules/.bin/opencode; do
+      [ -n "$c" ] && is_safe_exec "$c" && { OC_BIN="$c"; break; }
+    done
+  fi
 fi
 
 # индекс микрофона кэшируем: `ffmpeg -list_devices` стоит ~0.4 с
@@ -209,6 +218,8 @@ whisper_stop_server() {
 }
 
 whisper_ensure() {
+  # Горячий путь: один HTTP-запрос вместо двух проверок уже готового сервера.
+  if whisper_server_matches && whisper_up; then return 0; fi
   # Если сервер уже стартует (pid есть, HTTP ещё не отвечает) — подождать его,
   # чтобы не запустить второй процесс на тот же порт.
   local starting; starting="$(whisper_server_pid)"
@@ -274,14 +285,15 @@ transcribe() {
   local wav="$1"
   if whisper_ensure; then
     log "transcribe: whisper-server model=$(basename "$WHISPER_MODEL")"
-    curl -s --max-time 300 -F "file=@$wav" -F "language=$WHISPER_LANG" -F "response_format=json" \
+    curl -s --max-time 300 -F "file=@$wav" -F "language=$WHISPER_LANG" \
+      -F "response_format=json" -F "no_timestamps=true" --form-string "prompt=$WHISPER_PROMPT" \
       "$(whisper_url)/inference" 2>/dev/null | jq -r '.text // empty'
     return
   fi
   log "transcribe: whisper-cli (сервер недоступен)"
   local v=(); [ -f "$WHISPER_VAD_MODEL" ] && v=(--vad -vm "$WHISPER_VAD_MODEL")
   "$WHISPER_CLI_BIN" -m "$WHISPER_MODEL" "${v[@]}" -l "$WHISPER_LANG" -t "$WHISPER_THREADS" \
-    -nt -otxt -of "$OUT" "$wav" >/dev/null 2>&1
+    -nt --prompt "$WHISPER_PROMPT" -otxt -of "$OUT" "$wav" >/dev/null 2>&1
   cat "$OUT.txt" 2>/dev/null
 }
 
@@ -425,57 +437,70 @@ start_recording() {
   if recording; then log "start: уже идёт — игнор"; return 0; fi
   if [ ! -f "$WHISPER_MODEL" ]; then
     log "model: не найдена: $WHISPER_MODEL"
-    err "модель Whisper не найдена — выберите её в настройках"
+    err "Модель Whisper не найдена — выберите её в настройках"
     return 1
   fi
   local idx; idx="$(mic_index)"
   if [ -z "$idx" ]; then
-    err "микрофон не найден: ${MIC_NAME:-устройство по умолчанию}"
+    err "Микрофон не найден: ${MIC_NAME:-устройство по умолчанию}"
     return 1
   fi
   rm -f "$PCM" "$WAV" "$OUT.txt" "$STATE/last_result.json" "$STATE/last_result.json.tmp"
   status preparing
   ffmpeg -hide_banner -loglevel error -nostdin -f avfoundation -i ":$idx" \
-    -ar 16000 -ac 1 -c:a pcm_s16le -f s16le -y "$PCM" >>"$LOG" 2>&1 &
+    -ar 16000 -ac 1 -c:a pcm_s16le -f s16le -flush_packets 1 -y "$PCM" >>"$LOG" 2>&1 &
   echo $! > "$STATE/pid"
   sleep 0.2
   if ! recording; then
     rm -f "$STATE/pid" "$MIC_CACHE"
-    err "не удалось начать запись (микрофон/права)"; return 1
+    err "Не удалось начать запись (микрофон/права)"; return 1
   fi
   log "start: mic=$idx pid=$(cat "$STATE/pid" 2>/dev/null)"
   status recording
 }
 
 stop_and_insert() {
-  if ! recording; then log "stop: запись не идёт"; status info "запись не идёт"; return 0; fi
+  if ! recording; then log "stop: запись не идёт"; status info "Запись не идёт"; return 0; fi
+  local pipeline_start; pipeline_start="$(now_ms)"
   if [ ! -f "$WHISPER_MODEL" ]; then
     stop_recorders; rm -f "$STATE/pid"
     log "model: не найдена: $WHISPER_MODEL"
-    err "модель Whisper не найдена — выберите её в настройках"
+    err "Модель Whisper не найдена — выберите её в настройках"
     return 1
   fi
-  stop_recorders; rm -f "$STATE/pid"
   status transcribing
+  stop_recorders; rm -f "$STATE/pid"
 
   local sz; sz=$(stat -f%z "$PCM" 2>/dev/null || echo 0)
   log "stop: pcm_bytes=$sz"
-  if [ "${sz:-0}" -lt 6400 ]; then err "запись слишком короткая или пустая"; return 1; fi
+  if [ "${sz:-0}" -lt 6400 ]; then err "Запись слишком короткая или пустая"; return 1; fi
 
   # один вызов ffmpeg: и WAV, и замер громкости
   local vol
   vol="$(ffmpeg -hide_banner -y -f s16le -ar 16000 -ac 1 -i "$PCM" \
         -c:a pcm_s16le "$WAV" -af volumedetect -f null - 2>&1 \
         | sed -n 's/.*max_volume: \([^ ]*\) dB.*/\1/p')"
-  [ -s "$WAV" ] || { err "не удалось собрать WAV"; return 1; }
+  [ -s "$WAV" ] || { err "Не удалось собрать WAV"; return 1; }
   log "max_volume=${vol:-?} dB"
 
-  local raw; raw="$(transcribe "$WAV")"
+  process_wav "$WAV" "" "$pipeline_start"
+}
+
+# WAV уже готов в нативном GUI; текст потокового ASR позволяет пропустить
+# повторный проход по записи. CLI по-прежнему вызывает этот же конвейер.
+process_wav() {
+  local wav="$1" transcript="${2:-}" pipeline_start="${3:-$(now_ms)}"
+  local raw asr_start; asr_start="$(now_ms)"
+  if [ -n "$transcript" ]; then
+    raw="$(cat "$transcript" 2>/dev/null)"
+  else
+    raw="$(transcribe "$wav")"
+  fi
   raw="$(printf '%s' "$raw" | tr '\n' ' ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   log "RAW: $raw"
-  [ -z "$raw" ] && { err "речь не распознана (тишина?)"; return 1; }
+  [ -z "$raw" ] && { err "Речь не распознана (тишина?)"; return 1; }
 
-  status fixing
+  status fixing "$raw"
   local fixed ai_start ai_elapsed
   ai_start="$(now_ms)"
   fixed="$(generate_fix "$raw")"
@@ -490,25 +515,28 @@ stop_and_insert() {
     fixed="$raw"
   fi
   log "FIXED: $fixed"
+  local ready; ready="$(now_ms)"
+  log "performance: prepare_ms=$((asr_start - pipeline_start)) asr_ms=$((ai_start - asr_start)) ai_ms=$ai_elapsed total_ms=$((ready - pipeline_start))"
 
-  if [ "$DRY_RUN" = "1" ]; then printf 'RAW:   %s\nFIXED: %s\n' "$raw" "$fixed"; status info "dry run"; return 0; fi
+  if [ "$DRY_RUN" = "1" ]; then printf 'RAW:   %s\nFIXED: %s\n' "$raw" "$fixed"; status info "Dry run"; return 0; fi
+
+  # Приложение само заполняет NSPasteboard и отправляет ⌘V, без запуска pbcopy.
+  if [ "${DICTATE_NO_PASTE:-0}" = "1" ]; then
+    save_result "$raw" "$fixed" "$ready"
+    log "paste: delegated to app"
+    status done "$fixed"
+    return 0
+  fi
 
   local old=""; [ "$RESTORE_CLIPBOARD" = "1" ] && old="$(pbpaste 2>/dev/null || true)"
   printf '%s' "$fixed" | pbcopy
-  save_result "$raw" "$fixed"
-
-  # В режиме приложения ⌘V отправляет само приложение (у него есть Accessibility).
-  if [ "${DICTATE_NO_PASTE:-0}" = "1" ]; then
-    log "paste: delegated to app"
-    status done
-    return 0
-  fi
+  save_result "$raw" "$fixed" "$ready"
 
   sleep 0.15
   paste_text
   sleep 0.5
   [ "$RESTORE_CLIPBOARD" = "1" ] && printf '%s' "$old" | pbcopy
-  status done
+  status done "$fixed"
 }
 
 # Отмена записи: остановить ffmpeg, удалить звук и не запускать распознавание/AI.
@@ -663,6 +691,23 @@ if [ "$ACTION" = "warmup" ]; then
 fi
 
 # =========================================================
+# 1) GUI передаёт законченный WAV напрямую, без ffmpeg и debounce.
+if [ "$ACTION" = "finish" ]; then
+  [ -f "${2:-}" ] || { err "Аудиозапись недоступна"; exit 1; }
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    lp="$(cat "$LOCK/pid" 2>/dev/null || true)"
+    if [ -n "$lp" ] && kill -0 "$lp" 2>/dev/null; then
+      err "Предыдущее распознавание ещё выполняется"; exit 1
+    fi
+    rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || exit 1
+  fi
+  echo $$ > "$LOCK/pid"
+  trap 'rm -rf "$LOCK"' EXIT
+  status transcribing
+  process_wav "$2" "${3:-}"
+  exit $?
+fi
+
 # 1) подавление авто-повтора: обновляем метку на КАЖДОМ вызове
 NOW="$(now_ms)"
 LAST="$(cat "$LASTF" 2>/dev/null || echo 0)"

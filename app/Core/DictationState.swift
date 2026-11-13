@@ -14,6 +14,29 @@ struct HUDContent {
     let autoHideAfter: TimeInterval?
     var showLevel = false
     var showStop = false
+    var showSpinner = false
+    var transcript = ""
+    var delivery: HUDDelivery? = nil
+
+    var displayText: String {
+        guard let delivery else { return text }
+        return "\(delivery.application?.name ?? text) · \(delivery.words)"
+    }
+
+    static func completed(text: String, application: HUDApplication?, pasted: Bool = true) -> HUDContent {
+        var content = HUDContent(text: pasted ? "Готово" : "Скопировано", busy: false,
+                                 icon: pasted ? "checkmark" : "info.circle",
+                                 hudIcon: pasted ? "checkmark.circle" : "info.circle",
+                                 accent: pasted ? .success : .info, autoHideAfter: pasted ? 1 : 1.8)
+        content.delivery = HUDDelivery(text: text, application: pasted ? application : nil)
+        return content
+    }
+}
+
+enum StatusItemSymbol {
+    static let idle = "waveform"
+    static let listening = "mic"
+    static let processing = "ellipsis"
 }
 
 /// Состояние диктовки, которое приложение читает из файла status.
@@ -21,7 +44,7 @@ enum DictationState: Equatable {
     case preparing
     case recording
     case transcribing
-    case fixing
+    case fixing(message: String)
     case done(message: String)
     case info(message: String)
     case error(message: String)
@@ -39,7 +62,7 @@ enum DictationState: Equatable {
         case "preparing": self = .preparing
         case "recording": self = .recording
         case "transcribing": self = .transcribing
-        case "fixing": self = .fixing
+        case "fixing": self = .fixing(message: message)
         case "done": self = .done(message: message)
         case "info": self = .info(message: message)
         case "error": self = .error(message: message)
@@ -64,8 +87,16 @@ enum DictationState: Equatable {
 
     var message: String {
         switch self {
-        case .done(let message), .info(let message), .error(let message): return message
+        case .fixing(let message), .done(let message), .info(let message), .error(let message): return message
         default: return ""
+        }
+    }
+
+    var statusItemSymbol: String {
+        switch self {
+        case .recording: return StatusItemSymbol.listening
+        case .transcribing, .fixing: return StatusItemSymbol.processing
+        default: return StatusItemSymbol.idle
         }
     }
 
@@ -81,23 +112,23 @@ enum DictationState: Equatable {
                               showLevel: true, showStop: true)
         case .transcribing:
             return HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
-                              hudIcon: "waveform", accent: .neutral, autoHideAfter: nil)
+                              hudIcon: "waveform", accent: .neutral, autoHideAfter: nil, showSpinner: true)
         case .fixing:
             return HUDContent(text: "Обрабатываю текст…", busy: true, icon: "ellipsis",
-                              hudIcon: "ellipsis", accent: .neutral, autoHideAfter: nil)
-        case .done(let message):
-            return HUDContent(text: message.isEmpty ? "Готово" : message,
+                              hudIcon: "ellipsis", accent: .neutral, autoHideAfter: nil, showSpinner: true)
+        case .done:
+            return HUDContent(text: "Готово",
                               busy: false, icon: "checkmark", hudIcon: "checkmark.circle.fill",
-                              accent: .success, autoHideAfter: 2.0)
+                              accent: .success, autoHideAfter: 1.0)
         case .info(let message):
             return HUDContent(text: message.isEmpty ? "Готово" : message,
                               busy: false, icon: "info.circle", hudIcon: "info.circle.fill",
-                              accent: .info, autoHideAfter: 2.5)
+                              accent: .info, autoHideAfter: 1.8)
         case .error(let message):
             return HUDContent(text: message.isEmpty ? "Ошибка" : message,
                               busy: false, icon: "exclamationmark.triangle",
                               hudIcon: "exclamationmark.triangle.fill",
-                              accent: .warning, autoHideAfter: 5.0)
+                              accent: .warning, autoHideAfter: 3.0)
         case .idle:
             return nil
         }

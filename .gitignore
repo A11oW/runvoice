@@ -1,10 +1,11 @@
 # Собранные помощники (артефакты сборки)
 bin/pastev
 bin/dictatehud
-
+.idea
 # Артефакты сборки приложения
 dist/
 .build/
+.swiftpm/
 
 # Не относится к инструменту
 .opencode/

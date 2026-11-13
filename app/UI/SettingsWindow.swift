@@ -41,11 +41,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var improveProviderID: UUID?
     private var promptGroup: NSStackView!
     private var restoreCheck: NSButton!
-    private var hudCheck: NSButton!
     private var resetButton: NSButton!
     private var versionLabel: NSTextField!
     private var toggleHotkeyButton: NSButton!
     private var improveHotkeyButton: NSButton!
+    private let stopOnEnterCheck = NSButton(checkboxWithTitle: "Останавливать распознавание по нажатию Enter", target: nil, action: nil)
+    private let cancelOnEscapeCheck = NSButton(checkboxWithTitle: "Отменять диктовку по Esc", target: nil, action: nil)
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var modelsStack: NSStackView!
@@ -53,6 +54,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var modelDirs: [String] = []
     private var hiddenModelPaths: [String] = []
     private var selectedModelPath = ""
+    private var selectedEngine = "whisper"
+    private let enginePopup = NSPopUpButton()
+    private let vocabularyEditor = SpeechVocabularyEditor()
+    private let previewControls = RecognitionPreviewControls()
+    private var fluidDownload: ASRProcess?
+    private var fluidDownloadProgress: Double = 0
+    private var fluidStatus: NSTextField?
     private var historyTable: NSTableView!
     private var historyDetail: NSTextView!
     private var historySearch: NSSearchField!
@@ -184,6 +192,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// Только демонстрационный снимок: настройки на диске не изменяются.
+    func prepareDictionarySnapshot() {
+        vocabularyEditor.load(["Cypress", "Playwright", "GitHub Actions"])
+    }
+
     /// Для отладочного скриншота: показать блок улучшения текста на вкладке «Постобработка».
     func scrollAIToImprove() {
         scrollAITo(improveGroup)
@@ -218,6 +231,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         models.label = "Распознавание"
         models.view = buildModels()
         tabView.addTabViewItem(models)
+
+        let dictionary = NSTabViewItem(identifier: "dictionary")
+        dictionary.label = "Словарь"
+        dictionary.view = vocabularyEditor
+        tabView.addTabViewItem(dictionary)
 
         let providers = NSTabViewItem(identifier: "providers")
         providers.label = "Провайдеры"
@@ -289,12 +307,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private func buildGeneral() -> NSView {
         let view = NSView()
-        let languageLabel = label("Язык распознавания")
         let micLabel = label("Микрофон")
         let diagLabel = label("Диагностика", bold: true)
-
-        languagePopup = NSPopUpButton()
-        languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
 
         micPopup = NSPopUpButton()
         micPopup.widthAnchor.constraint(equalToConstant: 230).isActive = true
@@ -316,9 +330,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         launchNote = label("")
         launchNote.textColor = .systemOrange
         launchNote.font = .systemFont(ofSize: 10)
-        hudCheck = NSButton(checkboxWithTitle: "Показывать всплывающий бабл статуса",
-                            target: nil, action: nil)
-
         accessLabel = label("Accessibility: проверка…")
         accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
 
@@ -339,8 +350,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             depLabel.widthAnchor.constraint(equalTo: depStack.widthAnchor).isActive = true
         }
 
-        let views: [NSView] = [languageLabel, languagePopup, micRow, restoreCheck,
-                               launchCheck, launchNote, hudCheck,
+        let views: [NSView] = [micRow, restoreCheck,
+                               launchCheck, launchNote,
                                diagLabel, accessLabel, accessButton]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
@@ -349,13 +360,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         view.addSubview(depStack)
 
         NSLayoutConstraint.activate([
-            languageLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            languageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            languagePopup.centerYAnchor.constraint(equalTo: languageLabel.centerYAnchor),
-            languagePopup.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            languagePopup.widthAnchor.constraint(equalToConstant: 200),
-
-            micRow.topAnchor.constraint(equalTo: languageLabel.bottomAnchor, constant: 14),
+            micRow.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
             micRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             micRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
 
@@ -368,10 +373,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             launchNote.topAnchor.constraint(equalTo: launchCheck.bottomAnchor, constant: 2),
             launchNote.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 36),
 
-            hudCheck.topAnchor.constraint(equalTo: launchNote.bottomAnchor, constant: 8),
-            hudCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            diagLabel.topAnchor.constraint(equalTo: hudCheck.bottomAnchor, constant: 24),
+            diagLabel.topAnchor.constraint(equalTo: launchNote.bottomAnchor, constant: 24),
             diagLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
 
             accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
@@ -959,6 +961,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private func buildModels() -> NSView {
         let view = NSView()
+        languagePopup = NSPopUpButton()
+        languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
+        languagePopup.setAccessibilityLabel("Язык распознавания")
+        enginePopup.addItems(withTitles: ["Whisper · Metal / CPU", "Nemotron Multilingual · потоковый"])
+        enginePopup.autoenablesItems = false
+        enginePopup.target = self
+        enginePopup.action = #selector(changeRecognitionEngine)
+        enginePopup.item(at: 1)?.isEnabled = FluidModelStore.supported
 
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -1007,6 +1017,43 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         downloadPercents.removeAll()
         downloadSpeedLabels.removeAll()
         downloadSpeeds.removeAll()
+
+        let languageRow = NSStackView(views: [sectionLabel("Язык распознавания"), languagePopup])
+        languageRow.orientation = .horizontal
+        languageRow.alignment = .centerY
+        languageRow.spacing = 16
+        addRow(languageRow)
+
+        let engineRow = NSStackView(views: [sectionLabel("Движок распознавания"), enginePopup])
+        engineRow.orientation = .horizontal
+        engineRow.alignment = .centerY
+        engineRow.spacing = 16
+        enginePopup.selectItem(at: selectedEngine == "nemotron" ? 1 : 0)
+        addRow(engineRow)
+        let engineNote = NSTextField(wrappingLabelWithString:
+            "Whisper работает на Apple Silicon и Intel. Nemotron распознаёт речь потоком на Apple Silicon, включая русский и английский. Для смешанной речи попробуйте язык «Авто» выше.")
+        engineNote.font = .systemFont(ofSize: 11)
+        engineNote.textColor = .secondaryLabelColor
+        addRow(engineNote)
+        let fluidRow = NSStackView()
+        fluidRow.orientation = .horizontal
+        fluidRow.spacing = 12
+        let fluidButton = NSButton(title: fluidDownload != nil ? "Отменить загрузку"
+                                   : FluidModelStore.installed ? "Проверить Nemotron" : "Скачать Nemotron",
+                                   target: self, action: #selector(downloadFluidModel))
+        fluidButton.isEnabled = FluidModelStore.supported
+        fluidRow.addArrangedSubview(fluidButton)
+        let fluidStatus = NSTextField(labelWithString: fluidDownload != nil
+            ? "Загрузка: \(Int(fluidDownloadProgress * 100))%"
+            : FluidModelStore.installed ? "Установлена · локально, без отправки аудио"
+            : "Multilingual 0.6B · требуется отдельная загрузка")
+        fluidStatus.font = .systemFont(ofSize: 11)
+        fluidStatus.textColor = .secondaryLabelColor
+        self.fluidStatus = fluidStatus
+        fluidRow.addArrangedSubview(fluidStatus)
+        addRow(fluidRow)
+        addRow(previewControls)
+        addRow(sectionLabel("Модели Whisper · также используются как резерв для Nemotron"))
 
         let active = WhisperModelStore.file(at: selectedModelPath)
         var found = WhisperModelStore.foundModels(extraDirectories: modelDirs,
@@ -1685,6 +1732,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private func makeScroll(_ textView: NSTextView) -> NSScrollView {
         textView.isRichText = false
+        textView.allowsUndo = true
         textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -1710,16 +1758,24 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let view = NSView()
         let toggleLabel = label("Диктовка")
         let improveLabel = label("Улучшение текста")
-        let hint = label("Кликните по сочетанию и нажмите новое. Esc — отмена.")
-        let note = label("Нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
+        let note = label("Для сочетаний выше нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
+        let enterHint = label("Во время записи Enter завершает диктовку и запускает обработку текста.")
+        enterHint.font = .systemFont(ofSize: 11)
+        enterHint.textColor = .secondaryLabelColor
+        stopOnEnterCheck.identifier = NSUserInterfaceItemIdentifier("stop-recording-on-enter")
+        cancelOnEscapeCheck.identifier = NSUserInterfaceItemIdentifier("cancel-recording-on-escape")
+        let escapeHint = label("Во время записи Esc отменяет диктовку без распознавания и вставки текста.")
+        escapeHint.font = .systemFont(ofSize: 11)
+        escapeHint.textColor = .secondaryLabelColor
 
         toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
         toggleHotkeyButton.bezelStyle = .rounded
         improveHotkeyButton = NSButton(title: improveHotkey.display, target: self, action: #selector(captureImprove))
         improveHotkeyButton.bezelStyle = .rounded
 
-        let views: [NSView] = [toggleLabel, improveLabel, hint, note,
-                               toggleHotkeyButton, improveHotkeyButton]
+        let views: [NSView] = [toggleLabel, improveLabel, note,
+                               toggleHotkeyButton, improveHotkeyButton, stopOnEnterCheck, enterHint,
+                               cancelOnEscapeCheck, escapeHint]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -1738,10 +1794,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             improveHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             improveHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
 
-            hint.topAnchor.constraint(equalTo: improveLabel.bottomAnchor, constant: 22),
-            hint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            note.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 4),
+            note.topAnchor.constraint(equalTo: improveLabel.bottomAnchor, constant: 22),
             note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            stopOnEnterCheck.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 22),
+            stopOnEnterCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            stopOnEnterCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            enterHint.topAnchor.constraint(equalTo: stopOnEnterCheck.bottomAnchor, constant: 6),
+            enterHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            enterHint.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            cancelOnEscapeCheck.topAnchor.constraint(equalTo: enterHint.bottomAnchor, constant: 18),
+            cancelOnEscapeCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            cancelOnEscapeCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            escapeHint.topAnchor.constraint(equalTo: cancelOnEscapeCheck.bottomAnchor, constant: 6),
+            escapeHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            escapeHint.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -1972,7 +2038,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         micTestButton.isEnabled = false
         micTestLabel.stringValue = "Запись 1 с…"
         micTestLabel.textColor = .secondaryLabelColor
-        MicTester.test(micName: name) { [weak self] result in
+        let uid = micPopup.selectedItem?.representedObject as? String ?? ""
+        MicTester.test(micName: name, deviceUID: uid) { [weak self] result in
             guard let self else { return }
             self.micTestButton.isEnabled = true
             switch result {
@@ -2017,30 +2084,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
-    private func reloadMicrophones(selected: String) {
-        let deviceTypes: [AVCaptureDevice.DeviceType]
-        if #available(macOS 14.0, *) {
-            deviceTypes = [.microphone]
-        } else {
-            deviceTypes = [.builtInMicrophone, .externalUnknown]
-        }
-        var names = AVCaptureDevice.DiscoverySession(
-            deviceTypes: deviceTypes,
-            mediaType: .audio,
-            position: .unspecified
-        ).devices.map(\.localizedName)
-
-        if names.isEmpty { names = ["MacBook Pro Microphone"] }
-        if !selected.isEmpty, !names.contains(selected) { names.append(selected) }
+    private func reloadMicrophones(selected: String, uid: String = "") {
+        let devices = AudioInputDevice.available()
         micPopup.removeAllItems()
-        micPopup.addItems(withTitles: names)
-        if let index = names.firstIndex(of: selected) {
-            micPopup.selectItem(at: index)
-        } else if let index = names.firstIndex(of: "MacBook Pro Microphone") {
-            micPopup.selectItem(at: index)
-        } else {
-            micPopup.selectItem(at: 0)
+        for device in devices {
+            micPopup.addItem(withTitle: device.name)
+            micPopup.lastItem?.representedObject = device.uid
         }
+        if let match = AudioInputDevice.match(name: selected, uid: uid, in: devices),
+           let index = devices.firstIndex(of: match) { micPopup.selectItem(at: index) }
+        else if !uid.isEmpty || !selected.isEmpty {
+            // Отсутствующий выбранный input не заменяется другим устройством.
+            micPopup.addItem(withTitle: selected.isEmpty ? "Микрофон недоступен" : selected)
+            micPopup.lastItem?.representedObject = uid
+            micPopup.selectItem(at: micPopup.numberOfItems - 1)
+        } else if let device = AudioInputDevice.resolve(name: ""),
+                  let index = devices.firstIndex(of: device) { micPopup.selectItem(at: index) }
+        micTestButton.isEnabled = micPopup.numberOfItems > 0
     }
 
     private func refreshLaunchStatus() {
@@ -2054,6 +2114,55 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             launchNote.stringValue = ""
             launchNote.isHidden = true
         }
+    }
+
+    @objc private func changeRecognitionEngine() {
+        selectedEngine = enginePopup.indexOfSelectedItem == 1 ? "nemotron" : "whisper"
+    }
+
+    @objc private func downloadFluidModel() {
+        if let download = fluidDownload {
+            download.stop()
+            fluidDownload = nil
+            refreshModels()
+            return
+        }
+        let download = ASRProcess()
+        fluidDownload = download
+        fluidDownloadProgress = 0
+        var completed = false
+        download.onEvent = { [weak self, weak download] event in
+            guard let self, let download, self.fluidDownload === download else { return }
+            switch event["event"] as? String {
+            case "progress":
+                self.fluidDownloadProgress = max(0, min(1, event["progress"] as? Double ?? 0))
+                self.fluidStatus?.stringValue = "Загрузка: \(Int(self.fluidDownloadProgress * 100))%"
+            case "installed":
+                completed = true
+                self.fluidDownload = nil
+                self.refreshModels()
+            case "error":
+                completed = true
+                self.fluidDownload = nil
+                self.refreshModels()
+                self.fluidStatus?.stringValue = "Не удалось загрузить модель. Повторите попытку"
+            default: break
+            }
+        }
+        download.onExit = { [weak self] in
+            guard let self, !completed else { return }
+            self.fluidDownload = nil
+            self.refreshModels()
+            self.fluidStatus?.stringValue = "Загрузка прервана. Можно повторить"
+        }
+        do { try download.start(mode: "download") }
+        catch {
+            fluidDownload = nil
+            refreshModels()
+            fluidStatus?.stringValue = "Движок недоступен: \(error.localizedDescription)"
+            return
+        }
+        refreshModels()
     }
 
     private func currentSettings() -> Settings {
@@ -2071,16 +2180,22 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             : nil
         settings.language = languages[max(0, languagePopup.indexOfSelectedItem)]
         settings.microphone = micPopup.titleOfSelectedItem ?? ""
+        settings.microphoneUID = micPopup.selectedItem?.representedObject as? String ?? ""
         settings.restoreClipboard = restoreCheck.state == .on
-        settings.showHUD = hudCheck.state == .on
+        settings.previewEnabled = previewControls.options.enabled
+        settings.previewLineCount = previewControls.options.lineCount
         settings.historyEnabled = historyEnabledCheck.state == .on
         settings.historyMaxItems = max(1, min(1000, historyItemsField.integerValue))
         settings.historyMaxDays = max(1, min(3650, historyDaysField.integerValue))
         settings.hotkeyToggle = toggleHotkey
         settings.hotkeyImprove = improveHotkey
+        settings.stopRecordingOnEnter = stopOnEnterCheck.state == .on
+        settings.cancelRecordingOnEscape = cancelOnEscapeCheck.state == .on
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
         settings.hiddenModelPaths = hiddenModelPaths
+        settings.recognitionEngine = selectedEngine
+        settings.speechVocabulary = vocabularyEditor.terms
         return settings
     }
 
@@ -2088,10 +2203,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         currentSettings() != loadedSettings
             || (launchCheck.state == .on) != loadedLaunchAtLogin
             || providerKeys != loadedProviderKeys
+            || vocabularyEditor.hasChanges
     }
 
     private func loadValues() {
         let settings = SettingsStore.load()
+        selectedEngine = FluidModelStore.supported ? settings.recognitionEngine : "whisper"
+        vocabularyEditor.load(settings.speechVocabulary)
+        previewControls.options = settings.recognitionPreview
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
         promptTestLabel?.stringValue = ""
         improveTestLabel?.stringValue = ""
@@ -2099,7 +2218,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         micTestLabel?.stringValue = ""
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
-        reloadMicrophones(selected: settings.microphone)
+        reloadMicrophones(selected: settings.microphone, uid: settings.microphoneUID)
 
         providers = settings.providers
         dictationProviderID = settings.dictationProviderID
@@ -2115,7 +2234,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         refreshProviderMenus()
 
         restoreCheck.state = settings.restoreClipboard ? .on : .off
-        hudCheck.state = settings.showHUD ? .on : .off
         refreshLaunchStatus()
 
         toggleHotkey = settings.hotkeyToggle
@@ -2125,6 +2243,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         improveText.string = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
         summaryText.string = settings.promptSummary.isEmpty ? DefaultPrompts.summary : settings.promptSummary
+        stopOnEnterCheck.state = settings.stopRecordingOnEnter ? .on : .off
+        cancelOnEscapeCheck.state = settings.cancelRecordingOnEscape ? .on : .off
         improveEnabledCheck.state = settings.improveEnabled ? .on : .off
         updateAIProviderState()
 
@@ -2150,9 +2270,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         loadedSettings.promptSummary = summaryText.string
         loadedSettings.improveEnabled = improveEnabledCheck.state == .on
         loadedSettings.whisperModelPath = selectedModelPath
+        loadedSettings.recognitionEngine = selectedEngine
         if loadedSettings.microphone.isEmpty {
             loadedSettings.microphone = micPopup.titleOfSelectedItem ?? ""
         }
+        loadedSettings.microphoneUID = micPopup.selectedItem?.representedObject as? String ?? ""
     }
 
     @objc private func resetDefaults() {
@@ -2166,6 +2288,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         switch tabView.selectedTabViewItem?.identifier as? String {
         case "hotkeys":
+            stopOnEnterCheck.state = .off
+            cancelOnEscapeCheck.state = .off
             toggleHotkey = HotKeySetting()
             toggleHotkeyButton.title = toggleHotkey.display
             improveHotkey = HotKeySetting.improveDefault
@@ -2188,11 +2312,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             summaryTestLabel?.stringValue = ""
             updateAIProviderState()
         case "models":
+            previewControls.options = RecognitionPreview()
+            selectedEngine = "whisper"
+            languagePopup.selectItem(at: 0)
             modelDirs = []
             hiddenModelPaths = []
             selectedModelPath = WhisperModelStore.autoSelect(
                 from: WhisperModelStore.foundModels())?.path ?? ""
             refreshModels()
+        case "dictionary":
+            vocabularyEditor.reset()
         case "history":
             historyEnabledCheck.state = .on
             historyItemsField.integerValue = 100
@@ -2201,10 +2330,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             historyDaysStepper.integerValue = 30
             reloadHistory()
         default:
-            languagePopup.selectItem(at: 0)
             reloadMicrophones(selected: "")
             restoreCheck.state = .off
-            hudCheck.state = .on
         }
     }
 
@@ -2213,6 +2340,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func saveSettings() {
+        previewControls.commit()
+        guard vocabularyEditor.commit() else {
+            selectTab("dictionary")
+            return
+        }
         let settings = currentSettings()
 
         if toggleHotkey.keyCode == improveHotkey.keyCode,
