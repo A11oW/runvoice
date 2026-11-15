@@ -32,7 +32,7 @@ final class DictationRunner {
             arguments.append(url.path)
         }
         try launch(script: script, action: "finish", model: model, settings: settings,
-                   arguments: arguments, modelName: transcript == nil ? nil : "Nemotron Multilingual 0.6B",
+                   arguments: arguments, modelName: transcript == nil ? nil : settings.fluidModel.title,
                    completion: completion)
     }
 

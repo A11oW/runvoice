@@ -5,6 +5,7 @@ BUILD="$REPO/.build/live-hud-tests"
 mkdir -p "$BUILD"
 swiftc -module-cache-path "$REPO/.build/clang-module-cache" \
   "$REPO/app/Core/LiveTranscriber.swift" \
+  "$REPO/app/Core/FluidSpeechClient.swift" "$REPO/app/Core/RecognitionModels.swift" "$REPO/app/Core/Paths.swift" \
   "$REPO/app/Core/LivePreviewText.swift" \
   "$REPO/app/Core/RecognitionPreview.swift" \
   "$REPO/app/Core/AudioSpectrumAnalyzer.swift" \

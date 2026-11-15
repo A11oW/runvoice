@@ -112,7 +112,8 @@ struct Settings: Codable, Equatable {
     var whisperModelPath = ""
     var whisperModelDirs: [String] = []
     var hiddenModelPaths: [String] = []
-    var recognitionEngine = "whisper"
+    var recognitionTechnology: RecognitionTechnology = .whisper
+    var fluidModel: FluidModel = .nemotron
     var speechVocabulary: [String] = []
     var language = "ru"
     var microphone = ""
@@ -132,7 +133,7 @@ struct Settings: Codable, Equatable {
         case promptFix, promptImprove, improveEnabled
         case providers, dictationProviderID, improveProviderID
         case whisperModelPath, whisperModelDirs, hiddenModelPaths
-        case recognitionEngine, speechVocabulary
+        case recognitionTechnology, fluidModel, speechVocabulary
         case language, microphone, microphoneUID
         case restoreClipboard
         case previewEnabled, previewLineCount
@@ -142,7 +143,7 @@ struct Settings: Codable, Equatable {
 
     /// Поля старого формата — только для миграции.
     private enum LegacyKeys: String, CodingKey {
-        case provider, model, baseURL, processingMode, useOpenCode
+        case provider, model, baseURL, processingMode, useOpenCode, recognitionEngine
     }
 
     init() {
@@ -185,8 +186,15 @@ struct Settings: Codable, Equatable {
         whisperModelPath = try c.decodeIfPresent(String.self, forKey: .whisperModelPath) ?? ""
         whisperModelDirs = try c.decodeIfPresent([String].self, forKey: .whisperModelDirs) ?? []
         hiddenModelPaths = try c.decodeIfPresent([String].self, forKey: .hiddenModelPaths) ?? []
-        recognitionEngine = try c.decodeIfPresent(String.self, forKey: .recognitionEngine) == "nemotron"
-            ? "nemotron" : "whisper"
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        let technology = try c.decodeIfPresent(String.self, forKey: .recognitionTechnology)
+        if let technology {
+            recognitionTechnology = RecognitionTechnology(rawValue: technology) ?? .whisper
+        } else {
+            recognitionTechnology = try legacy.decodeIfPresent(String.self, forKey: .recognitionEngine) == "nemotron"
+                ? .fluidAudio : .whisper
+        }
+        fluidModel = FluidModel(rawValue: try c.decodeIfPresent(String.self, forKey: .fluidModel) ?? "") ?? .nemotron
         speechVocabulary = SpeechVocabulary.normalize(try c.decodeIfPresent([String].self, forKey: .speechVocabulary) ?? [])
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? "ru"
         microphone = try c.decodeIfPresent(String.self, forKey: .microphone) ?? ""

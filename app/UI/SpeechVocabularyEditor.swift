@@ -125,7 +125,7 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
 
     private func build() {
         let note = NSTextField(wrappingLabelWithString:
-            "Подсказки для Whisper, усиление терминов в Nemotron и подсказки AI-редактору. Одна строка — один термин или фраза, до 80 символов.")
+            "Подсказки для Whisper и Nemotron; для Parakeet и Phonon — через AI-правку. Одна строка — один термин или фраза, до 80 символов.")
         note.font = .systemFont(ofSize: 12)
         note.textColor = .secondaryLabelColor
         countLabel.font = .systemFont(ofSize: 11)

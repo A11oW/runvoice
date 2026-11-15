@@ -305,8 +305,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func snapshotSettings() {
-        func capture(to path: String) {
-            guard let view = settingsWindow?.window?.contentView,
+        func capture(to path: String, view target: NSView? = nil) {
+            guard let view = target ?? settingsWindow?.window?.contentView,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
             view.cacheDisplay(in: view.bounds, to: rep)
             let image = NSImage(size: view.bounds.size)
@@ -324,7 +324,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        let captures: [(String, String)] = [
+        var captures: [(String, String)] = [
             ("general", "/tmp/runvoice-settings.png"),
             ("models", "/tmp/runvoice-settings-models.png"),
             ("dictionary", "/tmp/runvoice-settings-dictionary.png"),
@@ -334,9 +334,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("history", "/tmp/runvoice-settings-history.png"),
             ("hotkeys", "/tmp/runvoice-settings-hotkeys.png"),
         ]
+        if CommandLine.arguments.contains("--snapshot-backup") {
+            captures.append(("backup", "/tmp/runvoice-settings-backup.png"))
+        }
         func next(_ index: Int) {
             guard index < captures.count else { NSApp.terminate(nil); return }
             let (tab, path) = captures[index]
+            if tab == "backup" {
+                guard let view = self.settingsWindow?.prepareBackupSnapshot() else { next(index + 1); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    capture(to: path, view: view)
+                    if let panel = self.settingsWindow?.window?.attachedSheet {
+                        self.settingsWindow?.window?.endSheet(panel, returnCode: .cancel)
+                        panel.orderOut(nil)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { next(index + 1) }
+                }
+                return
+            }
             self.settingsWindow?.selectTab(tab == "improve" ? "ai" : tab)
             if tab == "dictionary" { self.settingsWindow?.prepareDictionarySnapshot() }
             if tab == "improve" { self.settingsWindow?.scrollAIToImprove() }

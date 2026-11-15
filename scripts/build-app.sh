@@ -59,6 +59,7 @@ build_variant() {
     codesign --force --sign "$SIGN_ID" "$app/Contents/Resources/RunvoiceASR" >/dev/null
     mkdir -p "$app/Contents/Resources/licenses"
     cp "$BUILD/streaming/checkouts/FluidAudio/LICENSE" "$app/Contents/Resources/licenses/FluidAudio-LICENSE"
+    cp "$REPO/resources/Parakeet-NOTICE.txt" "$app/Contents/Resources/licenses/Parakeet-NOTICE.txt"
     cp "$BUILD/streaming/checkouts/FluidAudio/ThirdPartyLicenses/fastcluster-LICENSE.md" \
       "$app/Contents/Resources/licenses/fastcluster-LICENSE.md"
   fi
@@ -79,6 +80,7 @@ build_variant() {
   fi
 
   mkdir -p "$app/Contents/Resources/whisper/licenses"
+  cp "$REPO/resources/Whisper-CodeSwitch-NOTICE.txt" "$app/Contents/Resources/whisper/licenses/Whisper-CodeSwitch-NOTICE.txt"
   [ -f "$BUILD/whisper-src/LICENSE" ] && \
     cp "$BUILD/whisper-src/LICENSE" "$app/Contents/Resources/whisper/licenses/whisper.cpp-LICENSE"
 

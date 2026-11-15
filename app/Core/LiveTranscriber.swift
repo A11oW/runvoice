@@ -3,6 +3,8 @@ import Foundation
 /// Предварительное распознавание последних секунд PCM. Итоговую диктовку не меняет.
 /// Все методы и onUpdate вызываются в главном потоке; одновременно идёт один запрос.
 final class LiveTranscriber {
+    /// Локальный backend получает PCM16/16 кГц и возвращает отмену запроса.
+    typealias Recognizer = (Data, @escaping (Result<String, Error>) -> Void) -> (() -> Void)
     var onUpdate: ((String) -> Void)?
     var onNeedsServer: (() -> Void)?
     var onTiming: ((Timing) -> Void)?
@@ -23,6 +25,9 @@ final class LiveTranscriber {
     private let interval: TimeInterval
     private var timer: Timer?
     private var task: URLSessionDataTask?
+    private var localRecognizer: Recognizer?
+    private var cancelLocalRequest: (() -> Void)?
+    private var requestInFlight = false
     private var generation = UUID()
     private var modelPath = ""
     private var language = "ru"
@@ -53,8 +58,10 @@ final class LiveTranscriber {
         self.interval = interval
     }
 
-    func start(modelPath: String, language: String, vocabulary: [String] = [], inMemory: Bool = false) {
+    func start(modelPath: String, language: String, vocabulary: [String] = [], inMemory: Bool = false,
+               recognizer: Recognizer? = nil) {
         stop()
+        localRecognizer = recognizer
         self.modelPath = modelPath
         self.language = language.isEmpty ? "ru" : language
         prompt = SpeechVocabulary.prompt(vocabulary)
@@ -73,7 +80,7 @@ final class LiveTranscriber {
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        if !serverMatchesModel { ensureServer() }
+        if recognizer == nil, !serverMatchesModel { ensureServer() }
         recognize()
     }
 
@@ -83,6 +90,9 @@ final class LiveTranscriber {
         timer = nil
         task?.cancel()
         task = nil
+        cancelLocalRequest?(); cancelLocalRequest = nil
+        localRecognizer = nil
+        requestInFlight = false
         pcm.removeAll(keepingCapacity: true)
     }
 
@@ -94,6 +104,7 @@ final class LiveTranscriber {
     }
 
     private func ensureServer() {
+        guard localRecognizer == nil else { return }
         guard Date().timeIntervalSince(lastWarmup) >= 1 else { return }
         lastWarmup = Date()
         onNeedsServer?()
@@ -106,9 +117,9 @@ final class LiveTranscriber {
     }
 
     private func recognize() {
-        guard timer != nil, task == nil, ProcessInfo.processInfo.systemUptime >= retryAfter else { return }
+        guard timer != nil, !requestInFlight, ProcessInfo.processInfo.systemUptime >= retryAfter else { return }
         // Не используем сервер с другой или неизвестной моделью.
-        guard serverMatchesModel else {
+        guard localRecognizer != nil || serverMatchesModel else {
             ensureServer()
             return
         }
@@ -126,6 +137,46 @@ final class LiveTranscriber {
             // Новая тишина не повод снова декодировать старые слова: именно
             // такие окна часто порождают повторения и пунктуационные петли.
             lastByteCount = audio.byteCount
+            return
+        }
+
+        let token = generation
+        let requestStartedAt = ProcessInfo.processInfo.systemUptime
+        requestInFlight = true
+        let completed: (Result<String, Error>) -> Void = { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.generation == token, self.timer != nil else { return }
+                self.task = nil; self.cancelLocalRequest = nil; self.requestInFlight = false
+                let responseAt = ProcessInfo.processInfo.systemUptime
+                let requestMS = Int((responseAt - requestStartedAt) * 1000)
+                guard case .success(let recognized) = result else {
+                    self.retryAfter = responseAt + 1
+                    self.onTiming?(Timing(requestMS: requestMS, stabilizationMS: 0, updateGapMS: nil, outcome: .failed))
+                    guard self.generation == token, self.timer != nil else { return }
+                    self.ensureServer()
+                    return
+                }
+                self.lastByteCount = audio.byteCount
+                self.confirmOnSilence = hasNewSpeech
+                let start = audio.byteCount - UInt64(audio.wav.count - 44)
+                let text = self.stabilizer.update(recognized, windowStart: start,
+                                                 firstWordOnly: audio.byteCount < 48_000,
+                                                 settled: !hasNewSpeech)
+                let stabilizedAt = ProcessInfo.processInfo.systemUptime
+                let changed = text != nil && text != self.lastText
+                let gap = changed ? self.lastPublishedAt.map { Int((stabilizedAt - $0) * 1000) } : nil
+                if changed { self.lastText = text!; self.lastPublishedAt = stabilizedAt }
+                self.onTiming?(Timing(requestMS: requestMS,
+                                      stabilizationMS: Int((stabilizedAt - responseAt) * 1000),
+                                      updateGapMS: gap, outcome: changed ? .published : .unchanged))
+                guard self.generation == token, self.timer != nil else { return }
+                if changed, let text { self.onUpdate?(text) }
+                guard self.generation == token, self.timer != nil else { return }
+                self.recognize()
+            }
+        }
+        if let localRecognizer {
+            cancelLocalRequest = localRecognizer(Data(audio.wav.dropFirst(44)), completed)
             return
         }
 
@@ -161,43 +212,12 @@ final class LiveTranscriber {
         // остановил preview и освободил модель для итогового запроса.
         request.setValue("close", forHTTPHeaderField: "Connection")
         request.httpBody = body
-        let token = generation
-        let requestStartedAt = ProcessInfo.processInfo.systemUptime
-        let task = session.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                guard let self, self.generation == token, self.timer != nil else { return }
-                self.task = nil
-                let responseAt = ProcessInfo.processInfo.systemUptime
-                let requestMS = Int((responseAt - requestStartedAt) * 1000)
-                guard error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
-                      let data,
-                      let result = try? JSONDecoder().decode(PreviewResult.self, from: data) else {
-                    self.retryAfter = responseAt + 1
-                    self.onTiming?(Timing(requestMS: requestMS, stabilizationMS: 0, updateGapMS: nil, outcome: .failed))
-                    guard self.generation == token, self.timer != nil else { return }
-                    self.ensureServer()
-                    return
-                }
-                self.lastByteCount = audio.byteCount
-                self.confirmOnSilence = hasNewSpeech
-                let start = audio.byteCount - UInt64(audio.wav.count - 44)
-                let text = self.stabilizer.update(result.text, windowStart: start,
-                                                 firstWordOnly: audio.byteCount < 48_000,
-                                                 settled: !hasNewSpeech)
-                let stabilizedAt = ProcessInfo.processInfo.systemUptime
-                let changed = text != nil && text != self.lastText
-                let gap = changed ? self.lastPublishedAt.map { Int((stabilizedAt - $0) * 1000) } : nil
-                if changed { self.lastText = text!; self.lastPublishedAt = stabilizedAt }
-                self.onTiming?(Timing(requestMS: requestMS,
-                                      stabilizationMS: Int((stabilizedAt - responseAt) * 1000),
-                                      updateGapMS: gap, outcome: changed ? .published : .unchanged))
-                guard self.generation == token, self.timer != nil else { return }
-                if changed, let text { self.onUpdate?(text) }
-                guard self.generation == token, self.timer != nil else { return }
-                // Пока сервер считал ответ, мог накопиться следующий фрагмент.
-                // Берём самое свежее окно сразу, без ожидания тика и без очереди.
-                self.recognize()
-            }
+        let task = session.dataTask(with: request) { data, response, error in
+            if let error { completed(.failure(error)) }
+            else if (response as? HTTPURLResponse)?.statusCode == 200, let data,
+                    let result = try? JSONDecoder().decode(PreviewResult.self, from: data) {
+                completed(.success(result.text))
+            } else { completed(.failure(URLError(.badServerResponse))) }
         }
         self.task = task
         task.resume()

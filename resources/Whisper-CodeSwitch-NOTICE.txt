@@ -1,0 +1,14 @@
+Whisper Large v3 Turbo Russian Code-Switching
+
+Исходная модель: OpenAI Whisper Large v3 Turbo.
+Донастройка: coriollon.
+https://huggingface.co/coriollon/whisper-large-v3-turbo-russian-codeswitch
+
+GGML-экспорт: landco11, ревизия 7e4b22af50a2bfdc5189f65b797ffe330396c616.
+https://huggingface.co/landco11/coriollon-whisper-large-v3-turbo-russian-codeswitch-f8-f16
+
+Автор донастройки распространяет модель под Apache License 2.0.
+https://www.apache.org/licenses/LICENSE-2.0
+
+Runvoice не обучает и не изменяет веса. Модель экспериментальная, скачивается
+отдельно и применяется только по явному выбору пользователя.

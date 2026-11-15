@@ -44,7 +44,7 @@ final class DictationSession {
         }
         fluid.onFailure = { [weak self] in
             guard let self, self.isBusy else { return }
-            Log.write("streaming: fallback to Whisper (full WAV)")
+            Log.write("ASR: \(self.settings.fluidModel.rawValue) fallback to Whisper (full WAV)")
             if self.phase == "recording" { self.startWhisperPreview() }
         }
     }
@@ -53,9 +53,9 @@ final class DictationSession {
         if phase == "recording" { stop(); return }
         guard phase == "idle" else { return }
         let settings = SettingsStore.load()
-        let useFluid = settings.recognitionEngine == "nemotron" && FluidModelStore.supported
+        let useFluid = settings.recognitionTechnology == .fluidAudio && FluidModelStore.supported
         if useFluid {
-            guard FluidModelStore.supported, FluidModelStore.installed else { throw Failure.missingStreamingModel }
+            guard FluidModelStore.installed(settings.fluidModel) else { throw Failure.missingFluidModel(settings.fluidModel) }
         } else if WhisperModelStore.activeModel(settings: settings) == nil {
             throw DictationRunner.Failure.missingModel(path: settings.whisperModelPath.isEmpty ? nil : settings.whisperModelPath)
         }
@@ -69,11 +69,11 @@ final class DictationSession {
         try? FileManager.default.removeItem(at: Paths.lastResult)
         phase = "preparing"
         status("preparing")
-        if useFluid { fluid.start(language: settings.language, vocabulary: settings.speechVocabulary) }
+        if useFluid { fluid.start(model: settings.fluidModel, language: settings.language, vocabulary: settings.speechVocabulary) }
         recorder.onAudio = { [weak self] pcm in
             guard let self, self.generation == token,
                   ["preparing", "recording", "transcribing"].contains(self.phase) else { return }
-            if useFluid, self.fluid.healthy { self.fluid.append(pcm) }
+            if useFluid, self.fluid.healthy, self.settings.fluidModel == .nemotron { self.fluid.append(pcm) }
             else { self.live.append(pcm) }
             if self.phase == "recording", let levels = self.spectrum.consume(pcm) {
                 self.onSpectrum?(levels)
@@ -83,14 +83,15 @@ final class DictationSession {
             guard let self, self.generation == token, self.phase != "idle" else { return }
             self.cancel(message: error.localizedDescription, error: true)
         }
-        if !useFluid || !fluid.healthy { startWhisperPreview() }
+        if useFluid, fluid.healthy, settings.fluidModel.usesWindowedRecognition { startParakeetPreview() }
+        else if !useFluid || !fluid.healthy { startWhisperPreview() }
         recorder.start(microphone: settings.microphone, deviceUID: settings.microphoneUID, url: url) { [weak self] result in
             guard let self, self.generation == token else { return }
             switch result {
             case .success:
                 self.phase = "recording"
                 self.status("recording")
-                Log.write("capture: native PCM16/16000 started engine=\(useFluid ? "nemotron" : "whisper")")
+                Log.write("capture: native PCM16/16000 started technology=\(settings.recognitionTechnology.rawValue) model=\(useFluid ? settings.fluidModel.rawValue : "whisper")")
             case .failure(let error): self.fail(error)
             }
         }
@@ -103,6 +104,15 @@ final class DictationSession {
                    vocabulary: settings.speechVocabulary, inMemory: true)
     }
 
+    private func startParakeetPreview() {
+        guard settings.showsRecognitionPreview else { return }
+        live.start(modelPath: settings.fluidModel.rawValue, language: settings.language, inMemory: true,
+                   recognizer: { [weak self] pcm, completion in
+                       guard let self else { completion(.failure(URLError(.cancelled))); return {} }
+                       return self.fluid.preview(pcm, completion: completion)
+                   })
+    }
+
     /// Настройки интерфейса применяются после сохранения, без смены модели
     /// или языка уже начатой диктовки. Поток Nemotron нужен и для финального ASR.
     func updatePreviewSettings(_ saved: Settings) {
@@ -111,7 +121,11 @@ final class DictationSession {
         settings.previewLineCount = saved.previewLineCount
         guard phase == "recording" || phase == "preparing" else { return }
         if !settings.showsRecognitionPreview { live.stop() }
-        else if !wasVisible, settings.recognitionEngine != "nemotron" || !fluid.healthy { startWhisperPreview() }
+        else if !wasVisible {
+            if settings.recognitionTechnology == .fluidAudio, fluid.healthy {
+                if settings.fluidModel.usesWindowedRecognition { startParakeetPreview() }
+            } else { startWhisperPreview() }
+        }
     }
 
     /// Enter завершает только ту запись, для которой было перехвачено нажатие.
@@ -142,8 +156,8 @@ final class DictationSession {
             case .failure(let error): self.fail(error)
             case .success(let recording):
                 Log.write("performance: capture_stop_ms=\(Int(Date().timeIntervalSince(start) * 1000)) frames=\(recording.frames)")
-                if self.settings.recognitionEngine == "nemotron", self.fluid.healthy {
-                    self.fluid.finish { [weak self] text in
+                if self.settings.recognitionTechnology == .fluidAudio, self.fluid.healthy {
+                    self.fluid.finish(audio: recording.url) { [weak self] text in
                         guard let self, self.generation == token else { return }
                         self.process(recording.url, transcript: text, token: token)
                     }
@@ -164,6 +178,8 @@ final class DictationSession {
                     self.status("error", "Распознавание завершилось без результата")
                 }
             }
+        } catch DictationRunner.Failure.missingModel(_) {
+            fail(Failure.missingWhisperModel(isBackup: settings.recognitionTechnology == .fluidAudio))
         } catch { fail(error) }
     }
 
@@ -184,8 +200,8 @@ final class DictationSession {
     func prewarm() {
         guard !isBusy else { return }
         let saved = SettingsStore.load()
-        if saved.recognitionEngine == "nemotron", FluidModelStore.supported {
-            fluid.warmUp()
+        if saved.recognitionTechnology == .fluidAudio, FluidModelStore.supported {
+            fluid.warmUp(model: saved.fluidModel)
             return
         }
         fluid.unload()
@@ -252,7 +268,16 @@ final class DictationSession {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.status.path)
     }
     enum Failure: LocalizedError {
-        case missingStreamingModel
-        var errorDescription: String? { "Скачайте Nemotron Multilingual в «Настройки» → «Распознавание» (Apple Silicon)" }
+        case missingFluidModel(FluidModel)
+        case missingWhisperModel(isBackup: Bool)
+        var errorDescription: String? {
+            switch self {
+            case .missingFluidModel(let model): return "Скачайте \(model.title) в «Настройки» → «Распознавание» → FluidAudio"
+            case .missingWhisperModel(let isBackup):
+                return isBackup
+                    ? "Распознавание FluidAudio не удалось. Настройте резервную модель Whisper в «Распознавании»"
+                    : "Модель Whisper недоступна. Выберите её в «Распознавании»"
+            }
+        }
     }
 }

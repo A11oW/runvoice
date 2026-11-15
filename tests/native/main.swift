@@ -49,7 +49,40 @@ expect(terms == ["Cypress", "Playwright", "GitHub Actions", "Кириллица"
 expect(SpeechVocabulary.normalize((0..<100).map { "word\($0)" }).count == 64, "Ограничение размера словаря")
 expect(SpeechVocabulary.prompt(Array(repeating: String(repeating: "я", count: 79), count: 100)).utf8.count <= 800, "Лимит UTF-8")
 let legacy = try JSONDecoder().decode(Settings.self, from: Data("{}".utf8))
-expect(legacy.recognitionEngine == "whisper" && legacy.speechVocabulary.isEmpty, "Миграция не переключает движок")
+expect(WhisperModelCatalog.models.count == 17, "Каталог содержит базовые и экспериментальные RU/EN-варианты Whisper")
+expect(Set(WhisperModelCatalog.models.map(\.id)).count == WhisperModelCatalog.models.count, "Варианты Whisper не дублируются")
+expect(["tiny", "base", "small", "medium", "large-v2", "large-v3", "large-v3-turbo-q5_0", "large-v3-turbo-q8_0"].allSatisfy { id in
+    WhisperModelCatalog.models.contains { $0.id == id }
+}, "Базовые семейства и варианты качества доступны для скачивания")
+expect(WhisperModelCatalog.models.allSatisfy { $0.url.scheme == "https" && $0.sha256.count == 64 && !$0.id.contains(".en") },
+       "Каталог использует HTTPS, SHA-256 и мультиязычные модели")
+let experimentalModels = WhisperModelCatalog.models.filter(\.experimental)
+let experimentalFiles = experimentalModels.map {
+    WhisperModelFile(path: "/test/\($0.fileName)", fileName: $0.fileName, sizeBytes: $0.sizeBytes, isManaged: false)
+}
+expect(experimentalModels.count == 2 && WhisperModelStore.autoSelect(from: experimentalFiles) == nil,
+       "Экспериментальная модель не выбирается автоматически даже при отсутствии остальных")
+let ordinaryFile = WhisperModelFile(path: "/test/ggml-small.bin", fileName: "ggml-small.bin", sizeBytes: 487601967, isManaged: false)
+expect(WhisperModelStore.autoSelect(from: experimentalFiles + [ordinaryFile]) == ordinaryFile,
+       "Донастройка Turbo не вытесняет обычную модель при автовыборе")
+expect(experimentalModels.allSatisfy { model in
+    WhisperModelFile(path: "/test/\(model.url.lastPathComponent)", fileName: model.url.lastPathComponent,
+                     sizeBytes: model.sizeBytes, isManaged: false).catalogModel?.experimental == true
+}, "Экспериментальность сохраняется при импорте исходного имени GGML-экспорта")
+if ProcessInfo.processInfo.environment["RUNVOICE_TEST_DOWNLOAD_WHISPER"] == "1" {
+    let model = WhisperModelCatalog.models.first { $0.id == "tiny-q5_1" }!
+    let downloader = ModelDownloader(model: model)
+    var downloadResult: Result<URL, Error>?
+    downloader.onFinish = { downloadResult = $0 }
+    downloader.start()
+    let deadline = Date().addingTimeInterval(180)
+    while downloadResult == nil, Date() < deadline { spin() }
+    if downloadResult == nil { downloader.cancel() }
+    expect(downloadResult != nil, "Реальная загрузка Whisper завершена")
+    let url = try downloadResult!.get()
+    expect(WhisperModelStore.isWhisperModel(at: url), "Реальный квантованный Whisper скачан с успешной проверкой SHA-256")
+}
+expect(legacy.recognitionTechnology == .whisper && legacy.speechVocabulary.isEmpty, "Миграция не переключает технологию")
 expect(legacy.microphoneUID.isEmpty, "Микрофон старого формата мигрирует по имени")
 expect(legacy.previewEnabled && legacy.previewLineCount == 3, "Старые настройки получают включённый preview на 3 строки")
 expect(!legacy.stopRecordingOnEnter && !Settings().stopRecordingOnEnter, "Завершение по Enter выключено в новых и старых настройках")
@@ -64,9 +97,29 @@ let lowPreview = try JSONDecoder().decode(Settings.self, from: Data("{\"previewL
 let highPreview = try JSONDecoder().decode(Settings.self, from: Data("{\"previewLineCount\":100}".utf8))
 expect(lowPreview.previewLineCount == 1 && highPreview.previewLineCount == 10, "Число строк ограничено 1–10 при загрузке")
 let unknown = try JSONDecoder().decode(Settings.self, from: Data("{\"recognitionEngine\":\"unknown\"}".utf8))
-expect(unknown.recognitionEngine == "whisper", "Неизвестный движок использует Whisper")
+expect(unknown.recognitionTechnology == .whisper, "Неизвестный движок использует Whisper")
+let legacyNemotron = try JSONDecoder().decode(Settings.self, from: Data("{\"recognitionEngine\":\"nemotron\",\"language\":\"auto\",\"whisperModelPath\":\"/models/whisper.bin\",\"speechVocabulary\":[\"Cypress\"]}".utf8))
+expect(legacyNemotron.recognitionTechnology == .fluidAudio && legacyNemotron.fluidModel == .nemotron,
+       "Выбор Nemotron преобразуется в FluidAudio без смены модели")
+expect(legacyNemotron.language == "auto" && legacyNemotron.whisperModelPath == "/models/whisper.bin" && legacyNemotron.speechVocabulary == ["Cypress"],
+       "Миграция технологии сохраняет язык, резервную модель и словарь")
+let parakeetSettings = try JSONDecoder().decode(Settings.self, from: Data("{\"recognitionTechnology\":\"fluidaudio\",\"fluidModel\":\"parakeet-tdt-v3\"}".utf8))
+expect(parakeetSettings.recognitionTechnology == .fluidAudio && parakeetSettings.fluidModel == .parakeet, "Parakeet загружается как модель FluidAudio")
+let encodedSelection = try JSONSerialization.jsonObject(with: JSONEncoder().encode(parakeetSettings)) as! [String: Any]
+expect(encodedSelection["recognitionEngine"] == nil && encodedSelection["fluidModel"] as? String == "parakeet-tdt-v3",
+       "Сохранение разделяет технологию и модель, поле прежнего формата отсутствует")
+let invalidSelection = try JSONDecoder().decode(Settings.self, from: Data("{\"recognitionTechnology\":\"unknown\",\"fluidModel\":\"unknown\",\"recognitionEngine\":\"nemotron\"}".utf8))
+expect(invalidSelection.recognitionTechnology == .whisper && invalidSelection.fluidModel == .nemotron,
+       "Неизвестные значения безопасны; явный новый формат приоритетнее прежнего")
+let ignoredLegacy = try JSONDecoder().decode(Settings.self, from: Data("{\"recognitionTechnology\":\"fluidaudio\",\"fluidModel\":\"parakeet-tdt-v3\",\"recognitionEngine\":123}".utf8))
+expect(ignoredLegacy.fluidModel == .parakeet, "Поле прежнего формата не читается при явной новой технологии")
+var rememberedSelection = parakeetSettings
+rememberedSelection.recognitionTechnology = .whisper
+let rememberedRoundTrip = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(rememberedSelection))
+expect(rememberedRoundTrip.fluidModel == .parakeet, "Выбор Whisper не теряет модель FluidAudio")
+expect(FluidModel.parakeet.finishDeadline > FluidModel.nemotron.finishDeadline, "Полная запись Parakeet не ограничена коротким таймаутом потокового хвоста")
 var settings = legacy
-settings.recognitionEngine = "nemotron"; settings.speechVocabulary = terms
+settings.recognitionTechnology = .fluidAudio; settings.speechVocabulary = terms
 settings.microphoneUID = "stable-input-uid"
 settings.previewEnabled = false
 settings.previewLineCount = 7
@@ -162,10 +215,22 @@ for line in sys.stdin:
         emit({'event': 'partial', 'id': c['id'], 'text': 'Cypress'})
     if c['action'] == 'finish' and language != 'timeout':
         emit({'event': 'final', 'id': c['id'], 'text': 'Используй Cypress'})
+    if c['action'] == 'preview':
+        import time
+        time.sleep(0.05)
+        emit({'event': 'preview', 'id': c['id'], 'request': 'stale-request', 'text': 'OLD'})
+        emit({'event': 'preview', 'id': c['id'], 'request': c['request'], 'text': 'Parakeet preview'})
+    if c['action'] == 'transcribe':
+        assert sys.argv[3] in ['parakeet-tdt-v3', 'parakeet-ultra', 'parakeet-redux', 'phonon-2.5']
+        assert c['path'].endswith('.wav')
+        emit({'event': 'final', 'id': c['id'], 'text': 'Parakeet full recording'})
 """.write(to: helper, atomically: true, encoding: .utf8)
 try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
-let client = FluidSpeechClient(makeWorker: { ASRProcess(executable: helper, directory: directory) },
-                               isInstalled: { true }, finishDeadline: 0.4)
+var createdModels: [FluidModel] = []
+let client = FluidSpeechClient(makeWorker: { model in
+    createdModels.append(model)
+    return ASRProcess(executable: helper, directory: directory)
+}, isInstalled: { _ in true }, finishDeadline: 0.4)
 func waitUntil(_ condition: () -> Bool) {
     let deadline = Date().addingTimeInterval(3)
     while !condition(), Date() < deadline { spin() }
@@ -197,5 +262,32 @@ expect(fallbackReturned, "Падение не задерживает финал�
 client.start(language: "ru")
 expect(client.healthy, "Следующая диктовка запускает новый процесс")
 client.cancel()
+client.unload()
+client.start(model: .parakeet, language: "auto")
+var parakeetPreview: String?
+_ = client.preview(Data([1, 0])) { parakeetPreview = try? $0.get() }
+waitUntil { parakeetPreview != nil }
+expect(parakeetPreview == "Parakeet preview", "Parakeet принимает только ответ своего preview-запроса")
+var cancelledPreview = false
+let cancelPreview = client.preview(Data([1, 0])) { _ in cancelledPreview = true }
+cancelPreview()
+var parakeetFinal: String?
+client.finish(audio: directory.appendingPathComponent("full.wav")) { parakeetFinal = $0 }
+waitUntil { parakeetFinal != nil }
+expect(!cancelledPreview && parakeetFinal == "Parakeet full recording", "Отменённый preview не публикуется, финальный запрос содержит путь полного WAV")
+client.start(model: .nemotron, language: "ru")
+expect(createdModels.suffix(2) == [.parakeet, .nemotron], "Смена модели выгружает предыдущий процесс и запускает выбранный")
+for model in [FluidModel.parakeetUltra, .parakeetRedux, .phonon25] {
+    client.start(model: model, language: "auto")
+    var result: String?
+    client.finish(audio: directory.appendingPathComponent("full.wav")) { result = $0 }
+    waitUntil { result != nil }
+    expect(createdModels.last == model && result == "Parakeet full recording", "Выбранный вариант TDT использует полный WAV без потокового finish")
+    var selection = Settings()
+    selection.recognitionTechnology = .fluidAudio
+    selection.fluidModel = model
+    let decoded = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(selection))
+    expect(decoded.fluidModel == model, "Новая модель FluidAudio сохраняется без сброса выбора")
+}
 client.unload()
 print("OK: \(checks) проверок нативного аудиотракта, словаря и миграции")
