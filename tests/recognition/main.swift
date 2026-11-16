@@ -49,6 +49,27 @@ func runChecks() throws {
     expect(whisperButtons.contains { $0.identifier?.rawValue == "medium-q5_0" }, "Средняя квантованная модель доступна по кнопке")
     expect(!views().contains { ($0 as? NSButton)?.title == FluidModel.parakeet.title }, "В каталоге Whisper нет моделей FluidAudio")
     expect(labels().contains("Экспериментальная"), "Донастройки Whisper явно помечены как экспериментальные")
+    let headings = ["1. Технология распознавания", "2. Параметры распознавания",
+                    "3. Модель распознавания", "4. Предварительное распознавание"]
+    func expectSectionOrder() {
+        expect(labels().filter { headings.contains($0) } == headings,
+               "Блоки идут в порядке: технология, язык, модель, предпросмотр")
+    }
+    expectSectionOrder()
+    expect(labels().contains { $0.contains("Язык — подсказка модели") }, "Whisper объясняет язык как подсказку")
+    let language = views().compactMap { $0 as? NSPopUpButton }
+        .first { $0.accessibilityLabel() == "Язык распознавания" }!
+    let preview = views().compactMap { $0 as? RecognitionPreviewControls }.first!
+    language.selectItem(at: 0)
+    preview.options = RecognitionPreview(enabled: false, lineCount: 7)
+    controller.selectTab("dictionary")
+    let vocabulary = views().compactMap { $0 as? SpeechVocabularyEditor }.first!
+    expect(labels().contains { $0.contains("Whisper —") && $0.contains("Nemotron —")
+        && $0.contains("Parakeet и Phonon —") && $0.contains("при отключённой AI-правке")
+        && $0.contains("для всех моделей") }, "Словарь объясняет три способа применения и общий этап AI-правки")
+    vocabulary.input.string = "Cypress, shared"
+    controller.selectTab("models")
+    expect(vocabulary.input.string == "Cypress, shared", "Переход между вкладками сохраняет незавершённый ввод словаря")
     if !RecognitionTechnology.fluidAudio.isSupported {
         expect(technology.item(at: 1)?.isEnabled == false, "На Intel FluidAudio недоступен")
         controller.window?.orderOut(nil)
@@ -62,6 +83,11 @@ func runChecks() throws {
     }
     try install(.nemotron)
     selectTechnology(1)
+    expectSectionOrder()
+    expect(labels().contains { $0.contains("подсказку потоковой модели") }, "Nemotron имеет отдельное пояснение языка")
+    expect(language.indexOfSelectedItem == 0 && preview.options == RecognitionPreview(enabled: false, lineCount: 7),
+           "Смена технологии сохраняет язык и отключённый предпросмотр с выбранным числом строк")
+    expect(vocabulary.input.string == "Cypress, shared", "Смена технологии сохраняет незавершённый словарь")
     for model in FluidModel.allCases {
         expect(views().contains { ($0 as? NSButton)?.title == model.title }, "Все модели FluidAudio показаны в совместимом каталоге")
     }
@@ -113,6 +139,7 @@ func runChecks() throws {
     spin(0.2)
     expect(SettingsStore.load().whisperModelPath.isEmpty, "Готово сохраняет резерв в черновике, до основного Сохранить")
     selectTechnology(0)
+    expect(labels().contains { $0.contains("Язык — подсказка модели") }, "Возврат к Whisper восстанавливает его пояснение")
     selectTechnology(1)
     expect(button { $0.title == FluidModel.nemotron.title }.state == .on, "Выбор модели сохраняется при смене технологии")
     expect(SettingsStore.load().recognitionTechnology == .whisper, "Черновые переключения не сохраняются автоматически")
@@ -148,11 +175,26 @@ func runChecks() throws {
     selectTechnology(1)
     expect(button { $0.title == FluidModel.nemotron.title }.state == .on, "Скачивание другой модели не меняет выбор")
     expect(button { $0.title == FluidModel.parakeet.title }.isEnabled, "После успешной загрузки выбор модели становится доступен")
+    vocabulary.input.string = "Vitest"
+    for model in FluidModel.allCases {
+        try install(model)
+        button { $0.title == model.title }.performClick(nil)
+        expectSectionOrder()
+        expect(labels().contains { model == .nemotron ? $0.contains("подсказку потоковой модели")
+            : $0.contains("ограничивает алфавит") && $0.contains("English — латиница")
+                && $0.contains("снять это ограничение") }, "Пояснение языка соответствует выбранной модели \(model.rawValue)")
+        expect(language.indexOfSelectedItem == 0 && preview.options == RecognitionPreview(enabled: false, lineCount: 7),
+               "Рекомендация Авто не меняет выбранный Русский или параметры предпросмотра")
+        expect(vocabulary.input.string == "Vitest", "Смена модели не очищает черновик словаря")
+    }
+    language.selectItem(at: 2)
     button { $0.title == FluidModel.parakeet.title }.performClick(nil)
     button { $0.title == "Сохранить" }.performClick(nil)
     let saved = SettingsStore.load()
     expect(saved.recognitionTechnology == .fluidAudio && saved.fluidModel == .parakeet, "Сохранить применяет технологию и модель")
     expect(saved.language == "auto", "Перерисовка каталога сохраняет выбранный язык")
+    expect(!saved.previewEnabled && saved.previewLineCount == 7, "Сохранить записывает параметры отдельного блока предпросмотра")
+    expect(saved.speechVocabulary == ["Cypress", "shared", "Vitest"], "Сохранение включает прежние термины и незавершённый ввод")
     expect(saved.whisperModelPath == second.path, "Основное Сохранить применяет выбранный резерв, включая явный экспериментальный выбор")
     controller.window?.orderOut(nil)
 }

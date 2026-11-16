@@ -29,10 +29,10 @@
 | Вкладка | Файл |
 |---|---|
 | Основные (микрофон, автозапуск, диагностика) | [settings-general.png](settings-general.png) |
-| Распознавание: whisper.cpp → модели Whisper | [settings-models.png](settings-models.png) |
-| Распознавание: FluidAudio → Nemotron, Parakeet v3/Ultra/Redux, Phonon-2.5 | [settings-fluid.png](settings-fluid.png) |
+| Распознавание: whisper.cpp, подсказка языка и модели Whisper | [settings-models.png](settings-models.png) |
+| Распознавание: FluidAudio, подсказка выбранной модели и совместимый каталог | [settings-fluid.png](settings-fluid.png) |
 | Отдельное окно резервного Whisper для FluidAudio | [settings-backup.png](settings-backup.png) |
-| Словарь (редактируемые строки и добавление списка) | [settings-dictionary.png](settings-dictionary.png) |
+| Словарь (пояснение применения для моделей, редактируемые строки и добавление списка) | [settings-dictionary.png](settings-dictionary.png) |
 | Провайдеры (OpenCode / OpenAI / Anthropic, модели, ключи, проверка) | [settings-providers.png](settings-providers.png) |
 | Постобработка (выбор провайдеров, промпты) | [settings-ai.png](settings-ai.png) |
 | Постобработка → улучшение выделенного текста | [settings-improve.png](settings-improve.png) |

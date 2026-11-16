@@ -1,7 +1,7 @@
 import AppKit
 
 final class RecognitionPreviewControls: NSStackView, NSTextFieldDelegate {
-    private let enabledCheck = NSButton(checkboxWithTitle: "Предварительное распознавание", target: nil, action: nil)
+    private let enabledCheck = NSButton(checkboxWithTitle: "Показывать предварительный текст", target: nil, action: nil)
     private let countField = NSTextField(string: "3")
     private let countStepper = NSStepper()
     private let countLabel = NSTextField(labelWithString: "Количество строк в предварительном распознавании")

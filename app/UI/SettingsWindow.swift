@@ -1022,7 +1022,22 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         addRow(technologyRow)
         addModelsNote("Технология определяет доступные модели ниже. Распознавание выполняется локально.")
         if !recognitionValidationMessage.isEmpty { addModelsNote(recognitionValidationMessage, warning: true) }
-        addRow(sectionLabel("2. Модель распознавания"))
+
+        addRow(sectionLabel("2. Параметры распознавания"))
+        let languageRow = NSStackView(views: [sectionLabel("Язык распознавания"), languagePopup])
+        languageRow.orientation = .horizontal
+        languageRow.alignment = .centerY
+        languageRow.spacing = 16
+        addRow(languageRow)
+        if selectedTechnology == .whisper {
+            addModelsNote("Язык — подсказка модели. Для русской речи с английскими терминами сравните «Русский» и «Авто» на своём голосе.")
+        } else if selectedFluidModel == .nemotron {
+            addModelsNote("Язык задаёт подсказку потоковой модели. Для смешанной русско-английской речи начните с «Авто».")
+        } else {
+            addModelsNote("Здесь выбор языка ограничивает алфавит: «Русский» — кириллица, English — латиница. Для русского с английскими словами выберите «Авто», чтобы снять это ограничение.")
+        }
+
+        addRow(sectionLabel("3. Модель распознавания"))
         if selectedTechnology == .fluidAudio {
             for model in FluidModel.allCases { addRow(fluidModelRow(model)) }
             if !FluidModelStore.installed(selectedFluidModel) {
@@ -1034,16 +1049,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         } else {
             addWhisperModels(to: modelsStack)
         }
-        addRow(sectionLabel("3. Параметры распознавания"))
-        let languageRow = NSStackView(views: [sectionLabel("Язык распознавания"), languagePopup])
-        languageRow.orientation = .horizontal
-        languageRow.alignment = .centerY
-        languageRow.spacing = 16
-        addRow(languageRow)
-        addModelsNote(selectedTechnology == .fluidAudio && selectedFluidModel.usesWindowedRecognition
-            ? "Для русского с английскими словами выберите «Авто»: «Русский» ограничивает алфавит кириллицей."
-            : "Для смешанной речи сравните «Русский» и «Авто» на своём голосе.")
-        addRow(previewControls)
         if selectedTechnology == .fluidAudio {
             let backup = NSButton(title: "Настроить резервный Whisper…", target: self,
                                   action: #selector(openRecognitionBackup))
@@ -1051,6 +1056,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             backup.setAccessibilityLabel("Резервное распознавание Whisper")
             addRow(backup)
         }
+        addRow(sectionLabel("4. Предварительное распознавание"))
+        addRow(previewControls)
         if let backupModelsStack {
             for view in backupModelsStack.arrangedSubviews {
                 backupModelsStack.removeArrangedSubview(view)
