@@ -132,6 +132,7 @@ runvoice/
 │   └── Info.plist
 ├── bin/
 │   ├── dictate.sh          # пайплайн (используют и приложение, и CLI)
+│   ├── runvoice-vad.cpp    # голосовой фильтр Silero VAD для API
 │   ├── pastev.c            # ⌘V по коду клавиши
 │   ├── dictatehud.swift    # HUD для CLI-режима
 │   ├── pastev              # (собирается, в git не попадает)
@@ -146,6 +147,8 @@ runvoice/
 │   ├── bundle-whisper.sh   # статические whisper-бинарники в бандл
 │   ├── make-icon.sh        # генерация .icns
 │   └── genicon.swift
+├── streaming/              # SwiftPM-помощник FluidAudio
+├── tests/                  # регрессии и действующий бенчмарк моделей ASR
 ├── install.sh              # CLI-режим (skhd)
 ├── Makefile                # make app / install-app / dmg / install
 ├── docs/                   # архитектура, тест-план, бэклог и скриншоты
@@ -153,8 +156,16 @@ runvoice/
 ├── AGENTS.md                # правила работы
 ├── README.md
 ├── dist/                   # (собирается, в git не попадает)
+├── .gitattributes          # типы конфигурационных шаблонов для GitHub
 └── .gitignore
 ```
+
+Swift используется для приложения, интерфейса, помощника FluidAudio и тестов.
+Shell и Makefile отвечают за сборку, установку и конвейер диктовки; Python —
+за интеграционные проверки, сравнение моделей и подготовку обновлений.
+Небольшой помощник на C отправляет ⌘V в CLI, а C++ связывает API с Silero VAD.
+Файлы в `config/` — шаблоны конфигурации для `sed`, код на Go не требуется.
+Инструкции проверок и бенчмарка — в [тест-плане](docs/testing.md).
 
 ### Архитектура приложения
 

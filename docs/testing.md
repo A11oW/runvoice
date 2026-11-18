@@ -876,6 +876,25 @@ RUNVOICE_TEST_LANGUAGE=auto RUNVOICE_TEST_STREAM=1 make test-live-hud
 Для настоящей загрузки компактного Whisper через штатный загрузчик запустить
 `test-native` с `RUNVOICE_TEST_DOWNLOAD_WHISPER=1` и отдельным `CFFIXED_USER_HOME`.
 
+### Отдельная проверка потокового FluidAudio
+
+`tests/native/streaming.py` проверяет реальный JSON-lines протокол помощника:
+непустые частичные и финальный результаты, идентификатор сессии и отсутствие
+текста предыдущей записи после отмены. Это ручной интеграционный запуск вне
+`make test-native`; нужны собранный `RunvoiceASR`, отдельный каталог совместимой
+потоковой модели Nemotron и PCM mono s16le 16 кГц с речью. Оконные модели
+Parakeet и Phonon проверяются описанным выше сценарием `test-live-hud`.
+
+```sh
+python3 tests/native/streaming.py \
+  "$PWD/dist/Runvoice-arm64.app/Contents/Resources/RunvoiceASR" \
+  /path/to/isolated-nemotron-model /path/to/speech.pcm ru
+```
+
+Вместо `ru` можно передать `en` или `auto`; `RUNVOICE_TEST_VOCAB` задаёт термины
+через запятую. Микрофон и буфер обмена не используются. Проверка выводит текст
+и тайминги в stdout, поэтому передавать только тестовое аудио.
+
 ## Сравнение моделей ASR
 
 `tests/recognition/benchmark.py` использует встроенный whisper-server на отдельном

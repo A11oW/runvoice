@@ -34,20 +34,3 @@ final class HUDStatusIconView: NSView {
         imageView.frame = bounds
     }
 }
-
-enum HUDIconDrawing {
-    static func filledCircle(in rect: NSRect, color: NSColor, cutout: () -> Void) {
-        guard rect.width > 0, rect.height > 0, let context = NSGraphicsContext.current?.cgContext else { return }
-        context.saveGState()
-        // Просвет удаляет только часть иконки; фон бабла под ней остаётся целым.
-        context.beginTransparencyLayer(auxiliaryInfo: nil)
-        color.setFill()
-        NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
-        context.saveGState()
-        context.setBlendMode(.destinationOut)
-        cutout()
-        context.restoreGState()
-        context.endTransparencyLayer()
-        context.restoreGState()
-    }
-}
