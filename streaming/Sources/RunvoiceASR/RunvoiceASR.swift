@@ -89,6 +89,7 @@ struct RunvoiceASR {
             }
             Wire.emit(["event": "ready"])
             var activeID: String?
+            var pausedText = ""
             while let command = Command.next() {
                 guard command.action == "start" || command.id == activeID else { continue }
                 do {
@@ -96,6 +97,7 @@ struct RunvoiceASR {
                     case "start":
                         await manager.reset()
                         activeID = command.id
+                        pausedText = ""
                         let id = command.id
                         await manager.setPartialCallback { text in
                             Wire.emit(["event": "partial", "id": id, "text": text])
@@ -108,8 +110,20 @@ struct RunvoiceASR {
                     case "audio":
                         guard let samples = command.samples else { throw CocoaError(.coderReadCorrupt) }
                         _ = try await manager.process(samples: samples)
+                    case "pause":
+                        let tail = try await manager.finish()
+                        pausedText = [pausedText, tail].filter { !$0.isEmpty }.joined(separator: " ")
+                        Wire.emit(["event": "partial", "id": command.id, "text": pausedText])
+                        await manager.reset()
+                        let prefix = pausedText
+                        let id = command.id
+                        await manager.setPartialCallback { text in
+                            Wire.emit(["event": "partial", "id": id,
+                                       "text": [prefix, text].filter { !$0.isEmpty }.joined(separator: " ")])
+                        }
                     case "finish":
-                        let text = try await manager.finish()
+                        let tail = try await manager.finish()
+                        let text = [pausedText, tail].filter { !$0.isEmpty }.joined(separator: " ")
                         Wire.emit(["event": "final", "id": command.id, "text": text])
                     case "cancel": await manager.reset(); activeID = nil
                     default: break

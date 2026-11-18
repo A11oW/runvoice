@@ -163,6 +163,35 @@ expect(DictationState.recording.statusItemSymbol == StatusItemSymbol.listening, 
 expect(DictationState.transcribing.statusItemSymbol == StatusItemSymbol.processing, "Иконка финального ASR")
 expect(DictationState.fixing(message: "сырой текст").statusItemSymbol == StatusItemSymbol.processing, "Правка остаётся активным процессом")
 
+let pausedState = DictationState(raw: "paused")!
+expect(pausedState == .paused && pausedState.key == "paused", "Пауза читается из файла статуса")
+expect(pausedState.statusItemSymbol == "pause.circle.fill", "Пауза явно обозначена в строке меню")
+var pausedContent = pausedState.hud!
+pausedContent.transcript = "Используй Cypress вместо Playwright."
+expect(pausedContent.isPaused && pausedContent.showLevel && pausedContent.showStop,
+       "Пауза сохраняет строку записи, таймер и кнопку отмены")
+expect(pausedContent.text == "Пауза" && !pausedContent.showSpinner && pausedContent.autoHideAfter == nil,
+       "Пауза остаётся на экране без спиннера")
+expect(pausedContent.transcript == "Используй Cypress вместо Playwright.", "Предварительный текст доступен в паузе")
+expect(!DictationState.recording.hud!.isPaused && !DictationState.transcribing.hud!.isPaused,
+       "Пауза не переносится в активную запись или финальную обработку")
+
+var recordingClock = HUDRecordingClock()
+expect(recordingClock.elapsed(at: 100) == 0, "Новые часы пусты")
+recordingClock.resume(at: 100)
+recordingClock.resume(at: 105)
+expect(recordingClock.elapsed(at: 112.75) == 12.75, "Перерисовка не перезапускает время записи")
+recordingClock.pause(at: 112.75)
+expect(recordingClock.elapsed(at: 900) == 12.75, "Время паузы не считается записанным аудио")
+recordingClock.pause(at: 950)
+expect(recordingClock.elapsed(at: 1000) == 12.75, "Повторный статус паузы не прибавляет время")
+recordingClock.resume(at: 1000)
+expect(recordingClock.elapsed(at: 1007.25) == 20, "Продолжение складывает активные части записи")
+recordingClock.reset()
+expect(recordingClock.elapsed(at: 2000) == 0, "Завершение очищает часы следующей сессии")
+recordingClock.pause(at: 2000)
+expect(recordingClock.elapsed(at: 3000) == 0, "Пауза до запуска не создаёт время записи")
+
 // Результат показывает только метаданные итогового текста и реального получателя.
 let receiver = HUDApplication(name: "WebStorm", bundleURL: URL(fileURLWithPath: "/Applications/WebStorm.app"))
 let receipt = HUDContent.completed(text: "Раз два три, раз два три!", application: receiver)
@@ -184,6 +213,24 @@ let largeReceipt = receiptWidth("Visual Studio Code · 123 слова")
 expect(smallReceipt < largeReceipt && largeReceipt < 360, "Ширина успеха соответствует содержимому")
 expect(receiptWidth(String(repeating: "длинное имя ", count: 20), maximum: 220) == 220,
        "Длинное название ограничено шириной экрана")
+
+let instantaneousSpectrum = WaveformView(frame: NSRect(x: 0, y: 0, width: 72, height: 24))
+instantaneousSpectrum.setSpectrum(Array(repeating: 0.25, count: WaveformLevels.count))
+expect(abs(instantaneousSpectrum.activityLevel - 0.42) < 0.001, "Спектр принимает новый кадр мгновенно, без таймера сглаживания")
+var envelope = RecordingAuraEnvelope()
+envelope.advance(toward: instantaneousSpectrum.activityLevel, elapsed: 0.05)
+let earlyAura = envelope.level
+for _ in 0..<14 { envelope.advance(toward: instantaneousSpectrum.activityLevel, elapsed: 0.05) }
+let speechAura = envelope.level
+expect(speechAura > earlyAura && speechAura < 0.5, "Только аура нарастает плавно на уровне обычной речи")
+instantaneousSpectrum.setSpectrum(Array(repeating: 0, count: WaveformLevels.count))
+expect(instantaneousSpectrum.activityLevel == 0, "Эквалайзер мгновенно сбрасывает тишину")
+envelope.advance(toward: instantaneousSpectrum.activityLevel, elapsed: 0.05)
+expect(envelope.level > 0 && envelope.level < speechAura, "Аура продолжает плавный спад после мгновенного сброса спектра")
+envelope.reset()
+expect(envelope.level == 0, "Сброс останавливает остаточную ауру")
+expect(RecordingAuraEnvelope.target(for: Array(repeating: 1, count: 18)) == 0.88, "Громкий звук оставляет запас до края круга")
+expect(RecordingAuraEnvelope.target(for: Array(repeating: 0.02, count: 18)) == 0, "Фоновый уровень не усиливается")
 
 var waveform = WaveformLevels()
 var lowBands = [CGFloat](repeating: 0, count: 18); lowBands[3] = 0.8
@@ -564,6 +611,7 @@ delivery.deliver("Оставить в буфере", restoreClipboard: false) { 
 spin(0.08)
 expect(pasteboard.string(forType: .string) == "Оставить в буфере", "Выключенное восстановление учитывается")
 
+try testPausedPreview()
 print("OK: \(checks) проверок live preview, состояний и размещения HUD")
 
 // Настоящий Parakeet: отдельные файлы модели/синтетического PCM задаются явно.

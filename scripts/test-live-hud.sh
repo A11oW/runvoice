@@ -17,6 +17,7 @@ swiftc -module-cache-path "$REPO/.build/clang-module-cache" \
   "$REPO/app/UI/HUDTranscriptLayout.swift" \
   "$REPO/app/UI/HUDLayout.swift" \
   "$REPO/app/UI/WaveformView.swift" \
+  "$REPO/tests/live-hud/pause-preview.swift" \
   "$REPO/tests/live-hud/main.swift" -o "$BUILD/tests"
 "$BUILD/tests"
 python3 "$REPO/tests/live-hud/pipeline.py"

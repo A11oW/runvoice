@@ -175,6 +175,12 @@ final class FluidSpeechClient {
         }
     }
 
+    /// Дренирует текущий отрезок Nemotron; worker сохраняет текст сессии.
+    func finishPausedAudio() {
+        guard healthy, model == .nemotron else { return }
+        guard worker?.send(["action": "pause", "id": id]) == true else { fail(); return }
+    }
+
     func finish(audio: URL? = nil, completion: @escaping (String?) -> Void) {
         guard healthy else { completion(nil); return }
         discardPreview()

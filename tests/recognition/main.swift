@@ -20,12 +20,30 @@ func descendants(_ view: NSView) -> [NSView] {
 }
 
 func runChecks() throws {
+    try testAudioSample()
     var initial = Settings()
     initial.providers = []
     initial.dictationProviderID = nil
     initial.improveProviderID = nil
     initial.fluidModel = .nemotron
     initial.language = "auto"
+    SettingsStore.save(initial)
+    let isolation = SettingsWindow()
+    var commonSaves = 0, apiSaves = 0
+    isolation.onSettingsSaved = { commonSaves += 1 }
+    isolation.onAPISettingsSaved = { apiSaves += 1 }
+    isolation.show(); isolation.selectTab("api")
+    let isolationViews = descendants(isolation.window!.contentView!)
+    let filter = isolationViews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-audio-filter" }!
+    let dictionary = isolationViews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-use-vocabulary" }!
+    let threshold = isolationViews.compactMap { $0 as? NSSlider }.first { $0.identifier?.rawValue == "api-minimum-dbfs" }!
+    expect(filter.state == .on && dictionary.state == .on && threshold.doubleValue == -55, "Фильтр и словарь API включены, порог -55")
+    filter.performClick(nil); dictionary.performClick(nil); threshold.doubleValue = -40
+    expect(!threshold.isEnabled, "Выключение фильтра отключает ползунок")
+    isolationViews.compactMap { $0 as? NSButton }.first { $0.title == "Сохранить" }!.performClick(nil)
+    let apiOnlySaved = SettingsStore.load()
+    expect(commonSaves == 0 && apiSaves == 1, "API-only сохранение не вызывает обновление хоткеев, HUD и прогрева диктовки")
+    expect(!apiOnlySaved.differsOutsideAPI(from: initial) && !apiOnlySaved.apiUseVocabulary && !apiOnlySaved.apiAudioFilterEnabled && apiOnlySaved.apiMinimumSpeechDbfs == -40, "API-only сохранение сохраняет остальные поля без нормализации")
     SettingsStore.save(initial)
     let controller = SettingsWindow()
     controller.show()
@@ -36,6 +54,51 @@ func runChecks() throws {
     func button(_ predicate: (NSButton) -> Bool) -> NSButton {
         views().compactMap { $0 as? NSButton }.first(where: predicate)!
     }
+    controller.selectTab("general")
+    expect(!views().contains { $0.identifier?.rawValue == "record-audio-sample" }, "Во вкладке Основные нет записи сэмпла")
+    let version = views().compactMap { $0 as? SampleAccessLabel }.first!
+    for count in 1...3 {
+        let event = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [],
+                                      timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: controller.window!.windowNumber,
+                                      context: nil, eventNumber: count, clickCount: count, pressure: 1)!
+        version.mouseDown(with: event)
+        expect(controller.window!.attachedSheet == nil, "Первые три клика по версии не открывают скрытую модалку")
+    }
+    let fourth = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [],
+                                   timestamp: ProcessInfo.processInfo.systemUptime,
+                                   windowNumber: controller.window!.windowNumber,
+                                   context: nil, eventNumber: 4, clickCount: 4, pressure: 1)!
+    version.mouseDown(with: fourth)
+    waitFor("Четвёртый клик открывает модальное окно") { controller.window!.attachedSheet?.title == "Аудиосэмплы" }
+    let sampleSheet = controller.window!.attachedSheet!
+    version.mouseDown(with: fourth)
+    expect(controller.window!.attachedSheet === sampleSheet, "Повторное открытие не дублирует модалку")
+    let sampleButtons = descendants(sampleSheet.contentView!).compactMap { $0 as? NSButton }
+    expect(["Запись сэмпла", "Папка сэмплов", "Выбрать папку сэмпла…"].allSatisfy { title in sampleButtons.contains { $0.title == title } },
+           "Скрытая модалка содержит все три действия с сэмплами")
+    sampleButtons.first { $0.title == "Закрыть" }!.performClick(nil)
+    waitFor("Скрытая модалка закрыта") { controller.window!.attachedSheet == nil }
+    controller.selectTab("api")
+    let apiEnabled = views().compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-enabled" }!
+    let apiImprove = views().compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-improve-text" }!
+    let apiPort = views().compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "api-port" }!
+    expect(apiEnabled.state == .off && apiImprove.state == .off && apiPort.stringValue == "8790",
+           "Вкладка API содержит независимые выключенные переключатели и порт 8790")
+    root.layoutSubtreeIfNeeded()
+    expect(apiEnabled.convert(apiEnabled.bounds, to: root).intersects(root.bounds) && apiEnabled.window != nil, "Элементы API видны в области вкладки после раскладки прокрутки")
+    expect(labels().contains { $0.contains("127.0.0.1:8790/runvoice/v1/audio/transcriptions") }, "Вкладка показывает полный совместимый адрес")
+    let apiModel = views().compactMap { $0 as? NSPopUpButton }.first { $0.identifier?.rawValue == "api-recognition-model" }!
+    expect(apiModel.titleOfSelectedItem == "Как в приложении", "Модель API наследуется по умолчанию")
+    expect(!apiModel.itemTitles.contains { $0.hasPrefix("FluidAudio") }, "Нескачанные FluidAudio отсутствуют в списке API")
+    controller.selectTab("hotkeys")
+    let pauseOnSpace = button { $0.identifier?.rawValue == "pause-recording-on-space" }
+    expect(pauseOnSpace.state == .on && pauseOnSpace.title == "Пауза диктовки по пробелу",
+           "Пауза по пробелу доступна во вкладке Хоткеи и включена по умолчанию")
+    expect(labels().contains { $0.contains("на паузе Enter") }
+        && labels().contains { $0.contains("на паузе Esc") }, "Enter и Esc объясняют действие на паузе")
+    pauseOnSpace.state = .off
+    controller.selectTab("models")
     let technology = views().compactMap { $0 as? NSPopUpButton }
         .first { $0.accessibilityLabel() == "Технология распознавания" }!
     func selectTechnology(_ index: Int) {
@@ -189,22 +252,58 @@ func runChecks() throws {
     }
     language.selectItem(at: 2)
     button { $0.title == FluidModel.parakeet.title }.performClick(nil)
+    controller.selectTab("api")
+    expect(apiModel.itemTitles.contains("FluidAudio · " + FluidModel.nemotron.title), "Список API обновляется после установки моделей")
+    apiModel.selectItem(withTitle: "FluidAudio · " + FluidModel.nemotron.title)
+    application.sendAction(apiModel.action!, to: apiModel.target, from: apiModel)
+    expect(SettingsStore.load().apiRecognitionModel == .application, "Черновой выбор модели API не сохраняется автоматически")
+    controller.selectTab("models")
     button { $0.title == "Сохранить" }.performClick(nil)
     let saved = SettingsStore.load()
     expect(saved.recognitionTechnology == .fluidAudio && saved.fluidModel == .parakeet, "Сохранить применяет технологию и модель")
+    expect(saved.apiRecognitionModel == .fluidAudio(.nemotron), "Сохранение записывает независимую модель API")
     expect(saved.language == "auto", "Перерисовка каталога сохраняет выбранный язык")
     expect(!saved.previewEnabled && saved.previewLineCount == 7, "Сохранить записывает параметры отдельного блока предпросмотра")
     expect(saved.speechVocabulary == ["Cypress", "shared", "Vitest"], "Сохранение включает прежние термины и незавершённый ввод")
     expect(saved.whisperModelPath == second.path, "Основное Сохранить применяет выбранный резерв, включая явный экспериментальный выбор")
+    expect(!saved.pauseRecordingOnSpace, "Сохранение настроек записывает отключение паузы, не теряя черновик при смене вкладок")
     controller.window?.orderOut(nil)
+    let reopened = SettingsWindow()
+    reopened.show()
+    reopened.selectTab("hotkeys")
+    let loadedPause = descendants(reopened.window!.contentView!).compactMap { $0 as? NSButton }
+        .first { $0.identifier?.rawValue == "pause-recording-on-space" }!
+    expect(loadedPause.state == .off, "Повторное открытие Хоткеев восстанавливает отключённую паузу")
+    reopened.selectTab("api")
+    let restoredAPIModel = descendants(reopened.window!.contentView!).compactMap { $0 as? NSPopUpButton }
+        .first { $0.identifier?.rawValue == "api-recognition-model" }!
+    expect(restoredAPIModel.titleOfSelectedItem == "FluidAudio · " + FluidModel.nemotron.title,
+           "Повторное открытие API восстанавливает отдельную модель")
+    reopened.window?.orderOut(nil)
+    var missingSettings = saved
+    missingSettings.apiRecognitionModel = .whisper("/missing/ggml-removed-model.bin")
+    SettingsStore.save(missingSettings)
+    let missingController = SettingsWindow()
+    missingController.show(); missingController.selectTab("api")
+    let missingModel = descendants(missingController.window!.contentView!).compactMap { $0 as? NSPopUpButton }
+        .first { $0.identifier?.rawValue == "api-recognition-model" }!
+    expect(missingModel.titleOfSelectedItem?.hasPrefix("Недоступна:") == true && missingModel.selectedItem?.isEnabled == false,
+           "Удалённая модель API остаётся видимой и недоступной без подмены выбора")
+    missingController.window?.orderOut(nil)
+    SettingsStore.save(saved)
 }
 
 // Вложенный RunLoop должен обслуживать IPC, поэтому стартуем из timer,
 // а не удерживаем выполняющийся блок serial main queue.
 let startTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
     do {
-        try runChecks()
-        print("OK: \(checks) проверок последовательного выбора моделей, загрузки и сохранения")
+        try testPauseHUD()
+        if CommandLine.arguments.contains("--hud-only") {
+            print("OK: \(checks) проверок HUD без тестов настроек и распознавания")
+        } else {
+            try runChecks()
+            print("OK: \(checks) проверок последовательного выбора моделей, загрузки и сохранения")
+        }
         application.terminate(nil)
     } catch {
         FileHandle.standardError.write(Data("Recognition tests: \(error)\n".utf8))

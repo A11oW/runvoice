@@ -95,6 +95,9 @@ final class HALInput {
 
     func resume() throws { try Self.check(AudioOutputUnitStart(unit)) }
 
+    /// Остановить I/O, оставив callback/context для той же сессии.
+    func pause() throws { try Self.check(AudioOutputUnitStop(unit)) }
+
     func stop() {
         // Stop синхронизируется с I/O callback; context освобождается только после него.
         AudioOutputUnitStop(unit)

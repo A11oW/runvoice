@@ -128,8 +128,17 @@ struct Settings: Codable, Equatable {
     var hotkeyImprove = HotKeySetting.improveDefault
     var stopRecordingOnEnter = false
     var cancelRecordingOnEscape = false
+    var pauseRecordingOnSpace = true
+    var apiEnabled = false
+    var apiPort = 8790
+    var apiAudioFilterEnabled = true
+    var apiMinimumSpeechDbfs: Double = -55
+    var apiUseVocabulary = true
+    var apiImproveText = false
+    var apiRecognitionModel: APIRecognitionModel = .application
 
     enum CodingKeys: String, CodingKey {
+        case apiEnabled, apiPort, apiImproveText, apiRecognitionModel, apiAudioFilterEnabled, apiMinimumSpeechDbfs, apiUseVocabulary
         case promptFix, promptImprove, improveEnabled
         case providers, dictationProviderID, improveProviderID
         case whisperModelPath, whisperModelDirs, hiddenModelPaths
@@ -138,7 +147,7 @@ struct Settings: Codable, Equatable {
         case restoreClipboard
         case previewEnabled, previewLineCount
         case historyEnabled, historyMaxItems, historyMaxDays
-        case hotkeyToggle, hotkeyImprove, stopRecordingOnEnter, cancelRecordingOnEscape
+        case hotkeyToggle, hotkeyImprove, stopRecordingOnEnter, cancelRecordingOnEscape, pauseRecordingOnSpace
     }
 
     /// Поля старого формата — только для миграции.
@@ -159,6 +168,15 @@ struct Settings: Codable, Equatable {
 
     var improveProvider: AIProvider? {
         providers.first { $0.id == improveProviderID }
+    }
+
+    var dictationFixPrompt: String {
+        var prompt = promptFix.isEmpty ? DefaultPrompts.fix : promptFix
+        let vocabulary = SpeechVocabulary.prompt(speechVocabulary)
+        if !vocabulary.isEmpty {
+            prompt += "\nТехнические термины: \(vocabulary). Если эти названия произнесены, сохрани их написание. Не добавляй отсутствующие в речи термины."
+        }
+        return prompt
     }
 
     var recognitionPreview: RecognitionPreview {
@@ -211,6 +229,16 @@ struct Settings: Codable, Equatable {
             ?? HotKeySetting.improveDefault
         stopRecordingOnEnter = try c.decodeIfPresent(Bool.self, forKey: .stopRecordingOnEnter) ?? false
         cancelRecordingOnEscape = try c.decodeIfPresent(Bool.self, forKey: .cancelRecordingOnEscape) ?? false
+        pauseRecordingOnSpace = try c.decodeIfPresent(Bool.self, forKey: .pauseRecordingOnSpace) ?? true
+
+        apiAudioFilterEnabled = try c.decodeIfPresent(Bool.self, forKey: .apiAudioFilterEnabled) ?? true
+        let threshold = try c.decodeIfPresent(Double.self, forKey: .apiMinimumSpeechDbfs) ?? -55
+        apiMinimumSpeechDbfs = threshold.isFinite ? min(-20, max(-70, threshold)) : -55
+        apiUseVocabulary = try c.decodeIfPresent(Bool.self, forKey: .apiUseVocabulary) ?? true
+        apiEnabled = try c.decodeIfPresent(Bool.self, forKey: .apiEnabled) ?? false
+        apiPort = try c.decodeIfPresent(Int.self, forKey: .apiPort) ?? 8790
+        apiImproveText = try c.decodeIfPresent(Bool.self, forKey: .apiImproveText) ?? false
+        apiRecognitionModel = try c.decodeIfPresent(APIRecognitionModel.self, forKey: .apiRecognitionModel) ?? .application
 
         // Если профиль удалён или JSON частично повреждён — не оставляем
         // несуществующий выбор.

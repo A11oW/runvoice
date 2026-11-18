@@ -17,6 +17,8 @@ struct WaveformLevels {
 
 final class WaveformView: NSView {
     private var current = WaveformLevels()
+    /// Цель для ауры вычисляется по тому же кадру, но сглаживается только кнопкой.
+    var activityLevel: CGFloat { RecordingAuraEnvelope.target(for: current.levels) }
 
     func setSpectrum(_ levels: [CGFloat]) {
         current.update(levels)
@@ -37,7 +39,7 @@ final class WaveformView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.systemGreen.setFill()
+        NSColor(white: 1, alpha: 0.88).setFill()
         let step = bounds.width / CGFloat(WaveformLevels.count)
         let barWidth = min(2, max(1, step - 1.5))
         for (index, level) in current.levels.enumerated() {

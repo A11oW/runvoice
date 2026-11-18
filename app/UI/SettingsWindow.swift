@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Окно настроек
 
-final class SettingsWindow: NSWindowController, NSWindowDelegate {
+final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDelegate {
     private let fixText = NSTextView()
     private let improveText = NSTextView()
     private var promptTestLabel: NSTextField!
@@ -22,6 +22,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var micPopup: NSPopUpButton!
     private var micTestButton: NSButton!
     private var micTestLabel: NSTextField!
+    private var samplePanel: AudioSamplePanel?
     private var launchCheck: NSButton!
     private var launchNote: NSTextField!
     private var dictationProviderPopup: NSPopUpButton!
@@ -40,10 +41,26 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var restoreCheck: NSButton!
     private var resetButton: NSButton!
     private var versionLabel: NSTextField!
+    private let apiEnable = NSButton(checkboxWithTitle: "Включить локальный API", target: nil, action: nil)
+    private let apiFilter = NSButton(checkboxWithTitle: "Фильтровать слабый сигнал и неречевые звуки", target: nil, action: nil)
+    private let apiVocabulary = NSButton(checkboxWithTitle: "Использовать словарь", target: nil, action: nil)
+    private let apiThreshold = NSSlider(value: -55, minValue: -70, maxValue: -20, target: nil, action: nil)
+    private let apiThresholdLabel = NSTextField(labelWithString: "")
+    var onAPISettingsSaved: (() -> Void)?
+    private let apiImprove = NSButton(checkboxWithTitle: "Улучшать текст через AI", target: nil, action: nil)
+    private let apiPortField = NSTextField(string: "8790")
+    private let apiAddress = NSTextField(labelWithString: "")
+    private let apiStatus = NSTextField(wrappingLabelWithString: "")
+    private let apiModel = NSTextField(wrappingLabelWithString: "")
+    private let apiModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var selectedAPIModel: APIRecognitionModel = .application
+    private var apiModelChoices: [APIRecognitionModel.Choice] = []
+    private let apiProfile = NSTextField(wrappingLabelWithString: "")
     private var toggleHotkeyButton: NSButton!
     private var improveHotkeyButton: NSButton!
     private let stopOnEnterCheck = NSButton(checkboxWithTitle: "Останавливать распознавание по нажатию Enter", target: nil, action: nil)
     private let cancelOnEscapeCheck = NSButton(checkboxWithTitle: "Отменять диктовку по Esc", target: nil, action: nil)
+    private let pauseOnSpaceCheck = NSButton(checkboxWithTitle: "Пауза диктовки по пробелу", target: nil, action: nil)
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var modelsStack: NSStackView!
@@ -157,6 +174,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopCapture()
+        samplePanel?.dismiss()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -196,6 +214,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        if tabViewItem?.identifier as? String == "api" { refreshAPI() }
+    }
+
     /// Только демонстрационный снимок: настройки на диске не изменяются.
     func prepareDictionarySnapshot() {
         vocabularyEditor.load(["Cypress", "Playwright", "GitHub Actions"])
@@ -215,6 +237,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         guard let content = window?.contentView else { return }
 
         tabView = NSTabView()
+        tabView.delegate = self
         tabView.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(tabView)
 
@@ -253,13 +276,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         hotkeys.view = buildHotkeys()
         tabView.addTabViewItem(hotkeys)
 
+        let api = NSTabViewItem(identifier: "api")
+        api.label = "API"
+        api.view = buildAPI()
+        tabView.addTabViewItem(api)
+
         resetButton = NSButton(title: "Сбросить вкладку", target: self, action: #selector(resetDefaults))
         let logButton = NSButton(title: "Лог", target: self, action: #selector(openLog))
         let dataButton = NSButton(title: "Данные", target: self, action: #selector(openData))
         logButton.bezelStyle = .inline
         dataButton.bezelStyle = .inline
 
-        versionLabel = NSTextField(labelWithString: "")
+        let hiddenVersion = SampleAccessLabel(labelWithString: "")
+        hiddenVersion.onOpen = { [weak self] in self?.showAudioSamples() }
+        hiddenVersion.identifier = NSUserInterfaceItemIdentifier("settings-version")
+        versionLabel = hiddenVersion
         versionLabel.font = .systemFont(ofSize: 10)
         versionLabel.textColor = .secondaryLabelColor
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -383,6 +414,140 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         ])
 
         return view
+    }
+
+    private func buildAPI() -> NSView {
+        let root = NSView()
+        root.clipsToBounds = true
+        let view = FlippedView()
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+        ])
+        scroll.contentView.clipsToBounds = true
+        scroll.documentView = view
+        view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([view.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
+        let title = label("Локальный сервис распознавания", bold: true)
+        let hint = NSTextField(wrappingLabelWithString: "Работает вместе с Runvoice. Модель API можно выбрать независимо от диктовки; язык и словарь общие. Два движка требуют дополнительной памяти.")
+        hint.textColor = .secondaryLabelColor
+        apiEnable.identifier = NSUserInterfaceItemIdentifier("api-enabled")
+        apiImprove.identifier = NSUserInterfaceItemIdentifier("api-improve-text")
+        apiPortField.identifier = NSUserInterfaceItemIdentifier("api-port")
+        apiModelPopup.identifier = NSUserInterfaceItemIdentifier("api-recognition-model")
+        apiModelPopup.autoenablesItems = false
+        apiModelPopup.target = self; apiModelPopup.action = #selector(apiModelChanged)
+        let modelRow = NSStackView(views: [label("Модель распознавания"), apiModelPopup])
+        modelRow.orientation = .horizontal; modelRow.spacing = 8; modelRow.alignment = .centerY
+        apiModelPopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        apiModelPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 450).isActive = true
+        let modelHint = NSTextField(wrappingLabelWithString: "В списке только скачанные модели. Добавление и скачивание — в разделе «Распознавание».")
+        modelHint.textColor = .secondaryLabelColor
+        apiEnable.target = self; apiEnable.action = #selector(refreshAPI)
+        apiImprove.target = self; apiImprove.action = #selector(refreshAPI)
+        apiPortField.target = self; apiPortField.action = #selector(refreshAPI)
+        apiPortField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        let portRow = NSStackView(views: [label("Порт"), apiPortField])
+        portRow.orientation = .horizontal; portRow.spacing = 8; portRow.alignment = .centerY
+        let copy = NSButton(title: "Копировать адрес", target: self, action: #selector(copyAPIAddress))
+        apiAddress.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        apiAddress.isSelectable = true
+        let addressRow = NSStackView(views: [apiAddress, copy])
+        addressRow.orientation = .horizontal; addressRow.spacing = 8; addressRow.alignment = .centerY
+        let contract = NSTextField(wrappingLabelWithString: "Для ktalk-assist: способ «Свой сервис», модель runvoice-active, ключ пустой. Сервер доступен только на 127.0.0.1. Изменения применяются после сохранения.")
+        contract.textColor = .secondaryLabelColor
+        let privacy = NSTextField(wrappingLabelWithString: "AI выключен по умолчанию. При включении используется профиль и промпт правки диктовки; настройка диктовки не меняется. API не вставляет текст и не добавляет записи в историю.")
+        privacy.textColor = .secondaryLabelColor
+        apiFilter.identifier = NSUserInterfaceItemIdentifier("api-audio-filter")
+        apiVocabulary.identifier = NSUserInterfaceItemIdentifier("api-use-vocabulary")
+        apiThreshold.identifier = NSUserInterfaceItemIdentifier("api-minimum-dbfs")
+        apiThreshold.numberOfTickMarks = 51; apiThreshold.allowsTickMarkValuesOnly = true
+        apiThreshold.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        for control in [apiFilter as NSControl, apiVocabulary, apiThreshold] {
+            control.target = self; control.action = #selector(refreshAPI)
+        }
+        let thresholdRow = NSStackView(views: [label("Минимальная громкость"), apiThreshold, apiThresholdLabel])
+        thresholdRow.spacing = 8
+        let filterHint = NSTextField(wrappingLabelWithString: "Ближе к нулю — строже фильтрация. Влияет только на аудио API. Словарь API применяется к распознаванию и AI-правке; диктовка по хоткеям не меняется.")
+        filterHint.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [title, hint, apiEnable, portRow, addressRow, modelRow, modelHint, apiStatus, apiModel,
+                                        apiFilter, thresholdRow, apiVocabulary, filterHint,
+                                        apiImprove, apiProfile, privacy, contract])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        for field in [filterHint, hint, modelHint, apiStatus, apiModel, apiProfile, privacy, contract] {
+            field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16)
+        ])
+        return root
+    }
+
+    @objc private func refreshAPI() {
+        apiThreshold.isEnabled = apiFilter.state == .on
+        apiThresholdLabel.stringValue = "\(Int(apiThreshold.doubleValue.rounded())) dBFS"
+        var draft = loadedSettings
+        draft.whisperModelPath = selectedModelPath
+        draft.whisperModelDirs = modelDirs
+        draft.hiddenModelPaths = hiddenModelPaths
+        refreshAPIModels(settings: draft)
+        let port = Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        apiAddress.stringValue = LocalAPIService.validPort(port) ? LocalAPIService.endpoint(port: port) : "Укажите корректный порт"
+        apiStatus.stringValue = "Состояние: " + LocalAPIService.shared.status
+        apiStatus.textColor = LocalAPIService.shared.status.hasPrefix("Ошибка") ? .systemOrange : .secondaryLabelColor
+        let settings = SettingsStore.load()
+        let effective = settings.apiRecognitionSettings
+        apiModel.stringValue = LocalAPIService.shared.loadedModelDescription.map { "Загружено: " + $0 }
+            ?? ("Сохранено: " + effective.recognitionTechnology.title + " · " + LocalAPIService.modelName(settings))
+        let selected = providers.first { $0.id == dictationProviderID }
+        apiProfile.stringValue = selected.map { "AI: " + $0.displayTitle + " · " + $0.detail }
+            ?? "Для AI выберите профиль правки диктовки во вкладке «Постобработка»."
+        apiProfile.textColor = apiImprove.state == .on && selected == nil ? .systemOrange : .secondaryLabelColor
+    }
+
+    private func refreshAPIModels(settings: Settings) {
+        var choices = APIRecognitionModel.choices(settings: settings)
+        let unavailable = !choices.contains { $0.model == selectedAPIModel }
+        if unavailable {
+            choices.append(.init(model: selectedAPIModel, title: "Недоступна: " + selectedAPIModel.title))
+        }
+        if choices != apiModelChoices {
+            apiModelChoices = choices
+            apiModelPopup.removeAllItems()
+            for choice in choices {
+                apiModelPopup.addItem(withTitle: choice.title)
+                apiModelPopup.lastItem?.isEnabled = !(unavailable && choice.model == selectedAPIModel)
+            }
+        }
+        apiModelPopup.selectItem(at: choices.firstIndex { $0.model == selectedAPIModel } ?? 0)
+    }
+
+    @objc private func apiModelChanged() {
+        let index = apiModelPopup.indexOfSelectedItem
+        guard apiModelChoices.indices.contains(index) else { return }
+        selectedAPIModel = apiModelChoices[index].model
+        refreshAPI()
+    }
+
+    @objc private func copyAPIAddress() {
+        refreshAPI()
+        guard LocalAPIService.validPort(Int(apiPortField.stringValue) ?? 0) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(apiAddress.stringValue, forType: .string)
     }
 
     // MARK: - Providers
@@ -1764,14 +1929,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let toggleLabel = label("Диктовка")
         let improveLabel = label("Улучшение текста")
         let note = label("Для сочетаний выше нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
-        let enterHint = label("Во время записи Enter завершает диктовку и запускает обработку текста.")
+        let enterHint = NSTextField(wrappingLabelWithString: "Во время записи и на паузе Enter завершает диктовку и запускает обработку текста.")
         enterHint.font = .systemFont(ofSize: 11)
         enterHint.textColor = .secondaryLabelColor
         stopOnEnterCheck.identifier = NSUserInterfaceItemIdentifier("stop-recording-on-enter")
         cancelOnEscapeCheck.identifier = NSUserInterfaceItemIdentifier("cancel-recording-on-escape")
-        let escapeHint = label("Во время записи Esc отменяет диктовку без распознавания и вставки текста.")
+        pauseOnSpaceCheck.identifier = NSUserInterfaceItemIdentifier("pause-recording-on-space")
+        let escapeHint = NSTextField(wrappingLabelWithString: "Во время записи и на паузе Esc отменяет диктовку без распознавания и вставки текста.")
         escapeHint.font = .systemFont(ofSize: 11)
         escapeHint.textColor = .secondaryLabelColor
+        let pauseHint = NSTextField(wrappingLabelWithString: "Пробел ставит диктовку на паузу; повторное нажатие продолжает запись. Сочетания с модификаторами работают как обычно.")
+        pauseHint.font = .systemFont(ofSize: 11)
+        pauseHint.textColor = .secondaryLabelColor
 
         toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
         toggleHotkeyButton.bezelStyle = .rounded
@@ -1780,7 +1949,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let views: [NSView] = [toggleLabel, improveLabel, note,
                                toggleHotkeyButton, improveHotkeyButton, stopOnEnterCheck, enterHint,
-                               cancelOnEscapeCheck, escapeHint]
+                               cancelOnEscapeCheck, escapeHint, pauseOnSpaceCheck, pauseHint]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -1806,13 +1975,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             stopOnEnterCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             enterHint.topAnchor.constraint(equalTo: stopOnEnterCheck.bottomAnchor, constant: 6),
             enterHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            enterHint.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            enterHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             cancelOnEscapeCheck.topAnchor.constraint(equalTo: enterHint.bottomAnchor, constant: 18),
             cancelOnEscapeCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             cancelOnEscapeCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             escapeHint.topAnchor.constraint(equalTo: cancelOnEscapeCheck.bottomAnchor, constant: 6),
             escapeHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            escapeHint.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            escapeHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            pauseOnSpaceCheck.topAnchor.constraint(equalTo: escapeHint.bottomAnchor, constant: 18),
+            pauseOnSpaceCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            pauseOnSpaceCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            pauseHint.topAnchor.constraint(equalTo: pauseOnSpaceCheck.bottomAnchor, constant: 6),
+            pauseHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            pauseHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -1947,6 +2122,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     // MARK: - Диагностика
 
     private func refreshDiagnostics(force: Bool = false) {
+        refreshAPI()
         let ok = AXIsProcessTrusted()
         accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
         accessLabel.textColor = ok ? .systemGreen : .systemOrange
@@ -2042,6 +2218,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     @objc private func openData() {
         NSWorkspace.shared.open(Paths.support)
+    }
+
+    func showAudioSamples() {
+        guard let window, window.attachedSheet == nil else { return }
+        if samplePanel == nil {
+            samplePanel = AudioSamplePanel(microphone: { [weak self] in
+                (self?.micPopup.titleOfSelectedItem ?? "",
+                 self?.micPopup.selectedItem?.representedObject as? String ?? "")
+            })
+        }
+        samplePanel?.present(on: window)
+    }
+
+    func prepareSampleSnapshot(recording: Bool = false) -> NSView? {
+        showAudioSamples()
+        samplePanel?.prepareSnapshot(recording: recording)
+        return samplePanel?.window?.contentView
     }
 
     @objc private func testMicrophone() {
@@ -2313,6 +2506,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.hotkeyImprove = improveHotkey
         settings.stopRecordingOnEnter = stopOnEnterCheck.state == .on
         settings.cancelRecordingOnEscape = cancelOnEscapeCheck.state == .on
+        settings.pauseRecordingOnSpace = pauseOnSpaceCheck.state == .on
+        settings.apiEnabled = apiEnable.state == .on
+        settings.apiPort = Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        settings.apiAudioFilterEnabled = apiFilter.state == .on
+        settings.apiUseVocabulary = apiVocabulary.state == .on
+        settings.apiMinimumSpeechDbfs = apiThreshold.doubleValue.rounded()
+        settings.apiImproveText = apiImprove.state == .on
+        settings.apiRecognitionModel = selectedAPIModel
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
         settings.hiddenModelPaths = hiddenModelPaths
@@ -2368,6 +2569,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         improveText.string = settings.promptImprove.isEmpty ? DefaultPrompts.improve : settings.promptImprove
         stopOnEnterCheck.state = settings.stopRecordingOnEnter ? .on : .off
         cancelOnEscapeCheck.state = settings.cancelRecordingOnEscape ? .on : .off
+        pauseOnSpaceCheck.state = settings.pauseRecordingOnSpace ? .on : .off
+        apiEnable.state = settings.apiEnabled ? .on : .off
+        apiPortField.stringValue = String(settings.apiPort)
+        apiFilter.state = settings.apiAudioFilterEnabled ? .on : .off
+        apiVocabulary.state = settings.apiUseVocabulary ? .on : .off
+        apiThreshold.doubleValue = settings.apiMinimumSpeechDbfs
+        apiImprove.state = settings.apiImproveText ? .on : .off
+        selectedAPIModel = settings.apiRecognitionModel
         improveEnabledCheck.state = settings.improveEnabled ? .on : .off
         updateAIProviderState()
 
@@ -2410,9 +2619,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
         switch tabView.selectedTabViewItem?.identifier as? String {
+        case "api":
+            apiFilter.state = .on; apiVocabulary.state = .on; apiThreshold.doubleValue = -55
+            selectedAPIModel = .application
+            apiEnable.state = .off
+            apiImprove.state = .off
+            apiPortField.stringValue = "8790"
+            refreshAPI()
         case "hotkeys":
             stopOnEnterCheck.state = .off
             cancelOnEscapeCheck.state = .off
+            pauseOnSpaceCheck.state = .on
             toggleHotkey = HotKeySetting()
             toggleHotkeyButton.title = toggleHotkey.display
             improveHotkey = HotKeySetting.improveDefault
@@ -2469,6 +2686,26 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             return
         }
         let settings = currentSettings()
+        if !LocalAPIService.validPort(settings.apiPort) || (settings.apiImproveText && settings.dictationProvider == nil) {
+            selectTab("api")
+            apiStatus.stringValue = !LocalAPIService.validPort(settings.apiPort)
+                ? "Порт должен быть от 1 до 65535; 8798 и 8799 используются движками Runvoice."
+                : "Для AI-правки API выберите профиль правки диктовки или отключите AI."
+            apiStatus.textColor = .systemOrange
+            return
+        }
+        let apiOnly = !settings.differsOutsideAPI(from: loadedSettings)
+            && providerKeys == loadedProviderKeys
+            && (launchCheck.state == .on) == loadedLaunchAtLogin
+        if apiOnly {
+            // Сохраняем только API-поля, не нормализуя остальные настройки на диске.
+            let merged = SettingsStore.load().copyingAPI(from: settings)
+            SettingsStore.save(merged)
+            loadedSettings = settings
+            onAPISettingsSaved?()
+            allowClose = true; window?.close(); allowClose = false
+            return
+        }
         let changedTechnology = settings.recognitionTechnology != loadedSettings.recognitionTechnology
         let changedWhisper = settings.whisperModelPath != loadedSettings.whisperModelPath
         let changedFluid = settings.fluidModel != loadedSettings.fluidModel

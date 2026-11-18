@@ -11,7 +11,7 @@ BUILD="$REPO/.build"
 
 # помощник вставки для CLI должен существовать
 if [ ! -x "$REPO/bin/pastev" ]; then
-  cc -O2 -framework ApplicationServices -o "$REPO/bin/pastev" "$REPO/bin/pastev.c"
+  cc -O2 -mmacosx-version-min=15.0 -framework ApplicationServices -o "$REPO/bin/pastev" "$REPO/bin/pastev.c"
 fi
 
 mkdir -p "$DIST" "$BUILD"
@@ -64,7 +64,7 @@ build_variant() {
       "$app/Contents/Resources/licenses/fastcluster-LICENSE.md"
   fi
 
-  if ! cc -O2 -arch "$arch" -framework ApplicationServices \
+  if ! cc -O2 -arch "$arch" -mmacosx-version-min=15.0 -framework ApplicationServices \
         -o "$app/Contents/Resources/pastev" "$REPO/bin/pastev.c" 2>/dev/null; then
     cp "$REPO/bin/pastev" "$app/Contents/Resources/pastev"
   fi
@@ -72,11 +72,13 @@ build_variant() {
 
   "$REPO/scripts/bundle-whisper.sh" "$app/Contents/Resources/whisper" "$arch"
 
+  bash "$REPO/scripts/build-vad.sh" "$app/Contents/Resources/whisper/bin/runvoice-vad" "$arch"
+
   if [ -f "$VAD" ]; then
     mkdir -p "$app/Contents/Resources/whisper/models"
     cp "$VAD" "$app/Contents/Resources/whisper/models/"
   else
-    echo "    VAD-модель не найдена ($VAD) — распознавание будет без VAD"
+    echo "    VAD-модель не найдена ($VAD)" >&2; exit 1
   fi
 
   mkdir -p "$app/Contents/Resources/whisper/licenses"
@@ -84,7 +86,8 @@ build_variant() {
   [ -f "$BUILD/whisper-src/LICENSE" ] && \
     cp "$BUILD/whisper-src/LICENSE" "$app/Contents/Resources/whisper/licenses/whisper.cpp-LICENSE"
 
-  for f in "$app/Contents/Resources/whisper/bin/whisper-server" \
+  for f in "$app/Contents/Resources/whisper/bin/runvoice-vad" \
+           "$app/Contents/Resources/whisper/bin/whisper-server" \
            "$app/Contents/Resources/whisper/bin/whisper-cli" \
            "$app/Contents/Resources/pastev"; do
     codesign --force --sign "$SIGN_ID" "$f" >/dev/null 2>&1 || true

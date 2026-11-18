@@ -1,10 +1,13 @@
 import AppKit
+import QuartzCore
 
 /// Карточка в позиции, зафиксированной при запуске операции.
 final class HUDController {
     private var panel: NSPanel!
-    private var stopPanel: StopPanel!
-    private var stopButton: StopButton!
+    private var stopPanel: HUDActionPanel!
+    private var pausePanel: HUDActionPanel!
+    private var pauseButton: HUDActionButton!
+    private var stopButton: HUDActionButton!
     private var bubble: BubbleView!
     private var iconView: HUDStatusIconView!
     private var spinner: HUDSpinnerView!
@@ -15,12 +18,14 @@ final class HUDController {
     private var transcriptLabel: NSTextField!
     private var timerLabel: NSTextField!
     private var waveform: WaveformView!
+    private var pauseLabel: NSTextField!
     private var clockTimer: Timer?
-    private var startedAt: Date?
+    private var recordingClock = HUDRecordingClock()
     private var spaceObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private var currentContent: HUDContent?
     private var sessionPosition: HUDSessionPosition?
+    private var pauseOrigin = NSPoint.zero
     private var stopOrigin = NSPoint.zero
     private var measuredTranscript = ""
     private var measuredWidth: CGFloat = 0
@@ -35,10 +40,11 @@ final class HUDController {
     private var maximumHeight: CGFloat {
         previewOptions.enabled ? HUDLayout.maximumHeight(lines: previewOptions.lineCount) : HUDLayout.rowHeight
     }
-    private let stopWidth = HUDLayout.iconSize
-    private let stopHeight = HUDLayout.iconSize
+    private let stopWidth = HUDLayout.actionSize
+    private let stopHeight = HUDLayout.actionSize
 
     var onStop: (() -> Void)?
+    var onTogglePause: (() -> Void)?
 
     init() {
         setup()
@@ -46,6 +52,7 @@ final class HUDController {
 
     /// Использует мышь в момент хоткея, до подготовки микрофона и ответа ASR.
     func beginSession(mouseLocation: NSPoint) {
+        stopClock()
         reservedTranscriptLines = 0
         measuredWidth = -1
         transcriptLabel.stringValue = ""
@@ -74,10 +81,12 @@ final class HUDController {
     }
 
     func present(_ content: HUDContent) {
+        if sessionPosition == nil { beginSession(mouseLocation: NSEvent.mouseLocation) }
         configure(content)
 
         if content.showLevel {
-            if startedAt == nil { startClock() }
+            if content.isPaused { pauseClock() }
+            else { startClock() }
         } else {
             stopClock()
         }
@@ -91,9 +100,9 @@ final class HUDController {
         // на другом Space/дисплее, хотя сама считает себя видимой.
         panel.orderFrontRegardless()
         if content.showStop {
-            showStopPanel()
+            showControls()
         } else {
-            hideStopPanel()
+            hideControls()
         }
         if !wasVisible {
             Log.write("showHUD frame=\(panel.frame)")
@@ -101,14 +110,15 @@ final class HUDController {
     }
 
     func setSpectrum(_ levels: [CGFloat]) {
-        guard currentContent?.showLevel == true else { return }
+        guard currentContent?.showLevel == true, currentContent?.isPaused != true else { return }
         waveform.setSpectrum(levels)
+        pauseButton.audioLevel = waveform.activityLevel
     }
 
     func dismiss() {
         stopClock()
         setSpinnerRunning(false)
-        hideStopPanel()
+        hideControls()
         currentContent = nil
         panel?.orderOut(nil)
     }
@@ -118,19 +128,29 @@ final class HUDController {
                   content: HUDContent,
                   timer: String? = "00:07",
                   level: CGFloat = 0.65,
+                  hovering: Bool = false,
+                  pulsePhase: CGFloat = 0.35,
+                  morph: CGFloat? = nil,
                   completion: @escaping () -> Void) {
+        if sessionPosition == nil { beginSession(mouseLocation: NSEvent.mouseLocation) }
         configure(content)
 
         timerLabel.isHidden = (timer == nil)
         timerLabel.stringValue = timer ?? ""
         currentContent = content
         layout(content)
-        waveform.setSnapshotLevel(content.showLevel ? level : 0)
+        waveform.setSnapshotLevel(content.showLevel && !content.isPaused ? level : 0)
+        pauseButton.audioLevel = waveform.activityLevel
         var centers: [String: CGFloat] = [:]
         if content.showLevel {
             centers["timer"] = timerLabel.frame.midY
-            centers["spectrum"] = waveform.frame.midY
-            if content.showStop { centers["stop"] = stopOrigin.y + stopHeight / 2 }
+            if content.isPaused {
+                centers["pauseLabel"] = pauseLabel.frame.midY
+            } else { centers["spectrum"] = waveform.frame.midY }
+            if content.showStop {
+                centers["pauseButton"] = pauseOrigin.y + stopHeight / 2
+                centers["stop"] = stopOrigin.y + stopHeight / 2
+            }
         } else {
             centers[content.showSpinner ? "spinner" : "icon"] = content.showSpinner ? spinner.frame.midY : iconView.frame.midY
             centers["title"] = label.frame.midY
@@ -142,7 +162,18 @@ final class HUDController {
             "titleFont": label.font?.pointSize ?? 0,
             "preview": transcriptLabel.stringValue, "lineLimit": transcriptLabel.maximumNumberOfLines,
             "rowCenters": centers, "spectrumWidth": waveform.frame.width, "spectrumHeight": waveform.frame.height,
-            "spinnerRunning": spinner.isAnimating
+            "spinnerRunning": spinner.isAnimating,
+            "paused": content.isPaused, "timer": timerLabel.stringValue,
+            "recordingSeconds": recordingClock.elapsed(at: ProcessInfo.processInfo.systemUptime),
+            "pauseIndicatorVisible": !pauseLabel.isHidden,
+            "controlsVisible": content.showStop,
+            "pauseAction": content.isPaused ? "resume" : "pause",
+            "pauseDiameter": HUDLayout.recordingButtonDiameter,
+            "recordDiameter": HUDLayout.recordingGlyphSize,
+            "pauseGlyph": content.isPaused || hovering ? "pause" : "record",
+            "recordingPulseVisible": content.showStop && content.showLevel && !content.isPaused,
+            "pauseX": pauseOrigin.x, "stopX": stopOrigin.x, "timerX": timerLabel.frame.minX,
+            "spectrumVisible": !waveform.isHidden
         ]
         if let json = try? JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]) {
             try? json.write(to: URL(fileURLWithPath: path).deletingPathExtension().appendingPathExtension("json"))
@@ -150,15 +181,15 @@ final class HUDController {
         place()
         panel.orderFrontRegardless()
         if content.showStop {
-            showStopPanel()
+            showControls()
         } else {
-            hideStopPanel()
+            hideControls()
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             if let image = self.renderImage(of: self.panel.contentView, opaque: true) {
                 if content.showStop {
-                    self.drawStopBadge(on: image)
+                    self.drawControls(on: image, hovering: hovering, pulsePhase: pulsePhase, morph: morph)
                 }
                 if let tiff = image.tiffRepresentation,
                    let bitmap = NSBitmapImageRep(data: tiff),
@@ -166,7 +197,7 @@ final class HUDController {
                     try? png.write(to: URL(fileURLWithPath: path))
                 }
             }
-            self.hideStopPanel()
+            self.hideControls()
             completion()
         }
     }
@@ -194,11 +225,14 @@ final class HUDController {
         return image
     }
 
-    private func drawStopBadge(on image: NSImage) {
+    private func drawControls(on image: NSImage, hovering: Bool, pulsePhase: CGFloat, morph: CGFloat?) {
         image.lockFocus()
         defer { image.unlockFocus() }
-        StopButton.drawBadge(in: NSRect(origin: stopOrigin, size: NSSize(width: stopWidth, height: stopHeight)),
-                             hovering: false)
+        HUDActionButton.drawBadge(in: NSRect(origin: stopOrigin, size: NSSize(width: stopWidth, height: stopHeight)),
+                                  style: .stop, hovering: false)
+        HUDActionButton.drawBadge(in: NSRect(origin: pauseOrigin, size: NSSize(width: stopWidth, height: stopHeight)),
+                                  style: pauseButton.style, hovering: hovering, pulsePhase: pulsePhase,
+                                  audioLevel: waveform.activityLevel, morph: morph)
     }
 
     private func configure(_ content: HUDContent) {
@@ -224,8 +258,17 @@ final class HUDController {
             applicationIconView.image = application?.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
                 ?? (application == nil ? nil : NSImage(systemSymbolName: "app", accessibilityDescription: nil))
         }
-        waveform.isHidden = !content.showLevel
-        panel.setAccessibilityLabel(content.showLevel ? "Запись звука" : content.displayText)
+        if content.isPaused || currentContent?.isPaused == true {
+            waveform.reset()
+            pauseButton.audioLevel = 0
+        }
+        waveform.isHidden = !content.showLevel || content.isPaused
+        pauseLabel.isHidden = !content.showLevel || !content.isPaused
+        pauseButton.style = content.isPaused ? .paused : .recording
+        let pauseAction = content.isPaused ? "Продолжить запись" : "Приостановить запись"
+        pauseButton.toolTip = pauseAction
+        pauseButton.setAccessibilityLabel(pauseAction)
+        panel.setAccessibilityLabel(content.isPaused ? "Диктовка на паузе" : content.showLevel ? "Запись звука" : content.displayText)
     }
 
     private func setSpinnerRunning(_ running: Bool) {
@@ -238,10 +281,10 @@ final class HUDController {
     // MARK: - Часы записи
 
     private func startClock() {
-        startedAt = Date()
-        timerLabel.stringValue = "00:00"
+        recordingClock.resume(at: ProcessInfo.processInfo.systemUptime)
         timerLabel.isHidden = false
-        clockTimer?.invalidate()
+        updateClock()
+        guard clockTimer == nil else { return }
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.updateClock()
         }
@@ -249,17 +292,24 @@ final class HUDController {
         clockTimer = timer
     }
 
+    private func pauseClock() {
+        recordingClock.pause(at: ProcessInfo.processInfo.systemUptime)
+        clockTimer?.invalidate()
+        clockTimer = nil
+        timerLabel.isHidden = false
+        updateClock()
+    }
+
     private func stopClock() {
         clockTimer?.invalidate()
         clockTimer = nil
-        startedAt = nil
+        recordingClock.reset()
         timerLabel.stringValue = ""
         timerLabel.isHidden = true
     }
 
     private func updateClock() {
-        guard let startedAt else { return }
-        let seconds = Int(Date().timeIntervalSince(startedAt))
+        let seconds = Int(recordingClock.elapsed(at: ProcessInfo.processInfo.systemUptime))
         timerLabel.stringValue = String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 
@@ -307,14 +357,18 @@ final class HUDController {
                              width: max(0, width - titleX - HUDLayout.padding), height: titleHeight)
         transcriptLabel.frame = NSRect(x: HUDLayout.padding, y: 10, width: textWidth, height: transcriptHeight)
         let timerHeight = ceil(timerLabel.fittingSize.height)
-        timerLabel.frame = NSRect(x: 42, y: centerY - timerHeight / 2, width: 56, height: timerHeight)
+        timerLabel.frame = NSRect(x: HUDLayout.timerX, y: centerY - timerHeight / 2, width: 56, height: timerHeight)
         if content.showLevel {
             let spectrumWidth = min(HUDLayout.spectrumSize.width, max(12, width - 122))
             waveform.frame = NSRect(x: width - HUDLayout.padding - spectrumWidth,
                                     y: centerY - HUDLayout.spectrumSize.height / 2,
                                     width: spectrumWidth, height: HUDLayout.spectrumSize.height)
+            let pauseTitleHeight = ceil(pauseLabel.fittingSize.height)
+            pauseLabel.frame = NSRect(x: waveform.frame.minX, y: centerY - pauseTitleHeight / 2,
+                                      width: waveform.frame.width, height: pauseTitleHeight)
         }
-        stopOrigin = NSPoint(x: HUDLayout.padding, y: centerY - stopHeight / 2)
+        pauseOrigin = NSPoint(x: HUDLayout.padding, y: centerY - stopHeight / 2)
+        stopOrigin = NSPoint(x: HUDLayout.padding + stopWidth + HUDLayout.actionGap, y: pauseOrigin.y)
     }
 
     private func setup() {
@@ -338,29 +392,22 @@ final class HUDController {
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        stopPanel = StopPanel(contentRect: NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight),
-                              styleMask: [.borderless, .nonactivatingPanel],
-                              backing: .buffered, defer: false)
-        stopPanel.isFloatingPanel = true
-        stopPanel.becomesKeyOnlyIfNeeded = true
-        stopPanel.level = .statusBar
-        stopPanel.backgroundColor = .clear
-        stopPanel.isOpaque = false
-        stopPanel.hasShadow = false
-        stopPanel.ignoresMouseEvents = false
-        stopPanel.hidesOnDeactivate = false
-        stopPanel.isMovable = false
-        stopPanel.animationBehavior = .none
-        stopPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-
-        stopButton = StopButton(frame: NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight))
+        stopButton = HUDActionButton(frame: NSRect(x: 0, y: 0, width: stopWidth, height: stopHeight))
+        stopButton.style = .stop
         stopButton.target = self
         stopButton.action = #selector(stopPressed)
         stopButton.title = ""
         stopButton.isBordered = false
         stopButton.toolTip = "Остановить запись и отменить диктовку"
-        stopButton.setAccessibilityLabel("Остановить запись")
-        stopPanel.contentView = stopButton
+        stopButton.setAccessibilityLabel("Остановить запись и отменить диктовку")
+        stopPanel = makeActionPanel(button: stopButton)
+
+        pauseButton = HUDActionButton(frame: stopButton.frame)
+        pauseButton.target = self
+        pauseButton.action = #selector(pausePressed)
+        pauseButton.title = ""
+        pauseButton.isBordered = false
+        pausePanel = makeActionPanel(button: pauseButton)
 
         iconView = HUDStatusIconView(frame: NSRect(x: 0, y: 0, width: 20, height: 20))
         spinner = HUDSpinnerView(frame: NSRect(x: 0, y: 0, width: 16, height: 16))
@@ -391,6 +438,12 @@ final class HUDController {
         waveform = WaveformView(frame: .zero)
         waveform.isHidden = true
 
+        pauseLabel = NSTextField(labelWithString: "Пауза")
+        pauseLabel.isHidden = true
+        pauseLabel.font = HUDLayout.titleFont
+        pauseLabel.textColor = NSColor(white: 1, alpha: 0.64)
+        pauseLabel.alignment = .right
+
         spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
@@ -413,7 +466,26 @@ final class HUDController {
         bubble.addSubview(transcriptLabel)
         bubble.addSubview(timerLabel)
         bubble.addSubview(waveform)
+        bubble.addSubview(pauseLabel)
         panel.contentView = bubble
+    }
+
+    private func makeActionPanel(button: NSButton) -> HUDActionPanel {
+        let actionPanel = HUDActionPanel(contentRect: button.bounds,
+                                         styleMask: [.borderless, .nonactivatingPanel],
+                                         backing: .buffered, defer: false)
+        actionPanel.isFloatingPanel = true
+        actionPanel.becomesKeyOnlyIfNeeded = true
+        actionPanel.level = .statusBar
+        actionPanel.backgroundColor = .clear
+        actionPanel.isOpaque = false
+        actionPanel.hasShadow = false
+        actionPanel.hidesOnDeactivate = false
+        actionPanel.isMovable = false
+        actionPanel.animationBehavior = .none
+        actionPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        actionPanel.contentView = button
+        return actionPanel
     }
 
     private func followActiveSpace() {
@@ -421,33 +493,47 @@ final class HUDController {
         place()
         panel.orderFrontRegardless()
         if stopPanel?.isVisible == true {
-            placeStopPanel()
+            placeControls()
             stopPanel.orderFrontRegardless()
+            pausePanel.orderFrontRegardless()
         }
     }
 
-    private func showStopPanel() {
-        placeStopPanel()
+    private func showControls() {
+        placeControls()
         stopButton.isEnabled = true
+        pauseButton.isEnabled = true
         stopPanel.orderFrontRegardless()
+        pausePanel.orderFrontRegardless()
+        pauseButton.pulseEnabled = true
     }
 
-    private func hideStopPanel() {
+    private func hideControls() {
+        waveform?.reset()
+        pauseButton?.pulseEnabled = false
         stopPanel?.orderOut(nil)
+        pausePanel?.orderOut(nil)
     }
 
-    private func placeStopPanel() {
+    private func placeControls() {
         let frame = panel.frame
         let x = frame.minX + stopOrigin.x
         let y = frame.minY + stopOrigin.y
         stopPanel.setFrame(NSRect(x: x, y: y, width: stopWidth, height: stopHeight),
                            display: false)
+        pausePanel.setFrame(NSRect(x: frame.minX + pauseOrigin.x, y: frame.minY + pauseOrigin.y,
+                                   width: stopWidth, height: stopHeight), display: false)
+    }
+
+    @objc private func pausePressed() {
+        guard currentContent?.showStop == true, currentContent?.showLevel == true else { return }
+        onTogglePause?()
     }
 
     @objc private func stopPressed() {
-        guard stopButton.isEnabled else { return }
+        guard currentContent?.showStop == true, stopButton.isEnabled else { return }
         stopButton.isEnabled = false
-        hideStopPanel()
+        hideControls()
         onStop?()
     }
 
@@ -495,13 +581,35 @@ final class HUDController {
 }
 
 
-private final class StopPanel: NSPanel {
+private final class HUDActionPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
 
-private final class StopButton: NSButton {
+private final class HUDActionButton: NSButton {
+    enum Style { case recording, paused, stop }
+    var style: Style = .recording {
+        didSet { if style != oldValue { refreshAppearance() } }
+    }
+    var pulseEnabled = false {
+        didSet {
+            if !pulseEnabled { hovering = false; needsDisplay = true }
+            updatePulse()
+        }
+    }
     private var hovering = false
+    var audioLevel: CGFloat = 0 {
+        didSet {
+            if pulseEnabled && style == .recording { animateAura() }
+            else { stopAura() }
+        }
+    }
+    private var aura = RecordingAuraEnvelope()
+    private var auraTimer: Timer?
+    private var auraFrame: TimeInterval = 0
+    private var morph: CGFloat = 0
+    private var morphTimer: Timer?
+    private static let red = NSColor(srgbRed: 0.91, green: 0.26, blue: 0.24, alpha: 1)
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -518,24 +626,133 @@ private final class StopButton: NSButton {
 
     override func mouseEntered(with event: NSEvent) {
         hovering = true
-        needsDisplay = true
+        refreshAppearance()
     }
 
     override func mouseExited(with event: NSEvent) {
         hovering = false
+        refreshAppearance()
+    }
+
+    private func refreshAppearance() {
+        if style != .recording { stopAura() }
+        let target: CGFloat = style == .paused || hovering ? 1 : 0
+        morphTimer?.invalidate(); morphTimer = nil
+        guard morph != target else { needsDisplay = true; return }
+        let initial = morph
+        let started = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let progress = min(1, (ProcessInfo.processInfo.systemUptime - started) / 0.18)
+            let eased = progress * progress * (3 - 2 * progress)
+            self.morph = initial + (target - initial) * CGFloat(eased)
+            self.needsDisplay = true
+            if progress >= 1 { timer.invalidate(); self.morphTimer = nil }
+        }
+        morphTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        needsDisplay = true
+    }
+
+    private func updatePulse() {
+        // Наведение меняет только форму: аура питается тем же спектром, что и волна.
+        if !pulseEnabled {
+            morphTimer?.invalidate(); morphTimer = nil
+            morph = style == .paused ? 1 : 0
+            audioLevel = 0
+        }
+        needsDisplay = true
+    }
+
+    private func animateAura() {
+        guard auraTimer == nil else { return }
+        auraFrame = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard self.pulseEnabled, self.style == .recording else { self.stopAura(); return }
+            let now = ProcessInfo.processInfo.systemUptime
+            self.aura.advance(toward: self.audioLevel, elapsed: now - self.auraFrame)
+            self.auraFrame = now
+            self.needsDisplay = true
+            if abs(self.aura.level - self.audioLevel) < 0.001 {
+                timer.invalidate(); self.auraTimer = nil
+            }
+        }
+        auraTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopAura() {
+        auraTimer?.invalidate(); auraTimer = nil
+        aura.reset()
         needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        Self.drawBadge(in: bounds, hovering: hovering)
+        Self.drawBadge(in: bounds, style: style, hovering: hovering,
+                       audioLevel: aura.level, morph: morph,
+                       auraEnabled: pulseEnabled)
     }
 
-    static func drawBadge(in rect: NSRect, hovering: Bool) {
-        HUDIconDrawing.filledCircle(in: rect, color: NSColor(white: 1, alpha: hovering ? 1 : 0.85)) {
-            let side: CGFloat = 6
-            let square = NSRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side)
-            NSColor.white.setFill()
-            NSBezierPath(roundedRect: square, xRadius: 1, yRadius: 1).fill()
+    private static func circle(in rect: NSRect, diameter: CGFloat) -> NSRect {
+        NSRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2,
+               width: diameter, height: diameter)
+    }
+
+    static func drawBadge(in rect: NSRect, style: Style, hovering: Bool,
+                          pulsePhase: CGFloat? = nil, audioLevel: CGFloat = 0,
+                          morph: CGFloat? = nil, auraEnabled: Bool = true) {
+        if style == .stop {
+            NSColor(white: 1, alpha: hovering ? 0.8 : 1).setFill()
+            let square = circle(in: rect, diameter: 10)
+            NSBezierPath(roundedRect: square, xRadius: 1.5, yRadius: 1.5).fill()
+            return
+        }
+        NSColor(white: 0.23, alpha: 1).setFill()
+        NSBezierPath(ovalIn: circle(in: rect, diameter: HUDLayout.recordingButtonDiameter)).fill()
+        if style == .recording && auraEnabled {
+            let strength = min(1, max(0, audioLevel))
+            let diameter = HUDLayout.recordingGlyphSize + 1
+                + (HUDLayout.recordingButtonDiameter - HUDLayout.recordingGlyphSize - 1.5) * strength
+            red.withAlphaComponent(0.16 + 0.28 * strength).setFill()
+            NSBezierPath(ovalIn: circle(in: rect, diameter: diameter)).fill()
+        }
+        let progress = min(1, max(0, morph ?? (style == .paused || hovering ? 1 : 0)))
+        red.setFill()
+        // Две половины одного круга плавно сужаются в штрихи; разрыва формы нет.
+        for right in [false, true] {
+            let width: CGFloat = 4 - 2 * progress
+            let x = right ? rect.midX + progress : rect.midX - 4 + progress
+            let outer: CGFloat = 4 - 3 * progress
+            let inner = progress
+            let left = right ? inner : outer
+            let rightRadius = right ? outer : inner
+            let path = CGMutablePath()
+            let y = rect.midY - 4
+            let k: CGFloat = 0.55228475
+            path.move(to: CGPoint(x: x + left, y: y))
+            path.addLine(to: CGPoint(x: x + width - rightRadius, y: y))
+            path.addCurve(to: CGPoint(x: x + width, y: y + rightRadius),
+                          control1: CGPoint(x: x + width - rightRadius + rightRadius * k, y: y),
+                          control2: CGPoint(x: x + width, y: y + rightRadius - rightRadius * k))
+            path.addLine(to: CGPoint(x: x + width, y: y + 8 - rightRadius))
+            path.addCurve(to: CGPoint(x: x + width - rightRadius, y: y + 8),
+                          control1: CGPoint(x: x + width, y: y + 8 - rightRadius + rightRadius * k),
+                          control2: CGPoint(x: x + width - rightRadius + rightRadius * k, y: y + 8))
+            path.addLine(to: CGPoint(x: x + left, y: y + 8))
+            path.addCurve(to: CGPoint(x: x, y: y + 8 - left),
+                          control1: CGPoint(x: x + left - left * k, y: y + 8),
+                          control2: CGPoint(x: x, y: y + 8 - left + left * k))
+            path.addLine(to: CGPoint(x: x, y: y + left))
+            path.addCurve(to: CGPoint(x: x + left, y: y),
+                          control1: CGPoint(x: x, y: y + left - left * k),
+                          control2: CGPoint(x: x + left - left * k, y: y))
+            path.closeSubpath()
+            if let context = NSGraphicsContext.current?.cgContext {
+                context.addPath(path)
+                context.setFillColor(red.cgColor)
+                context.fillPath()
+            }
         }
     }
 }

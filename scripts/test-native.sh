@@ -10,7 +10,7 @@ swiftc -target "$(uname -m)-apple-macos15.0" -module-cache-path "$REPO/.build/cl
   "$REPO/app/Core/DictationKeyPolicy.swift" "$REPO/app/App/HotkeyMonitor.swift" \
   "$REPO/app/Core/AudioSpectrumAnalyzer.swift" \
   "$REPO/app/Core/Settings.swift" "$REPO/app/Core/Paths.swift" "$REPO/app/Core/Keychain.swift" \
-  "$REPO/app/Core/RecognitionModels.swift" \
+  "$REPO/app/Core/RecognitionModels.swift" "$REPO/app/Core/APIRecognitionModel.swift" \
   "$REPO/app/Core/WhisperModels.swift" "$REPO/app/Core/ModelDownloader.swift" \
   "$REPO/app/Core/Log.swift" \
   "$REPO/app/Core/FluidSpeechClient.swift" \

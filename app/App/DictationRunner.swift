@@ -1,7 +1,13 @@
 import Foundation
 
+protocol DictationPipeline {
+    func finish(audio: URL, transcript: String?, settings: Settings, completion: @escaping () -> Void) throws
+    func warmUp(settings: Settings?, completion: (() -> Void)?)
+    func stopProcessing()
+}
+
 /// Запускает bin/dictate.sh с окружением, собранным из настроек приложения.
-final class DictationRunner {
+final class DictationRunner: DictationPipeline {
     private var activePipeline: Process?
     enum Failure: Swift.Error {
         case missingScript
@@ -143,10 +149,7 @@ final class DictationRunner {
         }
 
         let vocabulary = SpeechVocabulary.prompt(settings.speechVocabulary)
-        var fixPrompt = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
-        if !vocabulary.isEmpty {
-            fixPrompt += "\nТехнические термины: \(vocabulary). Если эти названия произнесены, сохрани их написание. Не добавляй отсутствующие в речи термины."
-        }
+        let fixPrompt = settings.dictationFixPrompt
         let forwarded: [(String, String?)] = [
             ("DICTATE_PROMPT_FIX", fixPrompt),
             ("WHISPER_LANG", settings.language.isEmpty ? nil : settings.language),

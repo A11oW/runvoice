@@ -10,6 +10,7 @@ func spin() { RunLoop.main.run(until: Date().addingTimeInterval(0.1)) }
 
 testDictationKeyPolicy()
 testEscapeToCancel()
+testSpaceToPause()
 
 func tonePCM(_ frequency: Double, count: Int = AudioSpectrumAnalyzer.frameSize) -> Data {
     var data = Data()
@@ -87,6 +88,11 @@ expect(legacy.microphoneUID.isEmpty, "Микрофон старого форма
 expect(legacy.previewEnabled && legacy.previewLineCount == 3, "Старые настройки получают включённый preview на 3 строки")
 expect(!legacy.stopRecordingOnEnter && !Settings().stopRecordingOnEnter, "Завершение по Enter выключено в новых и старых настройках")
 expect(!legacy.cancelRecordingOnEscape && !Settings().cancelRecordingOnEscape, "Отмена по Esc выключена в новых и старых настройках")
+expect(legacy.pauseRecordingOnSpace && Settings().pauseRecordingOnSpace, "Пауза по пробелу включена в новых и старых настройках")
+let disabledSpace = try JSONDecoder().decode(Settings.self, from: Data("{\"pauseRecordingOnSpace\":false}".utf8))
+expect(!disabledSpace.pauseRecordingOnSpace, "Отключение паузы загружается из настроек")
+let spaceRoundTrip = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(disabledSpace))
+expect(!spaceRoundTrip.pauseRecordingOnSpace, "Отключение паузы сохраняется при повторном чтении")
 let enabledEnter = try JSONDecoder().decode(Settings.self, from: Data("{\"stopRecordingOnEnter\":true}".utf8))
 expect(enabledEnter.stopRecordingOnEnter, "Включение Enter загружается из настроек")
 let enterRoundTrip = try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(enabledEnter))

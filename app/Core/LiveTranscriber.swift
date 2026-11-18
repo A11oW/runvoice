@@ -28,6 +28,13 @@ final class LiveTranscriber {
     private var localRecognizer: Recognizer?
     private var cancelLocalRequest: (() -> Void)?
     private var requestInFlight = false
+    private var active = false
+    private(set) var isPaused = false
+    private var pausedAt: TimeInterval?
+    private var pausePreviewPending = false
+    private var pauseSnapshotLoading = false
+    private var pauseSnapshot: AudioPreview?
+    private var pauseAttempts = 0
     private var generation = UUID()
     private var modelPath = ""
     private var language = "ru"
@@ -75,29 +82,109 @@ final class LiveTranscriber {
         lastWarmup = .distantPast
         retryAfter = 0
         lastPublishedAt = nil
+        active = true
+        installTimer()
+        if recognizer == nil, !serverMatchesModel { ensureServer() }
+        recognize()
+    }
+
+    private func installTimer() {
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.recognize()
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
-        if recognizer == nil, !serverMatchesModel { ensureServer() }
+    }
+
+    /// Останавливает периодические запросы, не теряя PCM и подтверждённый текст.
+    /// Уже захваченный до остановки микрофона PCM можно дописать на паузе.
+    func pause() {
+        guard active, !isPaused else { return }
+        isPaused = true
+        pausedAt = ProcessInfo.processInfo.systemUptime
+        cancelRequest()
+    }
+
+    /// Фиксирует полный PCM до границы паузы. Заголовок открытого WAV ещё
+    /// не финализирован; читаем только его payload, с длиной на момент паузы.
+    func finishPausedAudio(audioURL: URL? = nil) {
+        guard active, isPaused, !pausePreviewPending else { return }
+        pausePreviewPending = true
+        pauseAttempts = 0
+        retryAfter = 0
+        guard let audioURL else { installTimer(); recognize(); return }
+        let token = generation
+        let byteCount = totalBytes
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size]) as? NSNumber,
+              size.uint64Value >= 44 else { failPauseSnapshot(); return }
+        let length = (size.uint64Value - 44) / 2 * 2
+        pauseSnapshotLoading = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let snapshot: Data? = try? {
+                let file = try FileHandle(forReadingFrom: audioURL)
+                defer { try? file.close() }
+                try file.seek(toOffset: 44)
+                guard let pcm = try file.read(upToCount: Int(length)), pcm.count == Int(length) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return pcm
+            }()
+            DispatchQueue.main.async {
+                guard let self, self.generation == token else { return }
+                self.pauseSnapshotLoading = false
+                guard self.isPaused, self.pausePreviewPending else { self.recognize(); return }
+                guard let snapshot else { self.failPauseSnapshot(); return }
+                self.pauseSnapshot = AudioPreview(byteCount: byteCount, wav: Self.wav(pcm: snapshot),
+                                                  isFullRecording: true)
+                self.installTimer()
+                self.recognize()
+            }
+        }
+    }
+
+    private func failPauseSnapshot() {
+        onTiming?(Timing(requestMS: 0, stabilizationMS: 0, updateGapMS: nil, outcome: .failed))
+        finishPausePreview()
+    }
+
+    func resume() {
+        guard active, isPaused else { return }
+        if let pausedAt, let lastPublishedAt {
+            self.lastPublishedAt = lastPublishedAt + ProcessInfo.processInfo.systemUptime - pausedAt
+        }
+        pausedAt = nil
+        isPaused = false
+        pausePreviewPending = false
+        pauseSnapshot = nil
+        timer?.invalidate()
+        installTimer()
         recognize()
     }
 
-    func stop() {
+    private func cancelRequest() {
         generation = UUID()
         timer?.invalidate()
         timer = nil
         task?.cancel()
         task = nil
         cancelLocalRequest?(); cancelLocalRequest = nil
-        localRecognizer = nil
         requestInFlight = false
+    }
+
+    func stop() {
+        active = false
+        isPaused = false
+        pausedAt = nil
+        pausePreviewPending = false
+        pauseSnapshotLoading = false
+        pauseSnapshot = nil
+        cancelRequest()
+        localRecognizer = nil
         pcm.removeAll(keepingCapacity: true)
     }
 
     func append(_ data: Data) {
-        guard usesMemory, timer != nil else { return }
+        guard usesMemory, active else { return }
         pcm.append(data)
         totalBytes += UInt64(data.count)
         if pcm.count > 192_000 { pcm.removeFirst(pcm.count - 192_000) }
@@ -117,23 +204,33 @@ final class LiveTranscriber {
     }
 
     private func recognize() {
-        guard timer != nil, !requestInFlight, ProcessInfo.processInfo.systemUptime >= retryAfter else { return }
+        guard timer != nil, !pauseSnapshotLoading, !requestInFlight, ProcessInfo.processInfo.systemUptime >= retryAfter else { return }
         // Не используем сервер с другой или неизвестной моделью.
         guard localRecognizer != nil || serverMatchesModel else {
             ensureServer()
             return
         }
+        let settling = isPaused && pausePreviewPending
         let preview: AudioPreview?
-        if usesMemory {
-            preview = totalBytes >= max(25_600, lastByteCount + 19_200)
+        if settling, let pauseSnapshot {
+            preview = pauseSnapshot
+        } else if usesMemory {
+            preview = (settling ? totalBytes > 0 : totalBytes >= max(25_600, lastByteCount + 19_200))
                 ? AudioPreview(byteCount: totalBytes, wav: Self.wav(pcm: pcm)) : nil
         } else {
-            preview = Self.readPreview(from: directory.appendingPathComponent("rec.pcm"), afterByteCount: lastByteCount)
+            preview = Self.readPreview(from: directory.appendingPathComponent("rec.pcm"), afterByteCount: lastByteCount, force: settling)
         }
-        guard let audio = preview else { return }
+        guard let audio = preview else {
+            if settling { finishPausePreview() }
+            return
+        }
+        if settling && !Self.containsSpeech(Data(audio.wav.dropFirst(44))) {
+            finishPausePreview()
+            return
+        }
         let newBytes = min(audio.wav.count - 44, Int(audio.byteCount - lastByteCount))
         let hasNewSpeech = Self.containsSpeech(audio.wav.suffix(newBytes))
-        if !hasNewSpeech && !confirmOnSilence {
+        if !hasNewSpeech && !confirmOnSilence && !settling {
             // Новая тишина не повод снова декодировать старые слова: именно
             // такие окна часто порождают повторения и пунктуационные петли.
             lastByteCount = audio.byteCount
@@ -143,6 +240,7 @@ final class LiveTranscriber {
         let token = generation
         let requestStartedAt = ProcessInfo.processInfo.systemUptime
         requestInFlight = true
+        if settling { pauseAttempts += 1 }
         let completed: (Result<String, Error>) -> Void = { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, self.generation == token, self.timer != nil else { return }
@@ -153,15 +251,21 @@ final class LiveTranscriber {
                     self.retryAfter = responseAt + 1
                     self.onTiming?(Timing(requestMS: requestMS, stabilizationMS: 0, updateGapMS: nil, outcome: .failed))
                     guard self.generation == token, self.timer != nil else { return }
+                    if settling && self.pauseAttempts >= 3 { self.finishPausePreview(); return }
                     self.ensureServer()
                     return
                 }
                 self.lastByteCount = audio.byteCount
-                self.confirmOnSilence = hasNewSpeech
-                let start = audio.byteCount - UInt64(audio.wav.count - 44)
-                let text = self.stabilizer.update(recognized, windowStart: start,
-                                                 firstWordOnly: audio.byteCount < 48_000,
-                                                 settled: !hasNewSpeech)
+                self.confirmOnSilence = !settling && hasNewSpeech
+                let text: String?
+                if settling && audio.isFullRecording {
+                    text = self.stabilizer.settleRecording(recognized)
+                } else {
+                    let start = audio.byteCount - UInt64(audio.wav.count - 44)
+                    text = self.stabilizer.update(recognized, windowStart: start,
+                                                 firstWordOnly: !settling && audio.byteCount < 48_000,
+                                                 settled: settling || !hasNewSpeech)
+                }
                 let stabilizedAt = ProcessInfo.processInfo.systemUptime
                 let changed = text != nil && text != self.lastText
                 let gap = changed ? self.lastPublishedAt.map { Int((stabilizedAt - $0) * 1000) } : nil
@@ -172,6 +276,7 @@ final class LiveTranscriber {
                 guard self.generation == token, self.timer != nil else { return }
                 if changed, let text { self.onUpdate?(text) }
                 guard self.generation == token, self.timer != nil else { return }
+                if settling { self.finishPausePreview() }
                 self.recognize()
             }
         }
@@ -191,15 +296,19 @@ final class LiveTranscriber {
         field("temperature", "0")
         field("temperature_inc", "0")
         field("no_timestamps", "true")
-        field("beam_size", "1")
-        field("best_of", "1")
+        field("beam_size", settling ? "5" : "1")
+        field("best_of", settling ? "5" : "1")
         // 512 кадров энкодера покрывают 10.24 с, с запасом для 6-секундного preview.
         // Полное распознавание после остановки сохраняет исходный аудиоконтекст.
-        field("audio_ctx", "512")
+        field("audio_ctx", settling ? "0" : "512")
         field("suppress_nst", "true")
         if !prompt.isEmpty { field("prompt", prompt) }
         body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"preview.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8))
-        body.append(audio.wav)
+        // Завершающая тишина существует только в запросе ASR: она помогает
+        // декодеру закрыть последнее слово, но не меняет WAV и активное время.
+        let inferenceAudio = settling
+            ? Self.wav(pcm: Data(audio.wav.dropFirst(44)) + Data(count: 16_000)) : audio.wav
+        body.append(inferenceAudio)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
 
         var request = URLRequest(url: serverURL.appendingPathComponent("inference"))
@@ -223,6 +332,15 @@ final class LiveTranscriber {
         task.resume()
     }
 
+    private func finishPausePreview() {
+        pausePreviewPending = false
+        pauseSnapshot = nil
+        if isPaused {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+
     private struct PreviewResult: Decodable { let text: String }
 
     /// Простой energy gate только для preview, не заменяет VAD итогового ASR.
@@ -244,15 +362,16 @@ final class LiveTranscriber {
     struct AudioPreview {
         let byteCount: UInt64
         let wav: Data
+        var isFullRecording = false
     }
 
     /// Первые 0.8 с и затем каждые 0.6 с нового звука. Окно ограничено 6 секундами.
-    static func readPreview(from url: URL, afterByteCount: UInt64 = 0) -> AudioPreview? {
+    static func readPreview(from url: URL, afterByteCount: UInt64 = 0, force: Bool = false) -> AudioPreview? {
         guard let file = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? file.close() }
         guard let length = try? file.seekToEnd() else { return nil }
         let end = length - length % 2 // PCM16: только целые отсчёты.
-        guard end >= max(25_600, afterByteCount + 19_200) else { return nil }
+        guard force ? end > 0 : end >= max(25_600, afterByteCount + 19_200) else { return nil }
         let count = min(end, 6 * 32_000)
         do {
             try file.seek(toOffset: end - count)
