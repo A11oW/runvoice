@@ -55,6 +55,8 @@ func runChecks() throws {
         views().compactMap { $0 as? NSButton }.first(where: predicate)!
     }
     controller.selectTab("general")
+    expect(views().contains { $0.identifier?.rawValue == "check-updates" }, "В Основных доступна ручная проверка обновлений")
+    expect(labels().contains { $0.contains("Проверка при запуске и раз в сутки") }, "Основные показывают состояние механизма обновлений без сетевого запуска в тестах")
     expect(!views().contains { $0.identifier?.rawValue == "record-audio-sample" }, "Во вкладке Основные нет записи сэмпла")
     let version = views().compactMap { $0 as? SampleAccessLabel }.first!
     for count in 1...3 {

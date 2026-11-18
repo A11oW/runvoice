@@ -8,6 +8,9 @@ import CoreGraphics
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    private var updateItem: NSMenuItem?
+    private var updateBadge: UpdateBadgeView?
+    private var updateObserver: NSObjectProtocol?
     private var hud: HUDController!
     private var timer: Timer?
     private let hotkeys = HotkeyMonitor()
@@ -122,8 +125,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         LocalAPIService.shared.configure(saved)
         dictation.prewarm()
+        UpdateCoordinator.shared.isBusy = { [weak self] in
+            guard let self else { return true }
+            return self.dictation.isBusy || self.isImproving || MicTester.isBusy
+                || self.settingsWindow?.hasActiveOperations == true || LocalAPIService.shared.hasPendingWork
+        }
+        updateObserver = NotificationCenter.default.addObserver(forName: UpdateCoordinator.didChange, object: nil, queue: .main) { [weak self] _ in self?.refreshUpdateIndicator() }
+        UpdateCoordinator.shared.start(backend: SparkleUpdateBackend())
+        refreshUpdateIndicator()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                UpdateCoordinator.shared.tick()
                 self?.dictation.wake()
                 LocalAPIService.shared.stop()
                 LocalAPIService.shared.configure(SettingsStore.load())
@@ -142,7 +154,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud.setPreviewOptions(RecognitionPreview(enabled: !arguments.contains("--snapshot-preview-off"), lineCount: count))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
-            if arguments.contains("--snapshot-hint") {
+            if arguments.contains("--snapshot-update-indicators") {
+                self.snapshotUpdateIndicators()
+                NSApp.terminate(nil)
+            } else if arguments.contains("--snapshot-hint") {
                 self.showStartupHint(shortcut: SettingsStore.load().hotkeyToggle.display)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     self.statusHint.snapshot(to: "/tmp/runvoice-startup-hint.png")
@@ -184,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         improveItem = add(menu, "Улучшить текст", #selector(improveSelection))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
+        updateItem = add(menu, "Проверить обновления…", #selector(checkUpdates))
         menu.addItem(.separator())
         add(menu, "Открыть лог", #selector(openLog))
         add(menu, "Открыть папку данных", #selector(openData))
@@ -192,7 +208,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
     }
 
-    func menuWillOpen(_ menu: NSMenu) { hideStartupHint() }
+    @objc private func checkUpdates() { UpdateCoordinator.shared.check() }
+
+    private func snapshotUpdateIndicators() {
+        guard let button = statusItem.button else { return }
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+            button.appearance = NSAppearance(named: appearance)
+            for (state, symbol) in [("idle", "waveform"), ("recording", "mic"), ("paused", "pause.fill"), ("processing", "ellipsis")] {
+                setIcon(symbol)
+                updateBadge?.isHidden = false
+                button.layoutSubtreeIfNeeded()
+                guard let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) else { continue }
+                button.cacheDisplay(in: button.bounds, to: bitmap)
+                if let png = bitmap.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: "/tmp/runvoice-update-\(theme)-\(state).png"))
+                }
+            }
+        }
+    }
+
+    private func refreshUpdateIndicator() {
+        guard let button = statusItem?.button else { return }
+        let version = UpdateCoordinator.shared.availableVersion
+        updateItem?.title = version.map { "Доступно обновление \($0)…" } ?? "Проверить обновления…"
+        if updateBadge == nil {
+            let badge = UpdateBadgeView(frame: .zero)
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.widthAnchor.constraint(equalToConstant: 7), badge.heightAnchor.constraint(equalToConstant: 7),
+                badge.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -1),
+                badge.topAnchor.constraint(equalTo: button.topAnchor, constant: 1)
+            ])
+            updateBadge = badge
+        }
+        updateBadge?.isHidden = version == nil
+        button.setAccessibilityLabel(version.map { "Runvoice: доступна версия \($0)" } ?? "Runvoice")
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { hideStartupHint(); refreshUpdateIndicator() }
 
     private func showStartupHint(shortcut: String) {
         startupHintPending = false
@@ -420,6 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Запуск пайплайна
 
     private func run(mouseLocation: NSPoint? = nil) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
         hideStartupHint()
         guard !["transcribing", "fixing"].contains(lastStateKey) else { return }
         if isImproving {
@@ -457,6 +512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func performImproveSelection(mouseLocation: NSPoint) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
         hideStartupHint()
         guard !isImproving else { return }
 
@@ -702,6 +758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Runvoice")
         image?.isTemplate = true
         statusItem.button?.image = image
+        refreshUpdateIndicator()
         Log.write("icon=\(name)")
     }
 
@@ -709,6 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         LocalAPIService.shared.stop()
         dictation.shutdown()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let updateObserver { NotificationCenter.default.removeObserver(updateObserver) }
     }
 
     // MARK: - Разрешения

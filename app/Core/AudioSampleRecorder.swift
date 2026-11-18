@@ -77,13 +77,13 @@ final class AudioSampleRecorder {
     }
 
     func start(project: URL, microphone: String, deviceUID: String) {
-        guard state == .idle else { return }
+        guard state == .idle, !UpdateCoordinator.shared.isInstalling else { return }
         do { start(directory: try Self.prepareDirectory(in: project), microphone: microphone, deviceUID: deviceUID) }
         catch { message = error.localizedDescription; onChange?() }
     }
 
     func start(directory selected: URL, microphone: String, deviceUID: String) {
-        guard state == .idle else { return }
+        guard state == .idle, !UpdateCoordinator.shared.isInstalling else { return }
         let status = (try? String(contentsOf: Paths.status, encoding: .utf8)).flatMap(DictationState.init(raw:))
         guard !["preparing", "recording", "paused", "transcribing", "fixing"].contains(status?.key ?? "") else {
             message = "Сначала завершите диктовку."; onChange?(); return

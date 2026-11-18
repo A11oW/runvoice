@@ -25,6 +25,7 @@ final class LocalAPIService {
     private var config = Settings()
     private var queue: [Job] = []
     private var active: Job?
+    var hasPendingWork: Bool { active != nil || !queue.isEmpty || warming }
     private var warming = false
     private var generation = UUID()
     private var readyProfile: String?
@@ -173,6 +174,7 @@ final class LocalAPIService {
     }
 
     private func receive(id: UUID, request: LocalAPIRequest, completion: @escaping (Int, [String: Any]) -> Void) {
+        guard !UpdateCoordinator.shared.isInstalling else { completion(503, ["error": ["message": "Runvoice устанавливает обновление"]]); return }
         guard listening else { completion(503, ["error": ["message": "Локальный API не запущен"]]); return }
         if request.path == LocalAPIWire.healthPath {
             guard request.method == "GET" else { completion(405, ["error": ["message": "Требуется GET"]]); return }

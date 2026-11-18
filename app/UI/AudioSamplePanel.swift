@@ -11,6 +11,7 @@ final class SampleAccessLabel: NSTextField {
 }
 
 final class AudioSamplePanel: NSWindowController, NSWindowDelegate {
+    var isBusy: Bool { recorder.state != .idle }
     private let recorder: AudioSampleRecorder
     private let microphone: () -> (String, String)
     private let recordButton = NSButton(title: "Запись сэмпла", target: nil, action: nil)

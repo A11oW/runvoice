@@ -1,0 +1,113 @@
+name: Release Runvoice
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Существующий тег v<версия>, совпадающий с Info.plist'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      WHISPER_VAD_MODEL: ${{ github.workspace }}/.build/vad/ggml-silero-v5.1.2.bin
+    steps:
+      - name: Validate tag
+        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]'
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - name: Select Swift toolchain
+        run: |
+          python3 - <<'PY'
+          import glob,os,re
+          paths=[p for p in glob.glob('/Applications/Xcode_*.app') if 'beta' not in p.lower()]
+          paths.sort(key=lambda p:tuple(map(int,re.findall(r'\d+',p))),reverse=True)
+          if not paths:raise SystemExit('Не найден Xcode')
+          with open(os.environ['GITHUB_ENV'],'a') as f:f.write('DEVELOPER_DIR='+paths[0]+'/Contents/Developer\n')
+          PY
+      - name: Validate metadata and release notes
+        run: |
+          python3 - <<'PY'
+          import os,plistlib
+          d=plistlib.load(open('app/Info.plist','rb'))
+          assert 'v'+d['CFBundleShortVersionString']==os.environ['RELEASE_TAG'], 'Тег не совпадает с Info.plist'
+          assert d['CFBundleVersion']==d['CFBundleShortVersionString'], 'Номера сборки и выпуска должны совпадать'
+          PY
+          mkdir -p .build
+          python3 scripts/release-notes.py > .build/release-notes.txt
+          swift --version
+      - name: Build and verify both architectures
+        run: |
+          bash scripts/fetch-vad.sh
+          make dmg
+          codesign --verify --deep --strict dist/Runvoice-arm64.app
+          codesign --verify --deep --strict dist/Runvoice-intel.app
+          for image in dist/*.dmg; do hdiutil verify "$image"; done
+          cd dist
+          for checksum in *.dmg.sha256; do shasum -a 256 -c "$checksum"; done
+      - name: Regression tests
+        run: |
+          for script in bin/dictate.sh scripts/*.sh; do bash -n "$script"; done
+          make test-native test-live-hud test-pause test-api test-updates
+          arch -x86_64 /bin/bash scripts/test-api.sh
+      - name: Preserve bundle signatures and symlinks
+        run: tar -cf .build/release-bundles.tar -C dist Runvoice-arm64.app Runvoice-intel.app
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-build
+          path: |
+            .build/release-bundles.tar
+            dist/*.dmg
+            dist/*.dmg.sha256
+          include-hidden-files: true
+          retention-days: 7
+  sign-and-draft:
+    needs: build
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-build
+          path: artifacts
+      - name: Restore builds
+        run: |
+          mkdir -p dist .build
+          tar -xf artifacts/.build/release-bundles.tar -C dist
+          cp artifacts/dist/*.dmg artifacts/dist/*.sha256 dist/
+          bash scripts/prepare-sparkle.sh
+          python3 scripts/release-notes.py > .build/release-notes.txt
+      - name: Sign update archives and feeds
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_PRIVATE_KEY" || { echo 'Добавьте SPARKLE_PRIVATE_KEY в environment release'; exit 1; }
+          python3 scripts/prepare-updates.py --notes .build/release-notes.txt
+      - name: Create or update draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > .build/release.json 2>/dev/null; then
+            python3 -c 'import json; assert json.load(open(".build/release.json"))["isDraft"], "Опубликованный релиз не изменяется"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Runvoice ${RELEASE_TAG#v}" --notes-file .build/release-notes.txt
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.dmg dist/*.dmg.sha256 dist/updates/* --clobber

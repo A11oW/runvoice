@@ -23,6 +23,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     private var micTestButton: NSButton!
     private var micTestLabel: NSTextField!
     private var samplePanel: AudioSamplePanel?
+    var hasActiveOperations: Bool { !downloads.isEmpty || fluidDownload != nil || samplePanel?.isBusy == true }
+    private let updateStatusLabel = NSTextField(wrappingLabelWithString: "")
+
     private var launchCheck: NSButton!
     private var launchNote: NSTextField!
     private var dictationProviderPopup: NSPopUpButton!
@@ -413,8 +416,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
             depStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
+        let updateTitle = label("Обновления Runvoice", bold: true)
+        let updateButton = NSButton(title: "Проверить обновления…", target: self, action: #selector(checkUpdates))
+        updateButton.identifier = NSUserInterfaceItemIdentifier("check-updates")
+        let updateRow = NSStackView(views: [updateTitle, updateButton])
+        updateRow.orientation = .horizontal; updateRow.spacing = 20
+        for field in [updateRow as NSView, updateStatusLabel] { field.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(field) }
+        NSLayoutConstraint.activate([
+            updateRow.topAnchor.constraint(equalTo: depStack.bottomAnchor, constant: 20),
+            updateRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            updateStatusLabel.topAnchor.constraint(equalTo: updateRow.bottomAnchor, constant: 8),
+            updateStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            updateStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+        ])
         return view
     }
+
+    @objc private func checkUpdates() { UpdateCoordinator.shared.check() }
 
     private func buildAPI() -> NSView {
         let root = NSView()
@@ -1638,6 +1656,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     }
 
     @objc private func downloadModel(_ sender: NSButton) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
         guard selectedTechnology == .whisper || backupPanel != nil,
               let id = sender.identifier?.rawValue,
               let model = WhisperModelCatalog.models.first(where: { $0.id == id }) else { return }
@@ -2122,6 +2141,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - Диагностика
 
     private func refreshDiagnostics(force: Bool = false) {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        updateStatusLabel.stringValue = "Версия \(version). " + UpdateCoordinator.shared.status
         refreshAPI()
         let ok = AXIsProcessTrusted()
         accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
@@ -2427,6 +2448,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     }
 
     @objc private func downloadFluidModel(_ sender: NSButton) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
         guard selectedTechnology == .fluidAudio, FluidModelStore.supported,
               let raw = sender.identifier?.rawValue, let model = FluidModel(rawValue: raw) else { return }
         if let download = fluidDownload {

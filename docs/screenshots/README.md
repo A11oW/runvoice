@@ -93,7 +93,7 @@
 демонстрационные термины, не сохраняемые в настройках.
 
 Частота обновлений оценивается по [временной трассе](../testing.md#измерение-задержек),
-а не по статичному изображению. Исторические материалы — в [CHANGELOG](../../CHANGELOG.md).
+а не по статичному изображению. История опубликованных выпусков — в [CHANGELOG](../../CHANGELOG.md).
 
 ## Как переснять
 
@@ -133,3 +133,12 @@ env CFFIXED_USER_HOME="$runvoice_snapshot_home" \
 настройках и добавить `--snapshot-backup` к `--snapshot`. Дополнительный файл —
 `/tmp/runvoice-settings-backup.png`. Окно содержит только каталог Whisper;
 скачивание и экспериментальные модели видны независимо от основной технологии.
+
+## Индикатор обновления в строке меню
+
+Оранжевая точка сообщает о новой версии независимо от текущего символа приложения.
+
+| Тема | Ожидание | Запись | Пауза | Обработка |
+|---|---|---|---|---|
+| Светлая | [idle](update-light-idle.png) | [recording](update-light-recording.png) | [paused](update-light-paused.png) | [processing](update-light-processing.png) |
+| Тёмная | [idle](update-dark-idle.png) | [recording](update-dark-recording.png) | [paused](update-dark-paused.png) | [processing](update-dark-processing.png) |

@@ -9,6 +9,8 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$REPO/dist"
 BUILD="$REPO/.build"
 
+bash "$REPO/scripts/prepare-sparkle.sh"
+
 # помощник вставки для CLI должен существовать
 if [ ! -x "$REPO/bin/pastev" ]; then
   cc -O2 -mmacosx-version-min=15.0 -framework ApplicationServices -o "$REPO/bin/pastev" "$REPO/bin/pastev.c"
@@ -49,9 +51,14 @@ build_variant() {
 
   cp "$BUILD/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
   swiftc -O -target "$arch-apple-macos15.0" \
+    -F "$BUILD/sparkle" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     -o "$app/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
 
   cp "$REPO/app/Info.plist" "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :SUFeedURL https://github.com/A11oW/runvoice/releases/latest/download/appcast-$label.xml" "$app/Contents/Info.plist"
+  mkdir -p "$app/Contents/Frameworks"
+  ditto "$BUILD/sparkle/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+  cp "$BUILD/sparkle/LICENSE" "$app/Contents/Resources/Sparkle-LICENSE.txt"
   cp "$REPO/bin/dictate.sh" "$app/Contents/Resources/dictate.sh"
   cp "$REPO/resources/warmup.wav" "$app/Contents/Resources/warmup.wav"
   if [ "$arch" = "arm64" ]; then
