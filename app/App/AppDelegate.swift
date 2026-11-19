@@ -8,6 +8,9 @@ import CoreGraphics
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    private var updateItem: NSMenuItem?
+    private var updateBadge: UpdateBadgeView?
+    private var updateObserver: NSObjectProtocol?
     private var hud: HUDController!
     private var timer: Timer?
     private let hotkeys = HotkeyMonitor()
@@ -50,9 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud.onStop = { [weak self] in
             self?.cancelDictationFromHUD()
         }
+        hud.onTogglePause = { [weak self] in
+            guard let self, let sessionID = self.dictation.recordingSessionID,
+                  self.dictation.togglePause(expectedSessionID: sessionID) else { return }
+            self.closeAt = nil
+        }
         dictation.onTranscript = { [weak self] text in
-            guard let self, self.lastStateKey == "recording",
-                  var content = self.lastState?.hud,
+            guard let self, self.dictation.recordingSessionID != nil,
+                  var content = (self.dictation.pausedSessionID != nil
+                                 ? DictationState.paused : DictationState.recording).hud,
                   let text = LivePreviewText.clean(text) else { return }
             if self.liveTranscript.isEmpty {
                 Log.write("performance: first_preview_ms=\(Int(Date().timeIntervalSince(self.liveStartedAt) * 1000))")
@@ -69,6 +78,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.performImproveSelection(mouseLocation: mouseLocation)
         }
         hotkeys.recordingSessionIDProvider = { [weak self] in self?.dictation.recordingSessionID }
+        hotkeys.pausedSessionIDProvider = { [weak self] in self?.dictation.pausedSessionID }
+        hotkeys.onTogglePauseRecording = { [weak self] sessionID in
+            guard let self, self.dictation.togglePause(expectedSessionID: sessionID) else { return }
+            self.closeAt = nil
+        }
         hotkeys.onFinishRecording = { [weak self] sessionID in
             guard let self, self.dictation.finishRecording(expectedSessionID: sessionID) else { return }
             self.closeAt = nil
@@ -119,10 +133,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
+        LocalAPIService.shared.configure(saved)
         dictation.prewarm()
+        UpdateCoordinator.shared.isBusy = { [weak self] in
+            guard let self else { return true }
+            return self.dictation.isBusy || self.isImproving || MicTester.isBusy
+                || self.settingsWindow?.hasActiveOperations == true || LocalAPIService.shared.hasPendingWork
+        }
+        updateObserver = NotificationCenter.default.addObserver(forName: UpdateCoordinator.didChange, object: nil, queue: .main) { [weak self] _ in self?.refreshUpdateIndicator() }
+        UpdateCoordinator.shared.start(backend: SparkleUpdateBackend())
+        refreshUpdateIndicator()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                UpdateCoordinator.shared.tick()
                 self?.dictation.wake()
+                LocalAPIService.shared.stop()
+                LocalAPIService.shared.configure(SettingsStore.load())
             }
     }
 
@@ -140,7 +166,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hud.setPreviewOptions(RecognitionPreview(enabled: !arguments.contains("--snapshot-preview-off"), lineCount: count))
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             guard let self else { return }
-            if arguments.contains("--snapshot-hint") {
+            if arguments.contains("--snapshot-update-indicators") {
+                self.snapshotUpdateIndicators()
+                NSApp.terminate(nil)
+            } else if arguments.contains("--snapshot-hint") {
                 self.showStartupHint(shortcut: SettingsStore.load().hotkeyToggle.display)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                     self.statusHint.snapshot(to: "/tmp/runvoice-startup-hint.png")
@@ -220,6 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "Расшифровать аудио…", #selector(openTranscribe))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
+        updateItem = add(menu, "Проверить обновления…", #selector(checkUpdates))
         menu.addItem(.separator())
         add(menu, "Открыть лог", #selector(openLog))
         add(menu, "Открыть папку данных", #selector(openData))
@@ -228,7 +258,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
     }
 
-    func menuWillOpen(_ menu: NSMenu) { hideStartupHint() }
+    @objc private func checkUpdates() { UpdateCoordinator.shared.check() }
+
+    private func snapshotUpdateIndicators() {
+        guard let button = statusItem.button else { return }
+        for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", NSAppearance.Name.darkAqua)] {
+            button.appearance = NSAppearance(named: appearance)
+            for (state, symbol) in [("idle", "waveform"), ("recording", "mic"), ("paused", "pause.fill"), ("processing", "ellipsis")] {
+                setIcon(symbol)
+                updateBadge?.isHidden = false
+                button.layoutSubtreeIfNeeded()
+                guard let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) else { continue }
+                button.cacheDisplay(in: button.bounds, to: bitmap)
+                if let png = bitmap.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: "/tmp/runvoice-update-\(theme)-\(state).png"))
+                }
+            }
+        }
+    }
+
+    private func refreshUpdateIndicator() {
+        guard let button = statusItem?.button else { return }
+        let version = UpdateCoordinator.shared.availableVersion
+        updateItem?.title = version.map { "Доступно обновление \($0)…" } ?? "Проверить обновления…"
+        if updateBadge == nil {
+            let badge = UpdateBadgeView(frame: .zero)
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            button.addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.widthAnchor.constraint(equalToConstant: 7), badge.heightAnchor.constraint(equalToConstant: 7),
+                badge.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -1),
+                badge.topAnchor.constraint(equalTo: button.topAnchor, constant: 1)
+            ])
+            updateBadge = badge
+        }
+        updateBadge?.isHidden = version == nil
+        button.setAccessibilityLabel(version.map { "Runvoice: доступна версия \($0)" } ?? "Runvoice")
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { hideStartupHint(); refreshUpdateIndicator() }
 
     private func showStartupHint(shortcut: String) {
         startupHintPending = false
@@ -276,6 +344,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settingsWindow?.onCaptureStateChanged = { [weak self] capturing in
                 self?.hotkeys.setSuspended(capturing)
             }
+            settingsWindow?.onAPISettingsSaved = {
+                LocalAPIService.shared.configure(SettingsStore.load())
+            }
             settingsWindow?.onSettingsSaved = { [weak self] in
                 guard let self else { return }
                 let settings = SettingsStore.load()
@@ -285,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.reloadHotkeys()
                 self.statusHint.update(shortcut: settings.hotkeyToggle.display)
                 self.dictation.prewarm()
+                LocalAPIService.shared.configure(settings)
             }
         }
         settingsWindow?.show()
@@ -292,6 +364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func snapshotStates() {
+        func paused(_ text: String = "") -> HUDContent {
+            var content = DictationState.paused.hud!
+            content.transcript = text
+            return content
+        }
         let webStormURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.jetbrains.WebStorm")
         let application = HUDApplication(name: webStormURL == nil ? "TextEdit" : "WebStorm",
                                         bundleURL: webStormURL ?? URL(fileURLWithPath: "/System/Applications/TextEdit.app"))
@@ -302,6 +379,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                      hudIcon: "mic", accent: .neutral,
                                      autoHideAfter: nil, showLevel: true,
                                      showStop: true), "00:12", 0.62),
+            ("recording-hover", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
+                                           hudIcon: "mic", accent: .neutral,
+                                           autoHideAfter: nil, showLevel: true,
+                                           showStop: true), "00:12", 0.62),
+            ("recording-loud", DictationState.recording.hud!, "00:12", 1),
+            ("recording-transition", DictationState.recording.hud!, "00:12", 0.62),
+            ("recording-resumed", DictationState.recording.hud!, "00:13", 0.62),
             ("recording-quiet", HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                                      hudIcon: "mic", accent: .neutral,
                                      autoHideAfter: nil, showLevel: true,
@@ -325,6 +409,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                             + "Во время записи доступны таймер, уровень микрофона и кнопка остановки. "
                                             + "Предыдущий текст постепенно уходит за границы карточки. "
                                             + "На экране остаётся выбранное количество последних строк, подтверждённых соседними фрагментами записи."), "02:18", 0.62),
+            ("paused", paused(), "00:12", 0),
+            ("paused-live", paused("Используй Cypress вместо Playwright. Добавь проверку авторизации и запусти тесты в GitHub Actions."), "00:18", 0),
             ("transcribing", DictationState.transcribing.hud!, nil, 0),
             ("fixing", DictationState.fixing(message: "Этот текст не должен появиться в карточке").hud!, nil, 0),
             ("done", HUDContent.completed(text: "Раз два три раз два три", application: application), nil, 0),
@@ -359,7 +445,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hud.snapshot(to: "/tmp/runvoice-state-\(state.name).png",
                          content: state.content,
                          timer: state.timer,
-                         level: state.level) {
+                         level: state.level,
+                         hovering: state.name == "recording-hover",
+                         morph: state.name == "recording-transition" ? 0.5 : nil) {
                 capture(index + 1)
             }
         }
@@ -387,8 +475,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func snapshotSettings() {
-        func capture(to path: String) {
-            guard let view = settingsWindow?.window?.contentView,
+        func capture(to path: String, view target: NSView? = nil) {
+            guard let view = target ?? settingsWindow?.window?.contentView,
                   let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
             view.cacheDisplay(in: view.bounds, to: rep)
             let image = NSImage(size: view.bounds.size)
@@ -406,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        let captures: [(String, String)] = [
+        var captures: [(String, String)] = [
             ("general", "/tmp/runvoice-settings.png"),
             ("models", "/tmp/runvoice-settings-models.png"),
             ("dictionary", "/tmp/runvoice-settings-dictionary.png"),
@@ -416,10 +504,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("summary", "/tmp/runvoice-settings-summary.png"),
             ("history", "/tmp/runvoice-settings-history.png"),
             ("hotkeys", "/tmp/runvoice-settings-hotkeys.png"),
+            ("api", "/tmp/runvoice-settings-api.png"),
+            ("samples", "/tmp/runvoice-settings-samples.png"),
+            ("sample-recording", "/tmp/runvoice-settings-sample-recording.png"),
         ]
+        if CommandLine.arguments.contains("--snapshot-backup") {
+            captures.append(("backup", "/tmp/runvoice-settings-backup.png"))
+        }
         func next(_ index: Int) {
             guard index < captures.count else { NSApp.terminate(nil); return }
             let (tab, path) = captures[index]
+            if tab == "backup" || tab == "samples" || tab == "sample-recording" {
+                let target = tab == "backup" ? self.settingsWindow?.prepareBackupSnapshot()
+                    : self.settingsWindow?.prepareSampleSnapshot(recording: tab == "sample-recording")
+                guard let view = target else { next(index + 1); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    capture(to: path, view: view)
+                    if let panel = self.settingsWindow?.window?.attachedSheet {
+                        self.settingsWindow?.window?.endSheet(panel, returnCode: .cancel)
+                        panel.orderOut(nil)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { next(index + 1) }
+                }
+                return
+            }
             self.settingsWindow?.selectTab(tab == "improve" || tab == "summary" ? "ai" : tab)
             if tab == "dictionary" { self.settingsWindow?.prepareDictionarySnapshot() }
             if tab == "improve" { self.settingsWindow?.scrollAIToImprove() }
@@ -450,6 +558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - Запуск пайплайна
 
     private func run(mouseLocation: NSPoint? = nil) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
         hideStartupHint()
         guard !["transcribing", "fixing"].contains(lastStateKey) else { return }
         if isImproving {
@@ -458,6 +567,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         if !dictation.isBusy {
+            // Быстрый запуск может пройти preparing между двумя tick().
+            // Очищаем текст новой сессии до первого recording, не при resume.
+            liveTranscript = ""
+            liveStartedAt = Date()
             hud.beginSession(mouseLocation: mouseLocation ?? NSEvent.mouseLocation)
         }
         do {
@@ -473,7 +586,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func cancelDictationFromHUD() {
-        guard ["preparing", "recording"].contains(lastStateKey) else { return }
+        guard dictation.recordingSessionID != nil || lastStateKey == "preparing" else { return }
         dictation.cancel()
         Log.write("cancel: запрошена отмена нативной записи из HUD")
     }
@@ -483,10 +596,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func performImproveSelection(mouseLocation: NSPoint) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
         hideStartupHint()
         guard !isImproving else { return }
 
-        if dictation.isBusy || ["preparing", "recording", "transcribing", "fixing"].contains(lastStateKey) {
+        // Не заменяем карточку записи/паузы временным сообщением: это
+        // сбросило бы её часы и скрыло сохранённый предварительный текст.
+        if dictation.recordingSessionID != nil {
+            Log.write("improve: ignored during active dictation")
+            return
+        }
+
+        if dictation.isBusy || ["preparing", "recording", "paused", "transcribing", "fixing"].contains(lastStateKey) {
             showImproveHUD("Идёт диктовка", icon: "info.circle.fill",
                            accent: .info, duration: 2.5)
             return
@@ -699,11 +820,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        if case .preparing = state { liveTranscript = "" }
-        if case .recording = state {
+        if case .preparing = state {
             liveTranscript = ""
             liveStartedAt = Date()
         }
+        if state == .recording || state == .paused { content.transcript = liveTranscript }
         setIcon(state.statusItemSymbol)
 
         if case .done(let text) = state {
@@ -721,12 +842,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let image = NSImage(systemSymbolName: name, accessibilityDescription: "Runvoice")
         image?.isTemplate = true
         statusItem.button?.image = image
+        refreshUpdateIndicator()
         Log.write("icon=\(name)")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        LocalAPIService.shared.stop()
         dictation.shutdown()
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let updateObserver { NotificationCenter.default.removeObserver(updateObserver) }
     }
 
     // MARK: - Разрешения

@@ -145,6 +145,17 @@ struct LivePreviewStabilizer {
         return changed()
     }
 
+    /// Полный снимок записи уже завершён на границе паузы: не требуем
+    /// перекрытия с прежним коротким окном и не удерживаем его ошибочную привязку.
+    mutating func settleRecording(_ raw: String) -> String? {
+        guard let text = LivePreviewText.clean(raw) else { return nil }
+        stable = Array(text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            .suffix(RecognitionPreview.maximumStoredWords))
+        previous = stable
+        earlyWord = false
+        return changed()
+    }
+
     private mutating func changed() -> String? {
         let text = stable.joined(separator: " ")
         guard !text.isEmpty, text != displayed else { return nil }

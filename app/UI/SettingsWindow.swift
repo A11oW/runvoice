@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Окно настроек
 
-final class SettingsWindow: NSWindowController, NSWindowDelegate {
+final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDelegate {
     private let fixText = NSTextView()
     private let improveText = NSTextView()
     private let summaryText = NSTextView()
@@ -25,6 +25,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var micPopup: NSPopUpButton!
     private var micTestButton: NSButton!
     private var micTestLabel: NSTextField!
+    private var samplePanel: AudioSamplePanel?
+    var hasActiveOperations: Bool { !downloads.isEmpty || fluidDownload != nil || samplePanel?.isBusy == true }
+    private let updateStatusLabel = NSTextField(wrappingLabelWithString: "")
+
     private var launchCheck: NSButton!
     private var launchNote: NSTextField!
     private var dictationProviderPopup: NSPopUpButton!
@@ -43,10 +47,26 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var restoreCheck: NSButton!
     private var resetButton: NSButton!
     private var versionLabel: NSTextField!
+    private let apiEnable = NSButton(checkboxWithTitle: "Включить локальный API", target: nil, action: nil)
+    private let apiFilter = NSButton(checkboxWithTitle: "Фильтровать слабый сигнал и неречевые звуки", target: nil, action: nil)
+    private let apiVocabulary = NSButton(checkboxWithTitle: "Использовать словарь", target: nil, action: nil)
+    private let apiThreshold = NSSlider(value: -55, minValue: -70, maxValue: -20, target: nil, action: nil)
+    private let apiThresholdLabel = NSTextField(labelWithString: "")
+    var onAPISettingsSaved: (() -> Void)?
+    private let apiImprove = NSButton(checkboxWithTitle: "Улучшать текст через AI", target: nil, action: nil)
+    private let apiPortField = NSTextField(string: "8790")
+    private let apiAddress = NSTextField(labelWithString: "")
+    private let apiStatus = NSTextField(wrappingLabelWithString: "")
+    private let apiModel = NSTextField(wrappingLabelWithString: "")
+    private let apiModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private var selectedAPIModel: APIRecognitionModel = .application
+    private var apiModelChoices: [APIRecognitionModel.Choice] = []
+    private let apiProfile = NSTextField(wrappingLabelWithString: "")
     private var toggleHotkeyButton: NSButton!
     private var improveHotkeyButton: NSButton!
     private let stopOnEnterCheck = NSButton(checkboxWithTitle: "Останавливать распознавание по нажатию Enter", target: nil, action: nil)
     private let cancelOnEscapeCheck = NSButton(checkboxWithTitle: "Отменять диктовку по Esc", target: nil, action: nil)
+    private let pauseOnSpaceCheck = NSButton(checkboxWithTitle: "Пауза диктовки по пробелу", target: nil, action: nil)
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var modelsStack: NSStackView!
@@ -54,13 +74,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var modelDirs: [String] = []
     private var hiddenModelPaths: [String] = []
     private var selectedModelPath = ""
-    private var selectedEngine = "whisper"
-    private let enginePopup = NSPopUpButton()
+    private var selectedTechnology: RecognitionTechnology = .whisper
+    private var selectedFluidModel: FluidModel = .nemotron
+    private let technologyPopup = NSPopUpButton()
+    private var backupPanel: NSPanel?
+    private var backupModelsStack: NSStackView?
+    private var backupDraft: (path: String, directories: [String], hidden: [String])?
+    private var recognitionValidationMessage = ""
     private let vocabularyEditor = SpeechVocabularyEditor()
     private let previewControls = RecognitionPreviewControls()
     private var fluidDownload: ASRProcess?
     private var fluidDownloadProgress: Double = 0
-    private var fluidStatus: NSTextField?
+    private var downloadingFluidModel: FluidModel?
+    private var fluidStatuses: [FluidModel: NSTextField] = [:]
+    private var fluidErrors: [FluidModel: String] = [:]
     private var historyTable: NSTableView!
     private var historyDetail: NSTextView!
     private var historySearch: NSSearchField!
@@ -153,6 +180,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         stopCapture()
+        samplePanel?.dismiss()
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -192,6 +220,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        if tabViewItem?.identifier as? String == "api" { refreshAPI() }
+    }
+
     /// Только демонстрационный снимок: настройки на диске не изменяются.
     func prepareDictionarySnapshot() {
         vocabularyEditor.load(["Cypress", "Playwright", "GitHub Actions"])
@@ -219,6 +251,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         guard let content = window?.contentView else { return }
 
         tabView = NSTabView()
+        tabView.delegate = self
         tabView.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(tabView)
 
@@ -257,13 +290,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         hotkeys.view = buildHotkeys()
         tabView.addTabViewItem(hotkeys)
 
+        let api = NSTabViewItem(identifier: "api")
+        api.label = "API"
+        api.view = buildAPI()
+        tabView.addTabViewItem(api)
+
         resetButton = NSButton(title: "Сбросить вкладку", target: self, action: #selector(resetDefaults))
         let logButton = NSButton(title: "Лог", target: self, action: #selector(openLog))
         let dataButton = NSButton(title: "Данные", target: self, action: #selector(openData))
         logButton.bezelStyle = .inline
         dataButton.bezelStyle = .inline
 
-        versionLabel = NSTextField(labelWithString: "")
+        let hiddenVersion = SampleAccessLabel(labelWithString: "")
+        hiddenVersion.onOpen = { [weak self] in self?.showAudioSamples() }
+        hiddenVersion.identifier = NSUserInterfaceItemIdentifier("settings-version")
+        versionLabel = hiddenVersion
         versionLabel.font = .systemFont(ofSize: 10)
         versionLabel.textColor = .secondaryLabelColor
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
@@ -386,7 +427,156 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             depStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
+        let updateTitle = label("Обновления Runvoice", bold: true)
+        let updateButton = NSButton(title: "Проверить обновления…", target: self, action: #selector(checkUpdates))
+        updateButton.identifier = NSUserInterfaceItemIdentifier("check-updates")
+        let updateRow = NSStackView(views: [updateTitle, updateButton])
+        updateRow.orientation = .horizontal; updateRow.spacing = 20
+        for field in [updateRow as NSView, updateStatusLabel] { field.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(field) }
+        NSLayoutConstraint.activate([
+            updateRow.topAnchor.constraint(equalTo: depStack.bottomAnchor, constant: 20),
+            updateRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            updateStatusLabel.topAnchor.constraint(equalTo: updateRow.bottomAnchor, constant: 8),
+            updateStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            updateStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
+        ])
         return view
+    }
+
+    @objc private func checkUpdates() { UpdateCoordinator.shared.check() }
+
+    private func buildAPI() -> NSView {
+        let root = NSView()
+        root.clipsToBounds = true
+        let view = FlippedView()
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(scroll)
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor)
+        ])
+        scroll.contentView.clipsToBounds = true
+        scroll.documentView = view
+        view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([view.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
+        let title = label("Локальный сервис распознавания", bold: true)
+        let hint = NSTextField(wrappingLabelWithString: "Работает вместе с Runvoice. Модель API можно выбрать независимо от диктовки; язык и словарь общие. Два движка требуют дополнительной памяти.")
+        hint.textColor = .secondaryLabelColor
+        apiEnable.identifier = NSUserInterfaceItemIdentifier("api-enabled")
+        apiImprove.identifier = NSUserInterfaceItemIdentifier("api-improve-text")
+        apiPortField.identifier = NSUserInterfaceItemIdentifier("api-port")
+        apiModelPopup.identifier = NSUserInterfaceItemIdentifier("api-recognition-model")
+        apiModelPopup.autoenablesItems = false
+        apiModelPopup.target = self; apiModelPopup.action = #selector(apiModelChanged)
+        let modelRow = NSStackView(views: [label("Модель распознавания"), apiModelPopup])
+        modelRow.orientation = .horizontal; modelRow.spacing = 8; modelRow.alignment = .centerY
+        apiModelPopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        apiModelPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 450).isActive = true
+        let modelHint = NSTextField(wrappingLabelWithString: "В списке только скачанные модели. Добавление и скачивание — в разделе «Распознавание».")
+        modelHint.textColor = .secondaryLabelColor
+        apiEnable.target = self; apiEnable.action = #selector(refreshAPI)
+        apiImprove.target = self; apiImprove.action = #selector(refreshAPI)
+        apiPortField.target = self; apiPortField.action = #selector(refreshAPI)
+        apiPortField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        let portRow = NSStackView(views: [label("Порт"), apiPortField])
+        portRow.orientation = .horizontal; portRow.spacing = 8; portRow.alignment = .centerY
+        let copy = NSButton(title: "Копировать адрес", target: self, action: #selector(copyAPIAddress))
+        apiAddress.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        apiAddress.isSelectable = true
+        let addressRow = NSStackView(views: [apiAddress, copy])
+        addressRow.orientation = .horizontal; addressRow.spacing = 8; addressRow.alignment = .centerY
+        let contract = NSTextField(wrappingLabelWithString: "Для ktalk-assist: способ «Свой сервис», модель runvoice-active, ключ пустой. Сервер доступен только на 127.0.0.1. Изменения применяются после сохранения.")
+        contract.textColor = .secondaryLabelColor
+        let privacy = NSTextField(wrappingLabelWithString: "AI выключен по умолчанию. При включении используется профиль и промпт правки диктовки; настройка диктовки не меняется. API не вставляет текст и не добавляет записи в историю.")
+        privacy.textColor = .secondaryLabelColor
+        apiFilter.identifier = NSUserInterfaceItemIdentifier("api-audio-filter")
+        apiVocabulary.identifier = NSUserInterfaceItemIdentifier("api-use-vocabulary")
+        apiThreshold.identifier = NSUserInterfaceItemIdentifier("api-minimum-dbfs")
+        apiThreshold.numberOfTickMarks = 51; apiThreshold.allowsTickMarkValuesOnly = true
+        apiThreshold.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        for control in [apiFilter as NSControl, apiVocabulary, apiThreshold] {
+            control.target = self; control.action = #selector(refreshAPI)
+        }
+        let thresholdRow = NSStackView(views: [label("Минимальная громкость"), apiThreshold, apiThresholdLabel])
+        thresholdRow.spacing = 8
+        let filterHint = NSTextField(wrappingLabelWithString: "Ближе к нулю — строже фильтрация. Влияет только на аудио API. Словарь API применяется к распознаванию и AI-правке; диктовка по хоткеям не меняется.")
+        filterHint.textColor = .secondaryLabelColor
+        let stack = NSStackView(views: [title, hint, apiEnable, portRow, addressRow, modelRow, modelHint, apiStatus, apiModel,
+                                        apiFilter, thresholdRow, apiVocabulary, filterHint,
+                                        apiImprove, apiProfile, privacy, contract])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        for field in [filterHint, hint, modelHint, apiStatus, apiModel, apiProfile, privacy, contract] {
+            field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16)
+        ])
+        return root
+    }
+
+    @objc private func refreshAPI() {
+        apiThreshold.isEnabled = apiFilter.state == .on
+        apiThresholdLabel.stringValue = "\(Int(apiThreshold.doubleValue.rounded())) dBFS"
+        var draft = loadedSettings
+        draft.whisperModelPath = selectedModelPath
+        draft.whisperModelDirs = modelDirs
+        draft.hiddenModelPaths = hiddenModelPaths
+        refreshAPIModels(settings: draft)
+        let port = Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        apiAddress.stringValue = LocalAPIService.validPort(port) ? LocalAPIService.endpoint(port: port) : "Укажите корректный порт"
+        apiStatus.stringValue = "Состояние: " + LocalAPIService.shared.status
+        apiStatus.textColor = LocalAPIService.shared.status.hasPrefix("Ошибка") ? .systemOrange : .secondaryLabelColor
+        let settings = SettingsStore.load()
+        let effective = settings.apiRecognitionSettings
+        apiModel.stringValue = LocalAPIService.shared.loadedModelDescription.map { "Загружено: " + $0 }
+            ?? ("Сохранено: " + effective.recognitionTechnology.title + " · " + LocalAPIService.modelName(settings))
+        let selected = providers.first { $0.id == dictationProviderID }
+        apiProfile.stringValue = selected.map { "AI: " + $0.displayTitle + " · " + $0.detail }
+            ?? "Для AI выберите профиль правки диктовки во вкладке «Постобработка»."
+        apiProfile.textColor = apiImprove.state == .on && selected == nil ? .systemOrange : .secondaryLabelColor
+    }
+
+    private func refreshAPIModels(settings: Settings) {
+        var choices = APIRecognitionModel.choices(settings: settings)
+        let unavailable = !choices.contains { $0.model == selectedAPIModel }
+        if unavailable {
+            choices.append(.init(model: selectedAPIModel, title: "Недоступна: " + selectedAPIModel.title))
+        }
+        if choices != apiModelChoices {
+            apiModelChoices = choices
+            apiModelPopup.removeAllItems()
+            for choice in choices {
+                apiModelPopup.addItem(withTitle: choice.title)
+                apiModelPopup.lastItem?.isEnabled = !(unavailable && choice.model == selectedAPIModel)
+            }
+        }
+        apiModelPopup.selectItem(at: choices.firstIndex { $0.model == selectedAPIModel } ?? 0)
+    }
+
+    @objc private func apiModelChanged() {
+        let index = apiModelPopup.indexOfSelectedItem
+        guard apiModelChoices.indices.contains(index) else { return }
+        selectedAPIModel = apiModelChoices[index].model
+        refreshAPI()
+    }
+
+    @objc private func copyAPIAddress() {
+        refreshAPI()
+        guard LocalAPIService.validPort(Int(apiPortField.stringValue) ?? 0) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(apiAddress.stringValue, forType: .string)
     }
 
     // MARK: - Providers
@@ -964,11 +1154,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         languagePopup = NSPopUpButton()
         languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
         languagePopup.setAccessibilityLabel("Язык распознавания")
-        enginePopup.addItems(withTitles: ["Whisper · Metal / CPU", "Nemotron Multilingual · потоковый"])
-        enginePopup.autoenablesItems = false
-        enginePopup.target = self
-        enginePopup.action = #selector(changeRecognitionEngine)
-        enginePopup.item(at: 1)?.isEnabled = FluidModelStore.supported
+        technologyPopup.addItems(withTitles: RecognitionTechnology.allCases.map(\.title))
+        technologyPopup.setAccessibilityLabel("Технология распознавания")
+        technologyPopup.autoenablesItems = false
+        technologyPopup.target = self
+        technologyPopup.action = #selector(changeRecognitionTechnology)
+        technologyPopup.item(at: 1)?.isEnabled = FluidModelStore.supported
+        if !FluidModelStore.supported { technologyPopup.item(at: 1)?.title += " · требуется Apple Silicon" }
 
         let scroll = NSScrollView()
         scroll.translatesAutoresizingMaskIntoConstraints = false
@@ -1017,44 +1209,68 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         downloadPercents.removeAll()
         downloadSpeedLabels.removeAll()
         downloadSpeeds.removeAll()
+        fluidStatuses.removeAll()
+        modelsDiskLabel = nil
 
+        let technologyRow = NSStackView(views: [sectionLabel("1. Технология распознавания"), technologyPopup])
+        technologyRow.orientation = .horizontal
+        technologyRow.alignment = .centerY
+        technologyRow.spacing = 16
+        technologyPopup.selectItem(at: RecognitionTechnology.allCases.firstIndex(of: selectedTechnology) ?? 0)
+        addRow(technologyRow)
+        addModelsNote("Технология определяет доступные модели ниже. Распознавание выполняется локально.")
+        if !recognitionValidationMessage.isEmpty { addModelsNote(recognitionValidationMessage, warning: true) }
+
+        addRow(sectionLabel("2. Параметры распознавания"))
         let languageRow = NSStackView(views: [sectionLabel("Язык распознавания"), languagePopup])
         languageRow.orientation = .horizontal
         languageRow.alignment = .centerY
         languageRow.spacing = 16
         addRow(languageRow)
+        if selectedTechnology == .whisper {
+            addModelsNote("Язык — подсказка модели. Для русской речи с английскими терминами сравните «Русский» и «Авто» на своём голосе.")
+        } else if selectedFluidModel == .nemotron {
+            addModelsNote("Язык задаёт подсказку потоковой модели. Для смешанной русско-английской речи начните с «Авто».")
+        } else {
+            addModelsNote("Здесь выбор языка ограничивает алфавит: «Русский» — кириллица, English — латиница. Для русского с английскими словами выберите «Авто», чтобы снять это ограничение.")
+        }
 
-        let engineRow = NSStackView(views: [sectionLabel("Движок распознавания"), enginePopup])
-        engineRow.orientation = .horizontal
-        engineRow.alignment = .centerY
-        engineRow.spacing = 16
-        enginePopup.selectItem(at: selectedEngine == "nemotron" ? 1 : 0)
-        addRow(engineRow)
-        let engineNote = NSTextField(wrappingLabelWithString:
-            "Whisper работает на Apple Silicon и Intel. Nemotron распознаёт речь потоком на Apple Silicon, включая русский и английский. Для смешанной речи попробуйте язык «Авто» выше.")
-        engineNote.font = .systemFont(ofSize: 11)
-        engineNote.textColor = .secondaryLabelColor
-        addRow(engineNote)
-        let fluidRow = NSStackView()
-        fluidRow.orientation = .horizontal
-        fluidRow.spacing = 12
-        let fluidButton = NSButton(title: fluidDownload != nil ? "Отменить загрузку"
-                                   : FluidModelStore.installed ? "Проверить Nemotron" : "Скачать Nemotron",
-                                   target: self, action: #selector(downloadFluidModel))
-        fluidButton.isEnabled = FluidModelStore.supported
-        fluidRow.addArrangedSubview(fluidButton)
-        let fluidStatus = NSTextField(labelWithString: fluidDownload != nil
-            ? "Загрузка: \(Int(fluidDownloadProgress * 100))%"
-            : FluidModelStore.installed ? "Установлена · локально, без отправки аудио"
-            : "Multilingual 0.6B · требуется отдельная загрузка")
-        fluidStatus.font = .systemFont(ofSize: 11)
-        fluidStatus.textColor = .secondaryLabelColor
-        self.fluidStatus = fluidStatus
-        fluidRow.addArrangedSubview(fluidStatus)
-        addRow(fluidRow)
+        addRow(sectionLabel("3. Модель распознавания"))
+        if selectedTechnology == .fluidAudio {
+            for model in FluidModel.allCases { addRow(fluidModelRow(model)) }
+            if !FluidModelStore.installed(selectedFluidModel) {
+                addModelsNote("Выбрана \(selectedFluidModel.title). Для диктовки сначала скачайте модель.", warning: true)
+            }
+            if selectedFluidModel.usesWindowedRecognition {
+                addModelsNote("Технический словарь для этой модели учитывается при AI-правке текста.")
+            }
+        } else {
+            addWhisperModels(to: modelsStack)
+        }
+        if selectedTechnology == .fluidAudio {
+            let backup = NSButton(title: "Настроить резервный Whisper…", target: self,
+                                  action: #selector(openRecognitionBackup))
+            backup.bezelStyle = .rounded
+            backup.setAccessibilityLabel("Резервное распознавание Whisper")
+            addRow(backup)
+        }
+        addRow(sectionLabel("4. Предварительное распознавание"))
         addRow(previewControls)
-        addRow(sectionLabel("Модели Whisper · также используются как резерв для Nemotron"))
+        if let backupModelsStack {
+            for view in backupModelsStack.arrangedSubviews {
+                backupModelsStack.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            addWhisperModels(to: backupModelsStack)
+        }
+    }
 
+    private func addWhisperModels(to stack: NSStackView) {
+        func add(_ view: NSView) {
+            stack.addArrangedSubview(view)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+        }
         let active = WhisperModelStore.file(at: selectedModelPath)
         var found = WhisperModelStore.foundModels(extraDirectories: modelDirs,
                                                   excluding: hiddenModelPaths)
@@ -1069,13 +1285,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             banner.stringValue = "Модель не выбрана. Скачайте модель или добавьте уже скачанную."
             banner.textColor = .systemOrange
         } else if let active {
-            banner.stringValue = "Активная модель: \(active.fileName) · \(active.sizeText)"
+            banner.stringValue = "\(selectedTechnology == .fluidAudio ? "Резервная модель" : "Выбрана"): \(active.fileName) · \(active.sizeText)"
             banner.textColor = .secondaryLabelColor
         } else {
             banner.stringValue = "Выбранная модель недоступна: \(selectedModelPath)"
             banner.textColor = .systemOrange
         }
-        addRow(banner)
+        add(banner)
 
         let foundHeader = NSStackView()
         foundHeader.orientation = .horizontal
@@ -1088,21 +1304,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let refresh = NSButton(title: "Обновить", target: self, action: #selector(refreshModelsList))
         refresh.bezelStyle = .inline
         foundHeader.addArrangedSubview(refresh)
-        addRow(foundHeader)
+        add(foundHeader)
 
         if found.isEmpty {
             let empty = NSTextField(labelWithString: "Модели ggml-*.bin не найдены.")
             empty.font = .systemFont(ofSize: 11)
             empty.textColor = .secondaryLabelColor
-            addRow(empty)
+            add(empty)
         } else {
-            for model in found { addRow(modelRow(model)) }
+            for model in found { add(modelRow(model)) }
         }
 
         if !hiddenModelPaths.isEmpty {
-            addRow(sectionLabel("Скрытые модели"))
+            add(sectionLabel("Скрытые модели"))
             for path in hiddenModelPaths {
-                addRow(hiddenModelRow(path))
+                add(hiddenModelRow(path))
             }
         }
 
@@ -1118,11 +1334,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         buttons.addArrangedSubview(addFile)
         buttons.addArrangedSubview(addFolder)
         buttons.addArrangedSubview(openFolder)
-        addRow(buttons)
+        add(buttons)
 
         if !modelDirs.isEmpty {
-            addRow(sectionLabel("Папки"))
-            for dir in modelDirs { addRow(folderRow(dir)) }
+            add(sectionLabel("Папки"))
+            for dir in modelDirs { add(folderRow(dir)) }
         }
 
         let hiddenNames = Set(hiddenModelPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
@@ -1136,16 +1352,63 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                 return a.sizeBytes < b.sizeBytes
             }
         if !missing.isEmpty {
-            addRow(sectionLabel("Скачать"))
-            for model in missing { addRow(downloadRow(model)) }
+            add(sectionLabel("Доступны для скачивания (\(missing.count))"))
+            add(modelNote("Сначала скачайте модель, затем выберите её выше. Q5/Q8 уменьшают размер; точность сравнивайте на своей речи."))
+            for model in missing { add(downloadRow(model)) }
         }
 
-        addRow(sectionLabel("Хранилище"))
+        add(sectionLabel("Хранилище"))
         modelsDiskLabel = NSTextField(labelWithString: "")
         modelsDiskLabel.font = .systemFont(ofSize: 11)
         modelsDiskLabel.textColor = .secondaryLabelColor
         updateDiskLabel()
-        addRow(modelsDiskLabel)
+        add(modelsDiskLabel)
+    }
+
+    private func modelNote(_ text: String, warning: Bool = false) -> NSTextField {
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = warning ? .systemOrange : .secondaryLabelColor
+        return label
+    }
+
+    private func addModelsNote(_ text: String, warning: Bool = false) {
+        addRow(modelNote(text, warning: warning))
+    }
+
+    private func fluidModelRow(_ model: FluidModel) -> NSView {
+        let radio = NSButton(radioButtonWithTitle: model.title, target: self, action: #selector(selectFluidModel(_:)))
+        radio.identifier = NSUserInterfaceItemIdentifier(model.rawValue)
+        radio.state = selectedFluidModel == model ? .on : .off
+        radio.isEnabled = FluidModelStore.supported && FluidModelStore.installed(model)
+        radio.toolTip = radio.isEnabled ? nil : "Сначала скачайте и проверьте модель"
+        radio.font = .systemFont(ofSize: 13, weight: .semibold)
+        let detail = NSTextField(wrappingLabelWithString: model.detail)
+        detail.font = .systemFont(ofSize: 11)
+        detail.textColor = .secondaryLabelColor
+        let busy = downloadingFluidModel == model
+        let status = NSTextField(wrappingLabelWithString: busy
+            ? "Загрузка: \(Int(fluidDownloadProgress * 100))% · затем проверка Core ML"
+            : fluidErrors[model] ?? (FluidModelStore.installed(model) ? "Скачана · готова к использованию" : "Не скачана"))
+        status.font = .systemFont(ofSize: 11)
+        status.textColor = fluidErrors[model] == nil ? .secondaryLabelColor : .systemOrange
+        fluidStatuses[model] = status
+        let text = NSStackView(views: [radio, detail, status])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 4
+        let action = NSButton(title: busy ? "Отменить загрузку" : FluidModelStore.installed(model) ? "Проверить" : "Скачать",
+                              target: self, action: #selector(downloadFluidModel(_:)))
+        action.identifier = NSUserInterfaceItemIdentifier(model.rawValue)
+        action.isEnabled = FluidModelStore.supported && (fluidDownload == nil || busy)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let row = NSStackView(views: [text, spacer, action])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 12
+        row.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+        return row
     }
 
     private func addRow(_ view: NSView) {
@@ -1162,7 +1425,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     private func displayTitle(for model: WhisperModelFile) -> String {
-        WhisperModelCatalog.models.first { $0.fileName == model.fileName }?.title ?? model.fileName
+        let title = model.catalogModel?.title ?? model.fileName
+        return model.catalogModel?.experimental == true ? title + " · экспериментальная" : title
     }
 
     private func hiddenModelRow(_ path: String) -> NSView {
@@ -1322,7 +1586,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let recommended = NSTextField(labelWithString: "Рекомендуется")
         recommended.font = .systemFont(ofSize: 10, weight: .medium)
         recommended.textColor = .systemGreen
-        recommended.isHidden = !model.recommended
+        recommended.stringValue = model.experimental ? "Экспериментальная" : "Рекомендуется"
+        recommended.isHidden = !model.recommended && !model.experimental
+        recommended.textColor = model.experimental ? .secondaryLabelColor : .systemGreen
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
@@ -1405,7 +1671,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func downloadModel(_ sender: NSButton) {
-        guard let id = sender.identifier?.rawValue,
+        guard !UpdateCoordinator.shared.isInstalling else { return }
+        guard selectedTechnology == .whisper || backupPanel != nil,
+              let id = sender.identifier?.rawValue,
               let model = WhisperModelCatalog.models.first(where: { $0.id == id }) else { return }
 
         if let active = downloads[id] {
@@ -1447,7 +1715,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             self.downloadSpeeds[id] = nil
             switch result {
             case .success(let url):
-                if self.selectedModelPath.isEmpty { self.selectedModelPath = url.path }
                 self.refreshModels()
                 self.refreshDiagnostics(force: true)
                 Log.write("model: скачана \(url.lastPathComponent)")
@@ -1478,7 +1745,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func selectModel(_ sender: NSButton) {
-        selectedModelPath = sender.identifier?.rawValue ?? ""
+        guard selectedTechnology == .whisper || backupPanel != nil,
+              let path = sender.identifier?.rawValue,
+              WhisperModelStore.file(at: path) != nil else { return }
+        selectedModelPath = path
+        recognitionValidationMessage = ""
         refreshModels()
     }
 
@@ -1759,14 +2030,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let toggleLabel = label("Диктовка")
         let improveLabel = label("Улучшение текста")
         let note = label("Для сочетаний выше нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
-        let enterHint = label("Во время записи Enter завершает диктовку и запускает обработку текста.")
+        let enterHint = NSTextField(wrappingLabelWithString: "Во время записи и на паузе Enter завершает диктовку и запускает обработку текста.")
         enterHint.font = .systemFont(ofSize: 11)
         enterHint.textColor = .secondaryLabelColor
         stopOnEnterCheck.identifier = NSUserInterfaceItemIdentifier("stop-recording-on-enter")
         cancelOnEscapeCheck.identifier = NSUserInterfaceItemIdentifier("cancel-recording-on-escape")
-        let escapeHint = label("Во время записи Esc отменяет диктовку без распознавания и вставки текста.")
+        pauseOnSpaceCheck.identifier = NSUserInterfaceItemIdentifier("pause-recording-on-space")
+        let escapeHint = NSTextField(wrappingLabelWithString: "Во время записи и на паузе Esc отменяет диктовку без распознавания и вставки текста.")
         escapeHint.font = .systemFont(ofSize: 11)
         escapeHint.textColor = .secondaryLabelColor
+        let pauseHint = NSTextField(wrappingLabelWithString: "Пробел ставит диктовку на паузу; повторное нажатие продолжает запись. Сочетания с модификаторами работают как обычно.")
+        pauseHint.font = .systemFont(ofSize: 11)
+        pauseHint.textColor = .secondaryLabelColor
 
         toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
         toggleHotkeyButton.bezelStyle = .rounded
@@ -1775,7 +2050,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let views: [NSView] = [toggleLabel, improveLabel, note,
                                toggleHotkeyButton, improveHotkeyButton, stopOnEnterCheck, enterHint,
-                               cancelOnEscapeCheck, escapeHint]
+                               cancelOnEscapeCheck, escapeHint, pauseOnSpaceCheck, pauseHint]
         for v in views {
             v.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(v)
@@ -1801,13 +2076,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             stopOnEnterCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             enterHint.topAnchor.constraint(equalTo: stopOnEnterCheck.bottomAnchor, constant: 6),
             enterHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            enterHint.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            enterHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             cancelOnEscapeCheck.topAnchor.constraint(equalTo: enterHint.bottomAnchor, constant: 18),
             cancelOnEscapeCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
             cancelOnEscapeCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             escapeHint.topAnchor.constraint(equalTo: cancelOnEscapeCheck.bottomAnchor, constant: 6),
             escapeHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            escapeHint.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            escapeHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            pauseOnSpaceCheck.topAnchor.constraint(equalTo: escapeHint.bottomAnchor, constant: 18),
+            pauseOnSpaceCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            pauseOnSpaceCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            pauseHint.topAnchor.constraint(equalTo: pauseOnSpaceCheck.bottomAnchor, constant: 6),
+            pauseHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            pauseHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
         ])
 
         return view
@@ -1942,6 +2223,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     // MARK: - Диагностика
 
     private func refreshDiagnostics(force: Bool = false) {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+        updateStatusLabel.stringValue = "Версия \(version). " + UpdateCoordinator.shared.status
+        refreshAPI()
         let ok = AXIsProcessTrusted()
         accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
         accessLabel.textColor = ok ? .systemGreen : .systemOrange
@@ -1986,6 +2270,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             return ("⚠️ whisper-cli — не найден в бандле", .systemOrange)
 
         case .whisperModel:
+            if settings.recognitionTechnology == .fluidAudio, FluidModelStore.supported {
+                let title = settings.fluidModel.title
+                return FluidModelStore.installed(settings.fluidModel)
+                    ? ("✓ FluidAudio: \(title) — скачана и проверена", .systemGreen)
+                    : ("⚠️ \(title) — скачайте в «Распознавание» → FluidAudio", .systemOrange)
+            }
             if let model = WhisperModelStore.activeModel(settings: settings) {
                 let title = WhisperModelCatalog.models
                     .first { $0.fileName == model.fileName }?.title ?? model.fileName
@@ -1993,7 +2283,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                 return ("✓ Модель Whisper: \(title) · \(model.sizeText) — \(source)", .systemGreen)
             }
             if settings.whisperModelPath.isEmpty {
-                return ("⚠️ Модель Whisper не выбрана — Настройки → Модели", .systemOrange)
+                return ("⚠️ Модель Whisper не выбрана — Настройки → Распознавание", .systemOrange)
             }
             return ("⚠️ Модель Whisper недоступна: \(settings.whisperModelPath)", .systemOrange)
 
@@ -2031,6 +2321,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     @objc private func openData() {
         NSWorkspace.shared.open(Paths.support)
+    }
+
+    func showAudioSamples() {
+        guard let window, window.attachedSheet == nil else { return }
+        if samplePanel == nil {
+            samplePanel = AudioSamplePanel(microphone: { [weak self] in
+                (self?.micPopup.titleOfSelectedItem ?? "",
+                 self?.micPopup.selectedItem?.representedObject as? String ?? "")
+            })
+        }
+        samplePanel?.present(on: window)
+    }
+
+    func prepareSampleSnapshot(recording: Bool = false) -> NSView? {
+        showAudioSamples()
+        samplePanel?.prepareSnapshot(recording: recording)
+        return samplePanel?.window?.contentView
     }
 
     @objc private func testMicrophone() {
@@ -2116,50 +2423,163 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         }
     }
 
-    @objc private func changeRecognitionEngine() {
-        selectedEngine = enginePopup.indexOfSelectedItem == 1 ? "nemotron" : "whisper"
+    @objc private func changeRecognitionTechnology() {
+        guard backupPanel == nil else { return }
+        let index = max(0, technologyPopup.indexOfSelectedItem)
+        let technology = RecognitionTechnology.allCases[index]
+        guard technology.isSupported else { return }
+        selectedTechnology = technology
+        recognitionValidationMessage = ""
+        refreshModels()
     }
 
-    @objc private func downloadFluidModel() {
+    @objc private func selectFluidModel(_ sender: NSButton) {
+        guard selectedTechnology == .fluidAudio, FluidModelStore.supported,
+              let raw = sender.identifier?.rawValue, let model = FluidModel(rawValue: raw),
+              FluidModelStore.installed(model) else { return }
+        selectedFluidModel = model
+        recognitionValidationMessage = ""
+        refreshModels()
+    }
+
+    @objc private func openRecognitionBackup() {
+        guard selectedTechnology == .fluidAudio, backupPanel == nil, let window else { return }
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 860, height: 540),
+                            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        panel.title = "Резервное распознавание Whisper"
+        panel.contentMinSize = NSSize(width: 720, height: 400)
+        panel.isReleasedWhenClosed = false
+        let content = panel.contentView!
+        let note = modelNote("При ошибке FluidAudio полную запись распознает Whisper. Изменения применятся после «Сохранить» в основном окне настроек.")
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        let document = FlippedView()
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        scroll.documentView = document
+        document.addSubview(stack)
+        let done = NSButton(title: "Готово", target: self, action: #selector(acceptRecognitionBackup))
+        done.bezelStyle = .rounded
+        done.keyEquivalent = "\r"
+        let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancelRecognitionBackup))
+        cancel.bezelStyle = .rounded
+        cancel.keyEquivalent = "\u{1b}"
+        let footer = NSStackView(views: [cancel, done])
+        footer.spacing = 10
+        for view in [note, scroll, footer] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(view)
+        }
+        document.translatesAutoresizingMaskIntoConstraints = false
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            note.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            note.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            note.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            scroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 10),
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
+            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            stack.topAnchor.constraint(equalTo: document.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor)
+        ])
+        backupDraft = (selectedModelPath, modelDirs, hiddenModelPaths)
+        backupPanel = panel
+        backupModelsStack = stack
+        refreshModels()
+        window.beginSheet(panel) { [weak self] response in
+            guard let self else { return }
+            if response != .OK, let draft = self.backupDraft {
+                self.selectedModelPath = draft.path
+                self.modelDirs = draft.directories
+                self.hiddenModelPaths = draft.hidden
+            }
+            self.backupDraft = nil
+            self.backupModelsStack = nil
+            self.backupPanel = nil
+            self.refreshModels()
+        }
+    }
+
+    /// Только для встроенного рендера снимка, без сохранения настроек.
+    func prepareBackupSnapshot() -> NSView? {
+        openRecognitionBackup()
+        return backupPanel?.contentView
+    }
+
+    @objc private func acceptRecognitionBackup() {
+        guard let backupPanel else { return }
+        window?.endSheet(backupPanel, returnCode: .OK)
+        backupPanel.orderOut(nil)
+    }
+
+    @objc private func cancelRecognitionBackup() {
+        guard let backupPanel else { return }
+        window?.endSheet(backupPanel, returnCode: .cancel)
+        backupPanel.orderOut(nil)
+    }
+
+    @objc private func downloadFluidModel(_ sender: NSButton) {
+        guard !UpdateCoordinator.shared.isInstalling else { return }
+        guard selectedTechnology == .fluidAudio, FluidModelStore.supported,
+              let raw = sender.identifier?.rawValue, let model = FluidModel(rawValue: raw) else { return }
         if let download = fluidDownload {
+            guard downloadingFluidModel == model else { return }
             download.stop()
             fluidDownload = nil
+            downloadingFluidModel = nil
             refreshModels()
             return
         }
-        let download = ASRProcess()
+        let download = ASRProcess(directory: FluidModelStore.directory(for: model))
         fluidDownload = download
+        downloadingFluidModel = model
         fluidDownloadProgress = 0
+        fluidErrors[model] = nil
         var completed = false
         download.onEvent = { [weak self, weak download] event in
             guard let self, let download, self.fluidDownload === download else { return }
             switch event["event"] as? String {
             case "progress":
                 self.fluidDownloadProgress = max(0, min(1, event["progress"] as? Double ?? 0))
-                self.fluidStatus?.stringValue = "Загрузка: \(Int(self.fluidDownloadProgress * 100))%"
+                self.fluidStatuses[model]?.stringValue = "Загрузка: \(Int(self.fluidDownloadProgress * 100))% · затем проверка Core ML"
             case "installed":
                 completed = true
                 self.fluidDownload = nil
+                self.downloadingFluidModel = nil
                 self.refreshModels()
             case "error":
                 completed = true
                 self.fluidDownload = nil
+                self.downloadingFluidModel = nil
+                self.fluidErrors[model] = "Не удалось загрузить или проверить модель. Повторите попытку"
                 self.refreshModels()
-                self.fluidStatus?.stringValue = "Не удалось загрузить модель. Повторите попытку"
             default: break
             }
         }
-        download.onExit = { [weak self] in
-            guard let self, !completed else { return }
+        download.onExit = { [weak self, weak download] in
+            guard let self, let download, self.fluidDownload === download, !completed else { return }
             self.fluidDownload = nil
+            self.downloadingFluidModel = nil
+            self.fluidErrors[model] = "Загрузка прервана. Можно повторить"
             self.refreshModels()
-            self.fluidStatus?.stringValue = "Загрузка прервана. Можно повторить"
         }
-        do { try download.start(mode: "download") }
+        do { try download.start(mode: "download", model: model) }
         catch {
             fluidDownload = nil
+            downloadingFluidModel = nil
+            fluidErrors[model] = "Не удалось запустить загрузку: \(error.localizedDescription)"
             refreshModels()
-            fluidStatus?.stringValue = "Движок недоступен: \(error.localizedDescription)"
             return
         }
         refreshModels()
@@ -2191,10 +2611,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.hotkeyImprove = improveHotkey
         settings.stopRecordingOnEnter = stopOnEnterCheck.state == .on
         settings.cancelRecordingOnEscape = cancelOnEscapeCheck.state == .on
+        settings.pauseRecordingOnSpace = pauseOnSpaceCheck.state == .on
+        settings.apiEnabled = apiEnable.state == .on
+        settings.apiPort = Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        settings.apiAudioFilterEnabled = apiFilter.state == .on
+        settings.apiUseVocabulary = apiVocabulary.state == .on
+        settings.apiMinimumSpeechDbfs = apiThreshold.doubleValue.rounded()
+        settings.apiImproveText = apiImprove.state == .on
+        settings.apiRecognitionModel = selectedAPIModel
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
         settings.hiddenModelPaths = hiddenModelPaths
-        settings.recognitionEngine = selectedEngine
+        settings.recognitionTechnology = selectedTechnology
+        settings.fluidModel = selectedFluidModel
         settings.speechVocabulary = vocabularyEditor.terms
         return settings
     }
@@ -2208,7 +2637,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private func loadValues() {
         let settings = SettingsStore.load()
-        selectedEngine = FluidModelStore.supported ? settings.recognitionEngine : "whisper"
+        selectedTechnology = settings.recognitionTechnology.isSupported ? settings.recognitionTechnology : .whisper
+        selectedFluidModel = settings.fluidModel
+        recognitionValidationMessage = ""
         vocabularyEditor.load(settings.speechVocabulary)
         previewControls.options = settings.recognitionPreview
         fixText.string = settings.promptFix.isEmpty ? DefaultPrompts.fix : settings.promptFix
@@ -2245,6 +2676,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         summaryText.string = settings.promptSummary.isEmpty ? DefaultPrompts.summary : settings.promptSummary
         stopOnEnterCheck.state = settings.stopRecordingOnEnter ? .on : .off
         cancelOnEscapeCheck.state = settings.cancelRecordingOnEscape ? .on : .off
+        pauseOnSpaceCheck.state = settings.pauseRecordingOnSpace ? .on : .off
+        apiEnable.state = settings.apiEnabled ? .on : .off
+        apiPortField.stringValue = String(settings.apiPort)
+        apiFilter.state = settings.apiAudioFilterEnabled ? .on : .off
+        apiVocabulary.state = settings.apiUseVocabulary ? .on : .off
+        apiThreshold.doubleValue = settings.apiMinimumSpeechDbfs
+        apiImprove.state = settings.apiImproveText ? .on : .off
+        selectedAPIModel = settings.apiRecognitionModel
         improveEnabledCheck.state = settings.improveEnabled ? .on : .off
         updateAIProviderState()
 
@@ -2270,7 +2709,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         loadedSettings.promptSummary = summaryText.string
         loadedSettings.improveEnabled = improveEnabledCheck.state == .on
         loadedSettings.whisperModelPath = selectedModelPath
-        loadedSettings.recognitionEngine = selectedEngine
+        loadedSettings.recognitionTechnology = selectedTechnology
+        loadedSettings.fluidModel = selectedFluidModel
         if loadedSettings.microphone.isEmpty {
             loadedSettings.microphone = micPopup.titleOfSelectedItem ?? ""
         }
@@ -2287,9 +2727,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
         switch tabView.selectedTabViewItem?.identifier as? String {
+        case "api":
+            apiFilter.state = .on; apiVocabulary.state = .on; apiThreshold.doubleValue = -55
+            selectedAPIModel = .application
+            apiEnable.state = .off
+            apiImprove.state = .off
+            apiPortField.stringValue = "8790"
+            refreshAPI()
         case "hotkeys":
             stopOnEnterCheck.state = .off
             cancelOnEscapeCheck.state = .off
+            pauseOnSpaceCheck.state = .on
             toggleHotkey = HotKeySetting()
             toggleHotkeyButton.title = toggleHotkey.display
             improveHotkey = HotKeySetting.improveDefault
@@ -2313,7 +2761,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             updateAIProviderState()
         case "models":
             previewControls.options = RecognitionPreview()
-            selectedEngine = "whisper"
+            selectedTechnology = .whisper
+            selectedFluidModel = .nemotron
+            recognitionValidationMessage = ""
             languagePopup.selectItem(at: 0)
             modelDirs = []
             hiddenModelPaths = []
@@ -2346,6 +2796,41 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             return
         }
         let settings = currentSettings()
+        if !LocalAPIService.validPort(settings.apiPort) || (settings.apiImproveText && settings.dictationProvider == nil) {
+            selectTab("api")
+            apiStatus.stringValue = !LocalAPIService.validPort(settings.apiPort)
+                ? "Порт должен быть от 1 до 65535; 8798 и 8799 используются движками Runvoice."
+                : "Для AI-правки API выберите профиль правки диктовки или отключите AI."
+            apiStatus.textColor = .systemOrange
+            return
+        }
+        let apiOnly = !settings.differsOutsideAPI(from: loadedSettings)
+            && providerKeys == loadedProviderKeys
+            && (launchCheck.state == .on) == loadedLaunchAtLogin
+        if apiOnly {
+            // Сохраняем только API-поля, не нормализуя остальные настройки на диске.
+            let merged = SettingsStore.load().copyingAPI(from: settings)
+            SettingsStore.save(merged)
+            loadedSettings = settings
+            onAPISettingsSaved?()
+            allowClose = true; window?.close(); allowClose = false
+            return
+        }
+        let changedTechnology = settings.recognitionTechnology != loadedSettings.recognitionTechnology
+        let changedWhisper = settings.whisperModelPath != loadedSettings.whisperModelPath
+        let changedFluid = settings.fluidModel != loadedSettings.fluidModel
+        if settings.recognitionTechnology == .fluidAudio, (changedTechnology || changedFluid),
+           !FluidModelStore.installed(settings.fluidModel) {
+            recognitionValidationMessage = "Сначала скачайте и проверьте выбранную модель FluidAudio."
+        } else if ((settings.recognitionTechnology == .whisper && changedTechnology) || changedWhisper),
+                  WhisperModelStore.activeModel(settings: settings) == nil {
+            recognitionValidationMessage = "Сначала скачайте и выберите доступную модель Whisper."
+        } else { recognitionValidationMessage = "" }
+        if !recognitionValidationMessage.isEmpty {
+            selectTab("models")
+            refreshModels()
+            return
+        }
 
         if toggleHotkey.keyCode == improveHotkey.keyCode,
            toggleHotkey.modifiers == improveHotkey.modifiers {

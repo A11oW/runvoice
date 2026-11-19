@@ -1,6 +1,100 @@
 import Foundation
 import CoreGraphics
 
+func testSpaceToPause() {
+    let first = UUID(), second = UUID()
+    var policy = DictationKeyPolicy()
+    expect(policy.handle(.down, keyCode: 49, finishOnEnter: false, recordingSessionID: first) == .passThrough,
+           "Выключенный Space не перехватывается")
+    expect(policy.handle(.down, keyCode: 49, finishOnEnter: false, pauseOnSpace: true,
+                         recordingSessionID: nil) == .passThrough, "Space вне диктовки обычный")
+    expect(policy.handle(.down, keyCode: 49, modified: true, finishOnEnter: false, pauseOnSpace: true,
+                         recordingSessionID: first) == .passThrough, "Пауза не перехватывает сочетания Space")
+    expect(policy.handle(.down, keyCode: 49, finishOnEnter: false, pauseOnSpace: true,
+                         suspended: true, recordingSessionID: first) == .passThrough, "Назначение сочетания получает Space")
+    expect(policy.handle(.down, keyCode: 49, isRepeat: true, finishOnEnter: false, pauseOnSpace: true,
+                         recordingSessionID: first) == .passThrough, "Space, удерживаемый до записи, не ставит её на паузу")
+    expect(policy.handle(.down, keyCode: 49, finishOnEnter: false, pauseOnSpace: true,
+                         recordingSessionID: first) == .togglePause(first), "Space переключает паузу текущей сессии")
+    expect(policy.handle(.down, keyCode: 49, isRepeat: true, finishOnEnter: false,
+                         recordingSessionID: nil) == .consume, "Повтор исходного Space поглощён даже после завершения записи")
+    expect(policy.handle(.up, keyCode: 49, finishOnEnter: false, recordingSessionID: nil) == .consume,
+           "Отпускание исходного Space не вставляет пробел")
+    expect(policy.handle(.down, keyCode: 49, finishOnEnter: false, resumeOnSpace: true,
+                         recordingSessionID: first) == .togglePause(first), "Можно продолжить паузу после отключения флажка")
+    expect(policy.handle(.down, keyCode: 49, finishOnEnter: false, pauseOnSpace: true,
+                         recordingSessionID: second) == .togglePause(second), "Потерянный keyUp не блокирует новый Space другой сессии")
+    _ = policy.handle(.up, keyCode: 49, finishOnEnter: false, recordingSessionID: second)
+
+    let monitor = HotkeyMonitor()
+    var settings = Settings()
+    settings.stopRecordingOnEnter = true
+    settings.cancelRecordingOnEscape = true
+    monitor.configure(settings: settings)
+    var recording: UUID? = first
+    var paused: UUID?
+    var pauses: [UUID] = [], finishes: [UUID] = [], cancellations: [UUID] = []
+    var toggles = 0
+    monitor.recordingSessionIDProvider = { recording }
+    monitor.pausedSessionIDProvider = { paused }
+    monitor.onTogglePauseRecording = { pauses.append($0) }
+    monitor.onFinishRecording = { finishes.append($0) }
+    monitor.onCancelRecording = { cancellations.append($0) }
+    monitor.onAction = { _ in toggles += 1 }
+    func event(_ code: CGKeyCode = 49, down: Bool = true, flags: CGEventFlags = [], repeated: Bool = false) -> CGEvent {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)!
+        event.flags = flags
+        event.setIntegerValueField(.keyboardEventAutorepeat, value: repeated ? 1 : 0)
+        return event
+    }
+    for flags: CGEventFlags in [.maskShift, .maskControl, .maskCommand] {
+        expect(!monitor.shouldConsume(event(flags: flags), type: .keyDown), "Модифицированный Space передан приложению: \(flags)")
+    }
+    expect(monitor.shouldConsume(event(), type: .keyDown), "Tap перехватывает Space записи")
+    expect(pauses.isEmpty, "Пауза не выполняется внутри системного callback")
+    recording = second
+    spin()
+    expect(pauses == [first], "Отложенная пауза сохраняет исходный UUID")
+    expect(monitor.shouldConsume(event(repeated: true), type: .keyDown), "Удержание не переключает паузу повторно")
+    expect(monitor.shouldConsume(event(down: false), type: .keyUp), "Tap поглощает keyUp Space")
+    spin()
+    expect(pauses.count == 1, "На одно физическое нажатие приходится одно переключение")
+
+    recording = first; paused = first
+    expect(monitor.shouldConsume(event(36), type: .keyDown), "Enter перехватывается на паузе")
+    expect(monitor.shouldConsume(event(53), type: .keyDown), "Esc перехватывается на паузе")
+    spin()
+    expect(finishes == [first] && cancellations == [first], "Enter и Esc на паузе используют те же действия с UUID")
+    _ = monitor.shouldConsume(event(36, down: false), type: .keyUp)
+    _ = monitor.shouldConsume(event(53, down: false), type: .keyUp)
+    settings.pauseRecordingOnSpace = false
+    monitor.configure(settings: settings)
+    expect(monitor.shouldConsume(event(), type: .keyDown), "Отключение флажка сохраняет возможность продолжить текущую паузу")
+    paused = nil
+    spin()
+    expect(pauses == [first, first], "Продолжение вызывает тот же callback паузы без новой диктовки")
+    expect(monitor.shouldConsume(event(repeated: true), type: .keyDown), "Повтор возобновления поглощён после отключения настройки")
+    expect(monitor.shouldConsume(event(down: false), type: .keyUp), "Отпускание возобновления поглощено")
+    expect(!monitor.shouldConsume(event(), type: .keyDown), "После продолжения выключенный Space становится обычным")
+    paused = second
+    expect(!monitor.shouldConsume(event(), type: .keyDown), "Устаревший paused UUID не включает Space другой сессии")
+    paused = first
+    settings.stopRecordingOnEnter = false
+    settings.cancelRecordingOnEscape = false
+    monitor.configure(settings: settings)
+    expect(!monitor.shouldConsume(event(36), type: .keyDown) && !monitor.shouldConsume(event(53), type: .keyDown),
+           "На паузе Enter и Esc учитывают отключённые флажки")
+    monitor.setSuspended(true)
+    expect(!monitor.shouldConsume(event(), type: .keyDown), "На паузе назначение сочетания имеет приоритет над Space")
+    monitor.setSuspended(false)
+    expect(monitor.shouldConsume(event(flags: .maskAlternate), type: .keyDown), "⌥Space остаётся основным хоткеем на паузе")
+    expect(!monitor.shouldConsume(event(down: false, flags: .maskAlternate), type: .keyUp), "Отпускание ⌥Space не включает паузу")
+    spin()
+    expect(toggles == 1 && pauses.count == 2, "Основной хоткей завершает диктовку, не переключая паузу")
+    recording = nil
+    expect(!monitor.shouldConsume(event(), type: .keyDown), "Space после завершения не перехватывается даже при устаревшем paused provider")
+}
+
 func testEscapeToCancel() {
     let first = UUID(), second = UUID()
     var policy = DictationKeyPolicy()

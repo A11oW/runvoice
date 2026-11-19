@@ -9,15 +9,17 @@ struct DictationKeyPolicy {
         case consume
         case finish(UUID)
         case cancel(UUID)
+        case togglePause(UUID)
     }
 
     private var captured = Set<UInt16>()
 
     mutating func handle(_ event: Event, keyCode: UInt16, isRepeat: Bool = false,
                          modified: Bool = false, finishOnEnter: Bool,
-                         cancelOnEscape: Bool = false, suspended: Bool = false,
+                         cancelOnEscape: Bool = false, pauseOnSpace: Bool = false,
+                         resumeOnSpace: Bool = false, suspended: Bool = false,
                          recordingSessionID: UUID?) -> Decision {
-        guard keyCode == 36 || keyCode == 76 || keyCode == 53 else { return .passThrough }
+        guard keyCode == 36 || keyCode == 76 || keyCode == 53 || keyCode == 49 else { return .passThrough }
         if event == .up {
             return captured.remove(keyCode) == nil ? .passThrough : .consume
         }
@@ -27,11 +29,13 @@ struct DictationKeyPolicy {
             // при отключении или переустановке системного tap.
             captured.remove(keyCode)
         }
-        let enabled = keyCode == 53 ? cancelOnEscape : finishOnEnter
+        let enabled = keyCode == 49 ? pauseOnSpace || resumeOnSpace
+            : keyCode == 53 ? cancelOnEscape : finishOnEnter
         guard enabled, !suspended, !modified, !isRepeat, let recordingSessionID else {
             return .passThrough
         }
         captured.insert(keyCode)
+        if keyCode == 49 { return .togglePause(recordingSessionID) }
         return keyCode == 53 ? .cancel(recordingSessionID) : .finish(recordingSessionID)
     }
 }

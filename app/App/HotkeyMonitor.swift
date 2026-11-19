@@ -8,8 +8,10 @@ final class HotkeyMonitor {
     var onAction: ((NSPoint) -> Void)?
     var onImprove: ((NSPoint) -> Void)?
     var recordingSessionIDProvider: (() -> UUID?)?
+    var pausedSessionIDProvider: (() -> UUID?)?
     var onFinishRecording: ((UUID) -> Void)?
     var onCancelRecording: ((UUID) -> Void)?
+    var onTogglePauseRecording: ((UUID) -> Void)?
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -18,6 +20,7 @@ final class HotkeyMonitor {
     private var suspended = false
     private var stopRecordingOnEnter = false
     private var cancelRecordingOnEscape = false
+    private var pauseRecordingOnSpace = true
     private var dictationKeys = DictationKeyPolicy()
 
     func start(settings: Settings) {
@@ -40,6 +43,7 @@ final class HotkeyMonitor {
         improveHotkey = settings.hotkeyImprove
         stopRecordingOnEnter = settings.stopRecordingOnEnter
         cancelRecordingOnEscape = settings.cancelRecordingOnEscape
+        pauseRecordingOnSpace = settings.pauseRecordingOnSpace
     }
 
     func setSuspended(_ value: Bool) {
@@ -103,11 +107,15 @@ final class HotkeyMonitor {
         let flags = event.flags
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
         let modified = !flags.intersection([.maskControl, .maskShift, .maskAlternate, .maskCommand]).isEmpty
+        let recordingSessionID = recordingSessionIDProvider?()
         let decision = dictationKeys.handle(type == .keyDown ? .down : .up,
                                            keyCode: UInt16(keyCode), isRepeat: isRepeat, modified: modified,
                                            finishOnEnter: stopRecordingOnEnter,
-                                           cancelOnEscape: cancelRecordingOnEscape, suspended: suspended,
-                                           recordingSessionID: recordingSessionIDProvider?())
+                                           cancelOnEscape: cancelRecordingOnEscape,
+                                           pauseOnSpace: pauseRecordingOnSpace,
+                                           resumeOnSpace: recordingSessionID != nil && pausedSessionIDProvider?() == recordingSessionID,
+                                           suspended: suspended,
+                                           recordingSessionID: recordingSessionID)
         switch decision {
         case .consume: return true
         case .finish(let sessionID):
@@ -118,9 +126,13 @@ final class HotkeyMonitor {
             Log.write("hotkey fired: cancel by Esc")
             DispatchQueue.main.async { [weak self] in self?.onCancelRecording?(sessionID) }
             return true
+        case .togglePause(let sessionID):
+            Log.write("hotkey fired: pause/resume by Space")
+            DispatchQueue.main.async { [weak self] in self?.onTogglePauseRecording?(sessionID) }
+            return true
         case .passThrough: break
         }
-        // keyUp обслуживает только уже захваченный Enter/Esc. Основные хоткеи
+        // keyUp обслуживает только уже захваченный Enter/Esc/Space. Основные хоткеи
         // по-прежнему вызываются один раз на keyDown, не при отпускании.
         guard type == .keyDown, !suspended else { return false }
 

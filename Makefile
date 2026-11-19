@@ -1,6 +1,6 @@
 REPO := $(CURDIR)
 
-.PHONY: all install app install-app dmg clean reload test-live-hud test-native test-editing
+.PHONY: all install app install-app dmg clean reload test-live-hud test-native test-editing test-recognition test-pause test-api test-updates
 
 all: bin/pastev bin/dictatehud
 
@@ -26,6 +26,18 @@ test-native:
 
 test-editing:
 	bash scripts/test-editing.sh
+
+test-recognition:
+	bash scripts/test-recognition.sh
+
+test-updates:
+	bash scripts/test-updates.sh
+
+test-api:
+	bash scripts/test-api.sh
+
+test-pause:
+	bash scripts/test-pause.sh
 
 install-app: app
 	./scripts/install-app.sh

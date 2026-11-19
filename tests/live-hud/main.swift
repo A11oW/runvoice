@@ -12,8 +12,8 @@ private func spin(_ seconds: TimeInterval) {
     while Date() < end { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
 }
 
-private func waitFor(_ message: String, _ condition: () -> Bool) {
-    let end = Date().addingTimeInterval(2)
+private func waitFor(_ message: String, timeout: TimeInterval = 2, _ condition: () -> Bool) {
+    let end = Date().addingTimeInterval(timeout)
     while !condition(), Date() < end { spin(0.01) }
     expect(condition(), message)
 }
@@ -163,6 +163,35 @@ expect(DictationState.recording.statusItemSymbol == StatusItemSymbol.listening, 
 expect(DictationState.transcribing.statusItemSymbol == StatusItemSymbol.processing, "Иконка финального ASR")
 expect(DictationState.fixing(message: "сырой текст").statusItemSymbol == StatusItemSymbol.processing, "Правка остаётся активным процессом")
 
+let pausedState = DictationState(raw: "paused")!
+expect(pausedState == .paused && pausedState.key == "paused", "Пауза читается из файла статуса")
+expect(pausedState.statusItemSymbol == "pause.circle.fill", "Пауза явно обозначена в строке меню")
+var pausedContent = pausedState.hud!
+pausedContent.transcript = "Используй Cypress вместо Playwright."
+expect(pausedContent.isPaused && pausedContent.showLevel && pausedContent.showStop,
+       "Пауза сохраняет строку записи, таймер и кнопку отмены")
+expect(pausedContent.text == "Пауза" && !pausedContent.showSpinner && pausedContent.autoHideAfter == nil,
+       "Пауза остаётся на экране без спиннера")
+expect(pausedContent.transcript == "Используй Cypress вместо Playwright.", "Предварительный текст доступен в паузе")
+expect(!DictationState.recording.hud!.isPaused && !DictationState.transcribing.hud!.isPaused,
+       "Пауза не переносится в активную запись или финальную обработку")
+
+var recordingClock = HUDRecordingClock()
+expect(recordingClock.elapsed(at: 100) == 0, "Новые часы пусты")
+recordingClock.resume(at: 100)
+recordingClock.resume(at: 105)
+expect(recordingClock.elapsed(at: 112.75) == 12.75, "Перерисовка не перезапускает время записи")
+recordingClock.pause(at: 112.75)
+expect(recordingClock.elapsed(at: 900) == 12.75, "Время паузы не считается записанным аудио")
+recordingClock.pause(at: 950)
+expect(recordingClock.elapsed(at: 1000) == 12.75, "Повторный статус паузы не прибавляет время")
+recordingClock.resume(at: 1000)
+expect(recordingClock.elapsed(at: 1007.25) == 20, "Продолжение складывает активные части записи")
+recordingClock.reset()
+expect(recordingClock.elapsed(at: 2000) == 0, "Завершение очищает часы следующей сессии")
+recordingClock.pause(at: 2000)
+expect(recordingClock.elapsed(at: 3000) == 0, "Пауза до запуска не создаёт время записи")
+
 // Результат показывает только метаданные итогового текста и реального получателя.
 let receiver = HUDApplication(name: "WebStorm", bundleURL: URL(fileURLWithPath: "/Applications/WebStorm.app"))
 let receipt = HUDContent.completed(text: "Раз два три, раз два три!", application: receiver)
@@ -184,6 +213,24 @@ let largeReceipt = receiptWidth("Visual Studio Code · 123 слова")
 expect(smallReceipt < largeReceipt && largeReceipt < 360, "Ширина успеха соответствует содержимому")
 expect(receiptWidth(String(repeating: "длинное имя ", count: 20), maximum: 220) == 220,
        "Длинное название ограничено шириной экрана")
+
+let instantaneousSpectrum = WaveformView(frame: NSRect(x: 0, y: 0, width: 72, height: 24))
+instantaneousSpectrum.setSpectrum(Array(repeating: 0.25, count: WaveformLevels.count))
+expect(abs(instantaneousSpectrum.activityLevel - 0.42) < 0.001, "Спектр принимает новый кадр мгновенно, без таймера сглаживания")
+var envelope = RecordingAuraEnvelope()
+envelope.advance(toward: instantaneousSpectrum.activityLevel, elapsed: 0.05)
+let earlyAura = envelope.level
+for _ in 0..<14 { envelope.advance(toward: instantaneousSpectrum.activityLevel, elapsed: 0.05) }
+let speechAura = envelope.level
+expect(speechAura > earlyAura && speechAura < 0.5, "Только аура нарастает плавно на уровне обычной речи")
+instantaneousSpectrum.setSpectrum(Array(repeating: 0, count: WaveformLevels.count))
+expect(instantaneousSpectrum.activityLevel == 0, "Эквалайзер мгновенно сбрасывает тишину")
+envelope.advance(toward: instantaneousSpectrum.activityLevel, elapsed: 0.05)
+expect(envelope.level > 0 && envelope.level < speechAura, "Аура продолжает плавный спад после мгновенного сброса спектра")
+envelope.reset()
+expect(envelope.level == 0, "Сброс останавливает остаточную ауру")
+expect(RecordingAuraEnvelope.target(for: Array(repeating: 1, count: 18)) == 0.88, "Громкий звук оставляет запас до края круга")
+expect(RecordingAuraEnvelope.target(for: Array(repeating: 0.02, count: 18)) == 0, "Фоновый уровень не усиливается")
 
 var waveform = WaveformLevels()
 var lowBands = [CGFloat](repeating: 0, count: 18); lowBands[3] = 0.8
@@ -401,7 +448,7 @@ expect(texts.count == 1, "После остановки запоздалый о�
 // Новая сессия не наследует счётчик/текст предыдущей; HTTP-ошибка не убивает preview.
 FakeWhisper.reset(statuses: [503, 200])
 transcriber.start(modelPath: "/model", language: "en")
-waitFor("После ошибки предпросмотр возобновился") { texts.count == 2 }
+waitFor("После ошибки предпросмотр возобновился", timeout: 4) { texts.count == 2 }
 expect(FakeWhisper.count == 2, "После HTTP-ошибки есть повторная попытка")
 transcriber.stop()
 
@@ -497,6 +544,47 @@ expect(FakeWhisper.count == 1, "Проверка каждые 10 мс не со�
 waitFor("После ограниченной паузы повтор разрешён") { FakeWhisper.count == 2 }
 failing.stop()
 
+// Parakeet использует ту же оконную политику, но без HTTP/Whisper-сервера.
+let local = LiveTranscriber(directory: directory, serverURL: URL(string: "http://127.0.0.1:1")!, interval: 0.01)
+var localRequests: [Data] = []
+var localResponses: [(Result<String, Error>) -> Void] = []
+var localTexts: [String] = []
+var localCancelled = 0
+var localWarmups = 0
+local.onUpdate = { localTexts.append($0) }
+local.onNeedsServer = { localWarmups += 1 }
+let localRecognizer: LiveTranscriber.Recognizer = { pcm, completion in
+    localRequests.append(pcm)
+    localResponses.append(completion)
+    return { localCancelled += 1 }
+}
+local.start(modelPath: "parakeet", language: "auto", inMemory: true, recognizer: localRecognizer)
+local.append(Data(repeating: 0x12, count: 25_598))
+spin(0.04)
+expect(localRequests.isEmpty, "Parakeet ждёт 0.8 с начального PCM")
+local.append(Data([0x12, 0x12]))
+waitFor("Первый локальный preview") { localRequests.count == 1 }
+local.append(Data(repeating: 0x34, count: 256_000))
+spin(0.06)
+expect(localRequests.count == 1 && localWarmups == 0, "Локальный preview не создаёт очередь или прогрев Whisper")
+localResponses[0](.success("Используй Cypress вместо Playwright"))
+waitFor("Свежий локальный снимок отправлен сразу после ответа") { localRequests.count == 2 }
+expect(localRequests[1] == Data(repeating: 0x34, count: 192_000), "Parakeet получает последние 6 с PCM без WAV-заголовка")
+let oldLocalCallback = localResponses[1]
+let oldLocalTextCount = localTexts.count
+local.stop()
+oldLocalCallback(.success("Устаревший ответ"))
+spin(0.04)
+expect(localTexts.count == oldLocalTextCount && localCancelled == 1, "Остановка отменяет локальный запрос и игнорирует поздний ответ")
+local.start(modelPath: "parakeet", language: "auto", inMemory: true, recognizer: localRecognizer)
+local.append(Data(repeating: 0x12, count: 25_600))
+waitFor("Новая локальная сессия") { localRequests.count == 3 }
+localResponses[2](.failure(URLError(.cannotDecodeContentData)))
+spin(0.15)
+expect(localRequests.count == 3, "Ошибка локальной модели использует backoff, без потока повторов")
+waitFor("Локальная модель повторяет запрос после паузы") { localRequests.count == 4 }
+local.stop()
+
 // Изолированный pasteboard: общий пользовательский буфер не используется.
 let pasteboard = NSPasteboard.withUniqueName()
 defer { pasteboard.releaseGlobally() }
@@ -523,7 +611,80 @@ delivery.deliver("Оставить в буфере", restoreClipboard: false) { 
 spin(0.08)
 expect(pasteboard.string(forType: .string) == "Оставить в буфере", "Выключенное восстановление учитывается")
 
+try testPausedPreview()
 print("OK: \(checks) проверок live preview, состояний и размещения HUD")
+
+// Настоящий Parakeet: отдельные файлы модели/синтетического PCM задаются явно.
+// Микрофон, глобальный буфер и пользовательские AI-профили не используются.
+if let input = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PCM"],
+   let helperPath = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PARAKEET_HELPER"],
+   let modelPath = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PARAKEET_MODELS"] {
+    let inputPCM = try Data(contentsOf: URL(fileURLWithPath: input))
+    let fullWAV = directory.appendingPathComponent("full-parakeet.wav")
+    try LiveTranscriber.wav(pcm: inputPCM).write(to: fullWAV)
+    let client = FluidSpeechClient(makeWorker: { _ in
+        ASRProcess(executable: URL(fileURLWithPath: helperPath), directory: URL(fileURLWithPath: modelPath))
+    }, isInstalled: { _ in true })
+    let local = LiveTranscriber(directory: directory, serverURL: URL(string: "http://127.0.0.1:1")!)
+    let language = ProcessInfo.processInfo.environment["RUNVOICE_TEST_LANGUAGE"] ?? "auto"
+    let model = FluidModel(rawValue: ProcessInfo.processInfo.environment["RUNVOICE_TEST_FLUID_MODEL"] ?? "") ?? .parakeet
+    let stream = ProcessInfo.processInfo.environment["RUNVOICE_TEST_STREAM"] == "1"
+    var updates: [String] = []
+    var measurements: [LiveTranscriber.Timing] = []
+    var firstTextMS: Int?
+    let warmupStarted = ProcessInfo.processInfo.systemUptime
+    client.warmUp(model: model)
+    let readyDeadline = Date().addingTimeInterval(120)
+    while !client.ready && client.healthy, Date() < readyDeadline { spin(0.05) }
+    expect(client.ready, "Фоновый прогрев Parakeet завершён до начала диктовки")
+    let warmupMS = Int((ProcessInfo.processInfo.systemUptime - warmupStarted) * 1000)
+    let started = ProcessInfo.processInfo.systemUptime
+    local.onUpdate = { text in
+        updates.append(text)
+        if firstTextMS == nil { firstTextMS = Int((ProcessInfo.processInfo.systemUptime - started) * 1000) }
+    }
+    local.onTiming = { measurements.append($0) }
+    client.start(model: model, language: language)
+    local.start(modelPath: model.rawValue, language: language, inMemory: true,
+                recognizer: { pcm, completion in client.preview(pcm, completion: completion) })
+    if stream {
+        for offset in stride(from: 0, to: inputPCM.count, by: 1600) {
+            local.append(inputPCM.subdata(in: offset..<min(offset + 1600, inputPCM.count)))
+            spin(0.05)
+        }
+    } else {
+        local.append(inputPCM)
+        let deadline = Date().addingTimeInterval(30)
+        while updates.isEmpty, Date() < deadline { spin(0.05) }
+    }
+    local.stop()
+    let stopped = ProcessInfo.processInfo.systemUptime
+    var completed = false
+    var finalText: String?
+    client.finish(audio: fullWAV) { finalText = $0; completed = true }
+    let deadline = Date().addingTimeInterval(300)
+    while !completed, Date() < deadline { spin(0.05) }
+    expect(completed && !(finalText ?? "").isEmpty, "Настоящий Parakeet распознаёт полный WAV")
+    expect(!updates.isEmpty, "Настоящий Parakeet публикует текст до завершения записи")
+    if let expected = ProcessInfo.processInfo.environment["RUNVOICE_TEST_EXPECT_SUFFIX"] {
+        expect(finalText?.localizedCaseInsensitiveContains(expected) == true, "Финальный Parakeet содержит контрольную фразу")
+    }
+    let finalMS = Int((ProcessInfo.processInfo.systemUptime - stopped) * 1000)
+    let gaps = measurements.compactMap(\.updateGapMS).sorted()
+    let requestTimes = measurements.map(\.requestMS).sorted()
+    let metrics: [String: Any] = ["first_text_ms": firstTextMS ?? -1, "updates": updates.count, "warmup_ms": warmupMS,
+        "requests": measurements.count, "median_gap_ms": gaps.isEmpty ? -1 : gaps[gaps.count / 2],
+        "max_gap_ms": gaps.last ?? -1, "median_request_ms": requestTimes.isEmpty ? -1 : requestTimes[requestTimes.count / 2],
+        "final_ms": finalMS, "audio_seconds": Double(inputPCM.count) / 32000]
+    let metricsJSON = try JSONSerialization.data(withJSONObject: metrics, options: [.sortedKeys])
+    print("Parakeet timings [\(model.rawValue)]: " + String(decoding: metricsJSON, as: UTF8.self))
+    if ProcessInfo.processInfo.environment["RUNVOICE_TEST_TRACE"] == "1" {
+        let trace = ["preview": updates.joined(separator: "\n"), "final": finalText ?? ""]
+        let url = URL(fileURLWithPath: input).deletingPathExtension().appendingPathExtension("parakeet.json")
+        try JSONSerialization.data(withJSONObject: trace, options: [.prettyPrinted, .sortedKeys]).write(to: url)
+    }
+    client.unload()
+}
 
 // Необязательная интеграция с отдельным настоящим whisper-server и синтетической речью.
 if let input = ProcessInfo.processInfo.environment["RUNVOICE_TEST_PCM"],

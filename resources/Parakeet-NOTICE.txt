@@ -1,0 +1,25 @@
+Parakeet TDT v3 (0.6B)
+
+Исходная модель: NVIDIA Parakeet TDT 0.6B v3.
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+Лицензия весов: Creative Commons Attribution 4.0 International (CC BY 4.0).
+https://creativecommons.org/licenses/by/4.0/
+
+Преобразование в Core ML: FluidInference.
+https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml
+
+Runvoice использует Core ML-модель через FluidAudio. Веса скачиваются отдельно;
+Runvoice не обучает и не изменяет их. Лицензия библиотеки FluidAudio находится
+рядом в FluidAudio-LICENSE.
+
+Дополнительные производные модели (веса CC BY 4.0):
+
+Parakeet Ultra / Parakeet Redux — Moondream; Core ML: FluidInference.
+https://huggingface.co/moondream/parakeet-ultra
+https://huggingface.co/moondream/parakeet-redux
+https://huggingface.co/FluidInference/parakeet-ultra-coreml
+https://huggingface.co/FluidInference/parakeet-redux-coreml
+
+Phonon-2.5 — Fermion Research; начальная Core ML-конверсия: Muesli-HQ.
+https://huggingface.co/FermionResearch/Phonon-2.5
+https://huggingface.co/Muesli-HQ/phonon-2.5-coreml

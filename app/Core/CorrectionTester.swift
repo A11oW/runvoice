@@ -22,55 +22,65 @@ enum AIClient {
         }
     }
 
+    @discardableResult
     static func generate(provider: AIProvider,
                          system: String,
                          text: String,
                          apiKey: String? = nil,
-                         completion: @escaping (Result<String, Error>) -> Void) {
+                         logDetails: Bool = true,
+                         completion: @escaping (Result<String, Error>) -> Void) -> () -> Void {
+        let cancellation = AIRequestCancellation()
         let started = Date()
         let kind = provider.kind.rawValue
         let timedCompletion: (Result<String, Error>) -> Void = { result in
+            guard cancellation.complete() else { return }
             let elapsed = Int(Date().timeIntervalSince(started) * 1000)
-            switch result {
-            case .success:
-                Log.write("ai: provider=\(provider.displayTitle) kind=\(kind) model=\(provider.model) elapsed=\(elapsed)ms")
-            case .failure(let error):
-                let message = error.localizedDescription
-                    .replacingOccurrences(of: "\n", with: " ")
-                Log.write("ai: provider=\(provider.displayTitle) kind=\(kind) model=\(provider.model) elapsed=\(elapsed)ms error=\(message.prefix(200))")
+            if logDetails {
+                switch result {
+                case .success:
+                    Log.write("ai: provider=\(provider.displayTitle) kind=\(kind) model=\(provider.model) elapsed=\(elapsed)ms")
+                case .failure(let error):
+                    let message = error.localizedDescription
+                        .replacingOccurrences(of: "\n", with: " ")
+                    Log.write("ai: provider=\(provider.displayTitle) kind=\(kind) model=\(provider.model) elapsed=\(elapsed)ms error=\(message.prefix(200))")
+                }
             }
             completion(result)
         }
 
-        switch provider.kind {
-        case .openai:
-            let base: String
-            do {
-                base = try AIProviderURL.validateBase(provider.baseURL)
-            } catch {
-                finish(.failure(AIError.invalidBaseURL(error.localizedDescription)), timedCompletion)
-                return
+        func launch() {
+            switch provider.kind {
+            case .openai:
+                let base: String
+                do {
+                    base = try AIProviderURL.validateBase(provider.baseURL)
+                } catch {
+                    finish(.failure(AIError.invalidBaseURL(error.localizedDescription)), timedCompletion)
+                    return
+                }
+                openAIRequest(provider: provider, system: system, text: text,
+                              baseURL: base, apiKey: apiKey, cancellation: cancellation, completion: timedCompletion)
+            case .anthropic:
+                let base: String
+                do {
+                    base = try AIProviderURL.validateBase(provider.baseURL)
+                } catch {
+                    finish(.failure(AIError.invalidBaseURL(error.localizedDescription)), timedCompletion)
+                    return
+                }
+                anthropicRequest(provider: provider, system: system, text: text,
+                                 baseURL: base, apiKey: apiKey, cancellation: cancellation, completion: timedCompletion)
+            case .opencode:
+                guard let opencode = OpenCodeLocator.find() else {
+                    finish(.failure(AIError.noOpenCode), timedCompletion)
+                    return
+                }
+                openCodeRequest(provider: provider, system: system, text: text,
+                                binary: opencode, cancellation: cancellation, completion: timedCompletion)
             }
-            openAIRequest(provider: provider, system: system, text: text,
-                          baseURL: base, apiKey: apiKey, completion: timedCompletion)
-        case .anthropic:
-            let base: String
-            do {
-                base = try AIProviderURL.validateBase(provider.baseURL)
-            } catch {
-                finish(.failure(AIError.invalidBaseURL(error.localizedDescription)), timedCompletion)
-                return
-            }
-            anthropicRequest(provider: provider, system: system, text: text,
-                             baseURL: base, apiKey: apiKey, completion: timedCompletion)
-        case .opencode:
-            guard let opencode = OpenCodeLocator.find() else {
-                finish(.failure(AIError.noOpenCode), timedCompletion)
-                return
-            }
-            openCodeRequest(provider: provider, system: system, text: text,
-                            binary: opencode, completion: timedCompletion)
         }
+        launch()
+        return { cancellation.cancel() }
     }
 
     private static func openAIRequest(provider: AIProvider,
@@ -78,6 +88,7 @@ enum AIClient {
                                       text: String,
                                       baseURL: String,
                                       apiKey: String?,
+                                      cancellation: AIRequestCancellation,
                                       completion: @escaping (Result<String, Error>) -> Void) {
         let urlString: String
         if baseURL.hasSuffix("/chat/completions") {
@@ -107,14 +118,13 @@ enum AIClient {
         request.httpMethod = "POST"
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let key = sanitizedKey(apiKey)
-            ?? sanitizedKey(Keychain.value(for: provider.keychainAccount))
-            ?? sanitizedKey(ProcessInfo.processInfo.environment["OC_API_KEY"]) {
+        let key = requestKey(apiKey, provider: provider)
+        if let key {
             request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = data
 
-        session.dataTask(with: request) { data, _, error in
+        let task = session.dataTask(with: request) { data, _, error in
             if let error {
                 finish(.failure(error), completion)
                 return
@@ -133,7 +143,9 @@ enum AIClient {
                 return
             }
             finish(.success(text), completion)
-        }.resume()
+        }
+        cancellation.register { task.cancel() }
+        task.resume()
     }
 
     private static func anthropicRequest(provider: AIProvider,
@@ -141,6 +153,7 @@ enum AIClient {
                                          text: String,
                                          baseURL: String,
                                          apiKey: String?,
+                                         cancellation: AIRequestCancellation,
                                          completion: @escaping (Result<String, Error>) -> Void) {
         var base = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while base.hasSuffix("/") { base.removeLast() }
@@ -176,14 +189,13 @@ enum AIClient {
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        if let key = sanitizedKey(apiKey)
-            ?? sanitizedKey(Keychain.value(for: provider.keychainAccount))
-            ?? sanitizedKey(ProcessInfo.processInfo.environment["OC_API_KEY"]) {
+        let key = requestKey(apiKey, provider: provider)
+        if let key {
             request.setValue(key, forHTTPHeaderField: "x-api-key")
         }
         request.httpBody = data
 
-        session.dataTask(with: request) { data, _, error in
+        let task = session.dataTask(with: request) { data, _, error in
             if let error {
                 finish(.failure(error), completion)
                 return
@@ -201,13 +213,16 @@ enum AIClient {
                 return
             }
             finish(.success(text), completion)
-        }.resume()
+        }
+        cancellation.register { task.cancel() }
+        task.resume()
     }
 
     private static func openCodeRequest(provider: AIProvider,
                                         system: String,
                                         text: String,
                                         binary: String,
+                                        cancellation: AIRequestCancellation,
                                         completion: @escaping (Result<String, Error>) -> Void) {
         let prompt = system + "\n\n<text>" + text + "</text>"
         let payload: [String: Any] = [
@@ -225,6 +240,7 @@ enum AIClient {
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
+            guard !cancellation.isCancelled else { return }
             let process = Process()
             process.executableURL = URL(fileURLWithPath: binary)
             process.arguments = ["api", "post", "/api/experimental/generate", "--data", body]
@@ -238,32 +254,45 @@ enum AIClient {
             process.standardError = err
             do {
                 try process.run()
+                cancellation.register { if process.isRunning { process.terminate() } }
+                // Дренируем оба pipe параллельно, чтобы большой ответ не блокировал CLI.
+                let errors = AIDataBox()
+                let group = DispatchGroup()
+                group.enter()
+                DispatchQueue.global().async { errors.value = err.fileHandleForReading.readDataToEndOfFile(); group.leave() }
+                let output = out.fileHandleForReading.readDataToEndOfFile()
                 process.waitUntilExit()
+                group.wait()
+                guard !cancellation.isCancelled else { return }
+                handleOpenCode(output: output, errorData: errors.value, status: process.terminationStatus, completion: completion)
+                return
             } catch {
                 finish(.failure(error), completion)
                 return
             }
 
-            let output = out.fileHandleForReading.readDataToEndOfFile()
-            let errorData = err.fileHandleForReading.readDataToEndOfFile()
-            guard process.terminationStatus == 0 else {
-                let text = String(data: errorData, encoding: .utf8) ?? ""
-                finish(.failure(AIError.badResponse(String(text.prefix(300)))), completion)
-                return
-            }
-            guard let json = try? JSONSerialization.jsonObject(with: output) as? [String: Any],
-                  let dataObject = json["data"] as? [String: Any],
-                  let text = dataObject["text"] as? String else {
-                let text = String(data: output, encoding: .utf8) ?? "пусто"
-                finish(.failure(AIError.badResponse(String(text.prefix(300)))), completion)
-                return
-            }
-            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                finish(.failure(AIError.emptyAnswer), completion)
-                return
-            }
-            finish(.success(text), completion)
         }
+    }
+
+    private static func handleOpenCode(output: Data, errorData: Data, status: Int32,
+                                       completion: @escaping (Result<String, Error>) -> Void) {
+        guard status == 0 else {
+            let text = String(data: errorData, encoding: .utf8) ?? ""
+            finish(.failure(AIError.badResponse(String(text.prefix(300)))), completion)
+            return
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: output) as? [String: Any],
+              let dataObject = json["data"] as? [String: Any],
+              let text = dataObject["text"] as? String else {
+            let text = String(data: output, encoding: .utf8) ?? "пусто"
+            finish(.failure(AIError.badResponse(String(text.prefix(300)))), completion)
+            return
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            finish(.failure(AIError.emptyAnswer), completion)
+            return
+        }
+        finish(.success(text), completion)
     }
 
     private static let session: URLSession = {
@@ -274,6 +303,12 @@ enum AIClient {
                           delegate: RedirectGuard(),
                           delegateQueue: nil)
     }()
+
+    private static func requestKey(_ explicit: String?, provider: AIProvider) -> String? {
+        if let explicit { return sanitizedKey(explicit) }
+        return sanitizedKey(Keychain.value(for: provider.keychainAccount))
+            ?? sanitizedKey(ProcessInfo.processInfo.environment["OC_API_KEY"])
+    }
 
     private static func sanitizedKey(_ value: String?) -> String? {
         guard let value else { return nil }
@@ -323,3 +358,31 @@ private final class RedirectGuard: NSObject, URLSessionTaskDelegate {
         completionHandler(request)
     }
 }
+
+/// Отмена используется API; существующие вызовы GUI могут игнорировать возвращённую функцию.
+private final class AIRequestCancellation {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var finished = false
+    private var actions: [() -> Void] = []
+    var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return cancelled }
+    func register(_ action: @escaping () -> Void) {
+        lock.lock()
+        if finished { lock.unlock(); return }
+        if cancelled { lock.unlock(); action(); return }
+        actions.append(action); lock.unlock()
+    }
+    func cancel() {
+        lock.lock(); cancelled = true
+        let pending = actions; actions.removeAll(); lock.unlock()
+        pending.forEach { $0() }
+    }
+    func complete() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !cancelled, !finished else { return false }
+        finished = true; actions.removeAll()
+        return true
+    }
+}
+
+private final class AIDataBox { var value = Data() }

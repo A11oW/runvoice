@@ -124,8 +124,12 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
     }
 
     private func build() {
-        let note = NSTextField(wrappingLabelWithString:
-            "Подсказки для Whisper, усиление терминов в Nemotron и подсказки AI-редактору. Одна строка — один термин или фраза, до 80 символов.")
+        let note = NSTextField(wrappingLabelWithString: [
+            "Whisper — термины передаются как подсказка при распознавании.",
+            "Nemotron — термины передаются в словарь потоковой модели.",
+            "Parakeet и Phonon — термины учитываются только при AI-правке; при отключённой AI-правке словарь для них не применяется.",
+            "При включённой AI-правке словарь дополнительно учитывается для всех моделей.",
+        ].joined(separator: "\n"))
         note.font = .systemFont(ofSize: 12)
         note.textColor = .secondaryLabelColor
         countLabel.font = .systemFont(ofSize: 11)
@@ -154,7 +158,8 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         scroll.borderType = .bezelBorder
         scroll.documentView = table
 
-        let inputNote = NSTextField(labelWithString: "Добавьте термин или список через запятую либо с новой строки")
+        let inputNote = NSTextField(wrappingLabelWithString:
+            "Одна строка — один термин или фраза, до 80 символов.\nДобавьте термин или список через запятую либо с новой строки")
         inputNote.font = .systemFont(ofSize: 11)
         inputNote.textColor = .secondaryLabelColor
         input.isRichText = false

@@ -15,6 +15,7 @@ struct HUDContent {
     var showLevel = false
     var showStop = false
     var showSpinner = false
+    var isPaused = false
     var transcript = ""
     var delivery: HUDDelivery? = nil
 
@@ -37,12 +38,39 @@ enum StatusItemSymbol {
     static let idle = "waveform"
     static let listening = "mic"
     static let processing = "ellipsis"
+    static let paused = "pause.circle.fill"
+}
+
+/// Монотонные часы активной записи. Пауза сохраняет накопленное время,
+/// повторная отрисовка не начинает отсчёт заново.
+struct HUDRecordingClock {
+    private var accumulated: TimeInterval = 0
+    private var runningSince: TimeInterval?
+
+    mutating func resume(at now: TimeInterval) {
+        if runningSince == nil { runningSince = now }
+    }
+
+    mutating func pause(at now: TimeInterval) {
+        if let runningSince { accumulated += max(0, now - runningSince) }
+        runningSince = nil
+    }
+
+    mutating func reset() {
+        accumulated = 0
+        runningSince = nil
+    }
+
+    func elapsed(at now: TimeInterval) -> TimeInterval {
+        accumulated + (runningSince.map { max(0, now - $0) } ?? 0)
+    }
 }
 
 /// Состояние диктовки, которое приложение читает из файла status.
 enum DictationState: Equatable {
     case preparing
     case recording
+    case paused
     case transcribing
     case fixing(message: String)
     case done(message: String)
@@ -61,6 +89,7 @@ enum DictationState: Equatable {
         switch name {
         case "preparing": self = .preparing
         case "recording": self = .recording
+        case "paused": self = .paused
         case "transcribing": self = .transcribing
         case "fixing": self = .fixing(message: message)
         case "done": self = .done(message: message)
@@ -76,6 +105,7 @@ enum DictationState: Equatable {
         switch self {
         case .preparing: return "preparing"
         case .recording: return "recording"
+        case .paused: return "paused"
         case .transcribing: return "transcribing"
         case .fixing: return "fixing"
         case .done: return "done"
@@ -95,6 +125,7 @@ enum DictationState: Equatable {
     var statusItemSymbol: String {
         switch self {
         case .recording: return StatusItemSymbol.listening
+        case .paused: return StatusItemSymbol.paused
         case .transcribing, .fixing: return StatusItemSymbol.processing
         default: return StatusItemSymbol.idle
         }
@@ -110,6 +141,10 @@ enum DictationState: Equatable {
             return HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                               hudIcon: "mic", accent: .neutral, autoHideAfter: nil,
                               showLevel: true, showStop: true)
+        case .paused:
+            return HUDContent(text: "Пауза", busy: true, icon: "pause.circle.fill",
+                              hudIcon: "pause.circle.fill", accent: .neutral, autoHideAfter: nil,
+                              showLevel: true, showStop: true, isPaused: true)
         case .transcribing:
             return HUDContent(text: "Распознаю…", busy: true, icon: "waveform",
                               hudIcon: "waveform", accent: .neutral, autoHideAfter: nil, showSpinner: true)

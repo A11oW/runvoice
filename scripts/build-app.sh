@@ -9,9 +9,11 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$REPO/dist"
 BUILD="$REPO/.build"
 
+bash "$REPO/scripts/prepare-sparkle.sh"
+
 # помощник вставки для CLI должен существовать
 if [ ! -x "$REPO/bin/pastev" ]; then
-  cc -O2 -framework ApplicationServices -o "$REPO/bin/pastev" "$REPO/bin/pastev.c"
+  cc -O2 -mmacosx-version-min=15.0 -framework ApplicationServices -o "$REPO/bin/pastev" "$REPO/bin/pastev.c"
 fi
 
 mkdir -p "$DIST" "$BUILD"
@@ -49,9 +51,14 @@ build_variant() {
 
   cp "$BUILD/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
   swiftc -O -target "$arch-apple-macos15.0" \
+    -F "$BUILD/sparkle" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     -o "$app/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
 
   cp "$REPO/app/Info.plist" "$app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :SUFeedURL https://github.com/A11oW/runvoice/releases/latest/download/appcast-$label.xml" "$app/Contents/Info.plist"
+  mkdir -p "$app/Contents/Frameworks"
+  ditto "$BUILD/sparkle/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+  cp "$BUILD/sparkle/LICENSE" "$app/Contents/Resources/Sparkle-LICENSE.txt"
   cp "$REPO/bin/dictate.sh" "$app/Contents/Resources/dictate.sh"
   cp "$REPO/resources/warmup.wav" "$app/Contents/Resources/warmup.wav"
   if [ "$arch" = "arm64" ]; then
@@ -59,11 +66,12 @@ build_variant() {
     codesign --force --sign "$SIGN_ID" "$app/Contents/Resources/RunvoiceASR" >/dev/null
     mkdir -p "$app/Contents/Resources/licenses"
     cp "$BUILD/streaming/checkouts/FluidAudio/LICENSE" "$app/Contents/Resources/licenses/FluidAudio-LICENSE"
+    cp "$REPO/resources/Parakeet-NOTICE.txt" "$app/Contents/Resources/licenses/Parakeet-NOTICE.txt"
     cp "$BUILD/streaming/checkouts/FluidAudio/ThirdPartyLicenses/fastcluster-LICENSE.md" \
       "$app/Contents/Resources/licenses/fastcluster-LICENSE.md"
   fi
 
-  if ! cc -O2 -arch "$arch" -framework ApplicationServices \
+  if ! cc -O2 -arch "$arch" -mmacosx-version-min=15.0 -framework ApplicationServices \
         -o "$app/Contents/Resources/pastev" "$REPO/bin/pastev.c" 2>/dev/null; then
     cp "$REPO/bin/pastev" "$app/Contents/Resources/pastev"
   fi
@@ -71,18 +79,22 @@ build_variant() {
 
   "$REPO/scripts/bundle-whisper.sh" "$app/Contents/Resources/whisper" "$arch"
 
+  bash "$REPO/scripts/build-vad.sh" "$app/Contents/Resources/whisper/bin/runvoice-vad" "$arch"
+
   if [ -f "$VAD" ]; then
     mkdir -p "$app/Contents/Resources/whisper/models"
     cp "$VAD" "$app/Contents/Resources/whisper/models/"
   else
-    echo "    VAD-модель не найдена ($VAD) — распознавание будет без VAD"
+    echo "    VAD-модель не найдена ($VAD)" >&2; exit 1
   fi
 
   mkdir -p "$app/Contents/Resources/whisper/licenses"
+  cp "$REPO/resources/Whisper-CodeSwitch-NOTICE.txt" "$app/Contents/Resources/whisper/licenses/Whisper-CodeSwitch-NOTICE.txt"
   [ -f "$BUILD/whisper-src/LICENSE" ] && \
     cp "$BUILD/whisper-src/LICENSE" "$app/Contents/Resources/whisper/licenses/whisper.cpp-LICENSE"
 
-  for f in "$app/Contents/Resources/whisper/bin/whisper-server" \
+  for f in "$app/Contents/Resources/whisper/bin/runvoice-vad" \
+           "$app/Contents/Resources/whisper/bin/whisper-server" \
            "$app/Contents/Resources/whisper/bin/whisper-cli" \
            "$app/Contents/Resources/pastev"; do
     codesign --force --sign "$SIGN_ID" "$f" >/dev/null 2>&1 || true

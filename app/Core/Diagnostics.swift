@@ -76,7 +76,7 @@ enum Dependency: CaseIterable, Equatable {
             return WhisperModelStore.bundledCLI?.path ?? "/opt/homebrew/bin/whisper-cli"
         case .whisperModel:
             return WhisperModelStore.activeModel(settings: SettingsStore.load())?.path
-                ?? "не выбрана — Настройки → Модели"
+                ?? "не выбрана — Настройки → Распознавание"
         case .vadModel:
             return WhisperModelStore.bundledVAD?.path
                 ?? home.appendingPathComponent(".local/share/whisper/ggml-silero-v5.1.2.bin").path

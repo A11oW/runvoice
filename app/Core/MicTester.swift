@@ -3,9 +3,10 @@ import Foundation
 /// Проверяет тот же нативный тракт и устройство, что использует диктовка.
 enum MicTester {
     private static var active: NativeAudioRecorder?
+    static var isBusy: Bool { active != nil }
     static func test(micName: String, deviceUID: String = "", completion: @escaping (Result<String, Error>) -> Void) {
         let state = (try? String(contentsOf: Paths.status, encoding: .utf8)).flatMap(DictationState.init(raw:))
-        guard active == nil, !["preparing", "recording", "transcribing", "fixing"].contains(state?.key ?? "") else {
+        guard !UpdateCoordinator.shared.isInstalling, active == nil, !["preparing", "recording", "paused", "transcribing", "fixing"].contains(state?.key ?? "") else {
             completion(.failure(TestError.busy)); return
         }
         let recorder = NativeAudioRecorder()

@@ -3,9 +3,20 @@ import AudioToolbox
 import CoreAudio
 import Synchronization
 
+/// Контроль одной записи; пауза сохраняет файл и не финализирует ресемплер.
+protocol DictationAudioRecording: AnyObject {
+    var onAudio: ((Data) -> Void)? { get set }
+    var onFailure: ((Error) -> Void)? { get set }
+    func start(microphone: String, deviceUID: String, url: URL,
+               completion: @escaping (Result<Void, Error>) -> Void)
+    func pause(completion: @escaping (Result<Void, Error>) -> Void)
+    func resume(completion: @escaping (Result<Void, Error>) -> Void)
+    func stop(discard: Bool, completion: @escaping (Result<NativeAudioRecorder.Recording, Error>) -> Void)
+}
+
 /// Один входной AUHAL для файла, уровня и ASR. Управление сериализовано на main;
 /// ресемплинг и файловый I/O выполняются в processing, вне аудиоколбэка.
-final class NativeAudioRecorder {
+final class NativeAudioRecorder: DictationAudioRecording {
     struct Recording { let url: URL; let frames: UInt64 }
     enum Failure: LocalizedError {
         case microphone, format, overflow, empty, busy, permission, configuration
@@ -40,7 +51,7 @@ final class NativeAudioRecorder {
 
     func start(microphone: String, deviceUID: String = "", url: URL,
                completion: @escaping (Result<Void, Error>) -> Void) {
-        DispatchQueue.main.async { [self] in
+        let startOnMain = { [self] in
             guard phase == "idle", Self.owner == nil else { completion(.failure(Failure.busy)); return }
             // Проверяем устройство до открытия Audio Unit.
             guard let device = AudioInputDevice.resolve(name: microphone, uid: deviceUID) else {
@@ -64,6 +75,9 @@ final class NativeAudioRecorder {
             default: open(device: device, url: url, completion: completion)
             }
         }
+        // Как stop: отмена на main не должна обгонять ещё не начатый start.
+        if Thread.isMainThread { startOnMain() }
+        else { DispatchQueue.main.async(execute: startOnMain) }
     }
 
     private func open(device: AudioInputDevice, url: URL, completion: @escaping (Result<Void, Error>) -> Void) {
@@ -126,8 +140,45 @@ final class NativeAudioRecorder {
         return running ? .ignore : .resume
     }
 
-    func stop(discard: Bool = false, completion: @escaping (Result<Recording, Error>) -> Void) {
+    func pause(completion: @escaping (Result<Void, Error>) -> Void) {
         DispatchQueue.main.async { [self] in
+            guard phase == "recording", let input else { completion(.failure(Failure.busy)); return }
+            do { try input.pause() }
+            catch { completion(.failure(error)); return }
+            phase = "pausing"
+            let token = generation
+            // AudioOutputUnitStop уже синхронизировался с render. Все буферы
+            // до границы паузы и их onAudio должны дойти до клиента до completion.
+            processing.async {
+                DispatchQueue.main.async { [self] in
+                    guard generation == token, phase == "pausing" else {
+                        completion(.failure(CocoaError(.userCancelled))); return
+                    }
+                    phase = "paused"
+                    completion(.success(()))
+                }
+            }
+        }
+    }
+
+    func resume(completion: @escaping (Result<Void, Error>) -> Void) {
+        DispatchQueue.main.async { [self] in
+            guard phase == "paused", let input, let inputDevice else {
+                completion(.failure(Failure.busy)); return
+            }
+            // Не переоткрываем незаметно другой микрофон или новый формат.
+            guard AudioInputDevice.resolve(name: inputDevice.name, uid: inputDevice.uid)?.id == inputDevice.id,
+                  input.formatMatchesHardware else { completion(.failure(Failure.configuration)); return }
+            do {
+                try input.resume()
+                phase = "recording"
+                completion(.success(()))
+            } catch { completion(.failure(error)) }
+        }
+    }
+
+    func stop(discard: Bool = false, completion: @escaping (Result<Recording, Error>) -> Void) {
+        let stopOnMain = { [self] in
             if phase == "stopping" { stopCompletions.append(completion); return }
             guard phase != "idle" else { completion(.failure(Failure.empty)); return }
             phase = "stopping"
@@ -153,6 +204,9 @@ final class NativeAudioRecorder {
                 }
             }
         }
+        // Отмена с main опережает ещё не выполненный resume из той же сессии.
+        if Thread.isMainThread { stopOnMain() }
+        else { DispatchQueue.main.async(execute: stopOnMain) }
     }
 
     private func release() {
@@ -224,13 +278,21 @@ final class PCMSink {
         let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * 16_000 / input.format.sampleRate)) + 256
         guard let converted = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: capacity) else { return }
         var supplied = false
-        var error: NSError?
-        let status = converter.convert(to: converted, error: &error) { _, state in
-            guard !supplied else { state.pointee = .noDataNow; return nil }
-            supplied = true; state.pointee = .haveData; return input
+        while true {
+            converted.frameLength = 0
+            var error: NSError?
+            let status = converter.convert(to: converted, error: &error) { _, state in
+                guard !supplied else { state.pointee = .noDataNow; return nil }
+                supplied = true; state.pointee = .haveData; return input
+            }
+            if status == .error { fail(error ?? NativeAudioRecorder.Failure.format as NSError); return }
+            write(converted)
+            if status == .inputRanDry || status == .endOfStream { return }
+            // haveData может заполнить output остатком прошлого input, ни разу
+            // не вызвав блок для нового буфера. Дренируем до inputRanDry, иначе
+            // короткий новый input терялся, а CapturePool уже переиспользовал его.
+            if converted.frameLength == 0 { fail(NativeAudioRecorder.Failure.format); return }
         }
-        if status == .error { fail(error ?? NativeAudioRecorder.Failure.format as NSError); return }
-        write(converted)
     }
 
     private func write(_ converted: AVAudioPCMBuffer) {

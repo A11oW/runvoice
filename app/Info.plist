@@ -2,29 +2,45 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>
-  <string>Runvoice</string>
-  <key>CFBundleDisplayName</key>
-  <string>Runvoice</string>
-  <key>CFBundleIdentifier</key>
-  <string>ai.opencode.runvoice</string>
-  <key>CFBundleVersion</key>
-  <string>1.1.11</string>
-  <key>CFBundleShortVersionString</key>
-  <string>1.1.11</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleExecutable</key>
-  <string>Runvoice</string>
-  <key>CFBundleIconFile</key>
-  <string>AppIcon</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>15.0</string>
-  <key>LSUIElement</key>
-  <true/>
-  <key>NSHighResolutionCapable</key>
-  <true/>
-  <key>NSMicrophoneUsageDescription</key>
-  <string>Runvoice записывает голос, чтобы распознать речь и вставить текст в активное окно.</string>
+	<key>CFBundleName</key>
+	<string>Runvoice</string>
+	<key>CFBundleDisplayName</key>
+	<string>Runvoice</string>
+	<key>CFBundleIdentifier</key>
+	<string>ai.opencode.runvoice</string>
+	<key>CFBundleVersion</key>
+	<string>1.1.14</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.14</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleExecutable</key>
+	<string>Runvoice</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Runvoice записывает голос, чтобы распознать речь и вставить текст в активное окно.</string>
+	<key>SUPublicEDKey</key>
+	<string>vr0IMlYdviflJpD5Y4UejOz+Xe7MqvN/7J7YxkzHAGg=</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/A11oW/runvoice/releases/latest/download/appcast-arm64.xml</string>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
+	<key>SUSignedFeedFailureExpirationInterval</key>
+	<integer>0</integer>
 </dict>
 </plist>
