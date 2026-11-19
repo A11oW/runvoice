@@ -7,35 +7,41 @@ import UniformTypeIdentifiers
 
 // MARK: - Окно настроек
 
-final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDelegate {
+final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let fixText = NSTextView()
     private let improveText = NSTextView()
     private let summaryText = NSTextView()
     private var promptTestLabel: NSTextField!
     private var improveTestLabel: NSTextField!
     private var summaryTestLabel: NSTextField!
-    private var improveEnabledCheck: NSButton!
+    private var improveEnabledCheck: NSSwitch!
     private var improveGroup: NSStackView!
     private var summaryGroup: NSStackView!
-    private var promptSeparator: NSBox!
-    private var improveSeparator: NSBox!
-    private var aiScroll: NSScrollView!
-    private var tabView: NSTabView!
+    private var sidebar: SettingsSidebar!
+    private var pageScroll: NSScrollView!
+    private var pageDocument: FlippedView!
+    private var pageHost: NSView!
+    private var pageTitleLabel: NSTextField!
+    private var pageSubtitleLabel: NSTextField!
+    private var footer: SettingsFooter!
+    private var pages: [String: NSView] = [:]
+    private var currentTab = "general"
     private var languagePopup: NSPopUpButton!
     private var micPopup: NSPopUpButton!
     private var micTestButton: NSButton!
     private var micTestLabel: NSTextField!
+    private var micTestRow: NSView?
     private var samplePanel: AudioSamplePanel?
     var hasActiveOperations: Bool { !downloads.isEmpty || fluidDownload != nil || samplePanel?.isBusy == true }
     private let updateStatusLabel = NSTextField(wrappingLabelWithString: "")
 
-    private var launchCheck: NSButton!
+    private var launchCheck: NSSwitch!
     private var launchNote: NSTextField!
     private var dictationProviderPopup: NSPopUpButton!
     private var improveProviderPopup: NSPopUpButton!
     private var dictationProviderNote: NSTextField!
     private var improveProviderNote: NSTextField!
-    private var providersStack: NSStackView!
+    private var providersStack: SettingsCard!
     private var providersEmptyLabel: NSTextField!
     private var providerEditor: ProviderEditorWindow?
     private var providers: [AIProvider] = []
@@ -44,16 +50,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     private var dictationProviderID: UUID?
     private var improveProviderID: UUID?
     private var promptGroup: NSStackView!
-    private var restoreCheck: NSButton!
-    private var resetButton: NSButton!
+    private var restoreCheck: NSSwitch!
     private var versionLabel: NSTextField!
-    private let apiEnable = NSButton(checkboxWithTitle: "Включить локальный API", target: nil, action: nil)
-    private let apiFilter = NSButton(checkboxWithTitle: "Фильтровать слабый сигнал и неречевые звуки", target: nil, action: nil)
-    private let apiVocabulary = NSButton(checkboxWithTitle: "Использовать словарь", target: nil, action: nil)
+    private let apiEnable = NSSwitch()
+    private let apiFilter = NSSwitch()
+    private let apiVocabulary = NSSwitch()
     private let apiThreshold = NSSlider(value: -55, minValue: -70, maxValue: -20, target: nil, action: nil)
     private let apiThresholdLabel = NSTextField(labelWithString: "")
     var onAPISettingsSaved: (() -> Void)?
-    private let apiImprove = NSButton(checkboxWithTitle: "Улучшать текст через AI", target: nil, action: nil)
+    private let apiImprove = NSSwitch()
     private let apiPortField = NSTextField(string: "8790")
     private let apiAddress = NSTextField(labelWithString: "")
     private let apiStatus = NSTextField(wrappingLabelWithString: "")
@@ -64,9 +69,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     private let apiProfile = NSTextField(wrappingLabelWithString: "")
     private var toggleHotkeyButton: NSButton!
     private var improveHotkeyButton: NSButton!
-    private let stopOnEnterCheck = NSButton(checkboxWithTitle: "Останавливать распознавание по нажатию Enter", target: nil, action: nil)
-    private let cancelOnEscapeCheck = NSButton(checkboxWithTitle: "Отменять диктовку по Esc", target: nil, action: nil)
-    private let pauseOnSpaceCheck = NSButton(checkboxWithTitle: "Пауза диктовки по пробелу", target: nil, action: nil)
+    private let stopOnEnterCheck = NSSwitch()
+    private let cancelOnEscapeCheck = NSSwitch()
+    private let pauseOnSpaceCheck = NSSwitch()
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var modelsStack: NSStackView!
@@ -91,7 +96,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     private var historyTable: NSTableView!
     private var historyDetail: NSTextView!
     private var historySearch: NSSearchField!
-    private var historyEnabledCheck: NSButton!
+    private var historyEnabledCheck: NSSwitch!
     private var historyItemsField: NSTextField!
     private var historyItemsStepper: NSStepper!
     private var historyDaysField: NSTextField!
@@ -130,12 +135,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     private let languages = ["ru", "en", "auto"]
 
     convenience init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 780),
                               styleMask: [.titled, .closable, .resizable],
                               backing: .buffered, defer: false)
-        window.contentMinSize = NSSize(width: 900, height: 650)
-        window.minSize = NSSize(width: 900, height: 650)
+        window.contentMinSize = NSSize(width: 1020, height: 680)
+        window.minSize = NSSize(width: 1020, height: 680)
         window.title = "Runvoice — Настройки"
+        window.backgroundColor = SettingsStyle.pageBackground
         window.isReleasedWhenClosed = false
         window.center()
         self.init(window: window)
@@ -170,11 +176,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
             self.refreshDiagnostics(force: false)
+            self.updateDirtyState()
         }
-        let current = window?.contentView?.bounds.size ?? NSSize(width: 900, height: 650)
-        window?.setContentSize(NSSize(width: max(900, current.width),
-                                      height: max(650, current.height)))
+        let current = window?.contentView?.bounds.size ?? NSSize(width: 1160, height: 780)
+        window?.setContentSize(NSSize(width: max(1020, current.width),
+                                      height: max(680, current.height)))
         window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -203,33 +211,62 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     }
 
     func selectTab(_ identifier: String) {
-        tabView.selectTabViewItem(withIdentifier: identifier)
-        let current = window?.contentView?.bounds.size ?? NSSize(width: 900, height: 650)
-        let size = NSSize(width: max(900, current.width), height: max(650, current.height))
-        window?.setContentSize(size)
+        guard let page = pages[identifier] else { return }
+        currentTab = identifier
+        let meta = pageMeta(identifier)
+        pageTitleLabel?.stringValue = meta.title
+        pageSubtitleLabel?.stringValue = meta.subtitle
+        sidebar?.select(identifier)
+
+        pageHost?.subviews.forEach { $0.removeFromSuperview() }
+        page.translatesAutoresizingMaskIntoConstraints = false
+        pageHost?.addSubview(page)
+        if let pageHost {
+            NSLayoutConstraint.activate([
+                page.topAnchor.constraint(equalTo: pageHost.topAnchor),
+                page.leadingAnchor.constraint(equalTo: pageHost.leadingAnchor),
+                page.trailingAnchor.constraint(equalTo: pageHost.trailingAnchor),
+                page.bottomAnchor.constraint(equalTo: pageHost.bottomAnchor)
+            ])
+        }
+        if identifier == "api" { refreshAPI() }
+        pageScroll?.contentView.scroll(to: .zero)
+        updateDirtyState()
         window?.contentView?.needsLayout = true
         window?.contentView?.layoutSubtreeIfNeeded()
-        tabView.needsLayout = true
-        tabView.layoutSubtreeIfNeeded()
-        DispatchQueue.main.async { [weak self] in
-            self?.window?.setContentSize(size)
-            self?.window?.contentView?.needsLayout = true
-            self?.window?.contentView?.layoutSubtreeIfNeeded()
-            self?.tabView.needsLayout = true
-            self?.tabView.layoutSubtreeIfNeeded()
-        }
     }
 
-    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
-        if tabViewItem?.identifier as? String == "api" { refreshAPI() }
+    private func pageMeta(_ identifier: String) -> (title: String, subtitle: String) {
+        switch identifier {
+        case "general":
+            return ("Основные", "Микрофон, вставка и запуск приложения")
+        case "hotkeys":
+            return ("Хоткеи", "Сочетания клавиш и поведение во время записи")
+        case "models":
+            return ("Распознавание", "Движок, язык и модели распознавания")
+        case "dictionary":
+            return ("Словарь", "Технические термины для распознавания и AI-правки")
+        case "providers":
+            return ("Провайдеры", "Подключения и модели AI-провайдеров")
+        case "ai":
+            return ("Постобработка", "Промпты и провайдеры для правки текста")
+        case "history":
+            return ("История", "Сохранённые расшифровки и лимиты хранения")
+        case "api":
+            return ("API", "Локальный сервис распознавания для внешних приложений")
+        default:
+            return ("Настройки", "")
+        }
     }
 
     /// Только демонстрационный снимок: настройки на диске не изменяются.
     func prepareDictionarySnapshot() {
         vocabularyEditor.load(["Cypress", "Playwright", "GitHub Actions"])
+        loadedSettings.speechVocabulary = vocabularyEditor.terms
+        updateDirtyState()
     }
 
-    /// Для отладочного скриншота: показать блок улучшения текста на вкладке «Постобработка».
+    /// Для отладочного скриншота: показать блок улучшения текста в разделе «Постобработка».
     func scrollAIToImprove() {
         scrollAITo(improveGroup)
     }
@@ -239,67 +276,78 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     }
 
     private func scrollAITo(_ group: NSStackView?) {
-        guard let aiScroll, let document = aiScroll.documentView, let group else { return }
+        guard let group, let document = pageDocument else { return }
         let rect = group.convert(group.bounds, to: document)
-        let maxY = max(0, document.bounds.height - aiScroll.contentView.bounds.height)
+        let maxY = max(0, document.bounds.height - pageScroll.contentView.bounds.height)
         let y = min(max(0, rect.minY - 24), maxY)
-        aiScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
-        aiScroll.reflectScrolledClipView(aiScroll.contentView)
+        pageScroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+        pageScroll.reflectScrolledClipView(pageScroll.contentView)
     }
 
     private func build() {
         guard let content = window?.contentView else { return }
+        content.wantsLayer = true
 
-        tabView = NSTabView()
-        tabView.delegate = self
-        tabView.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(tabView)
+        sidebar = SettingsSidebar()
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.onSelect = { [weak self] id in self?.selectTab(id) }
+        content.addSubview(sidebar)
 
-        let general = NSTabViewItem(identifier: "general")
-        general.label = "Основные"
-        general.view = buildGeneral()
-        tabView.addTabViewItem(general)
+        let contentArea = NSView()
+        contentArea.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(contentArea)
 
-        let models = NSTabViewItem(identifier: "models")
-        models.label = "Распознавание"
-        models.view = buildModels()
-        tabView.addTabViewItem(models)
+        let headerHost = NSView()
+        headerHost.translatesAutoresizingMaskIntoConstraints = false
+        contentArea.addSubview(headerHost)
 
-        let dictionary = NSTabViewItem(identifier: "dictionary")
-        dictionary.label = "Словарь"
-        dictionary.view = vocabularyEditor
-        tabView.addTabViewItem(dictionary)
+        pageTitleLabel = SettingsText.pageTitle("")
+        pageTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerHost.addSubview(pageTitleLabel)
 
-        let providers = NSTabViewItem(identifier: "providers")
-        providers.label = "Провайдеры"
-        providers.view = buildProviders()
-        tabView.addTabViewItem(providers)
+        pageSubtitleLabel = SettingsText.pageSubtitle("")
+        pageSubtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        headerHost.addSubview(pageSubtitleLabel)
 
-        let ai = NSTabViewItem(identifier: "ai")
-        ai.label = "Постобработка"
-        ai.view = buildAI()
-        tabView.addTabViewItem(ai)
+        pageScroll = NSScrollView()
+        pageScroll.hasVerticalScroller = true
+        pageScroll.autohidesScrollers = true
+        pageScroll.drawsBackground = false
+        pageScroll.borderType = .noBorder
+        pageScroll.translatesAutoresizingMaskIntoConstraints = false
+        contentArea.addSubview(pageScroll)
 
-        let history = NSTabViewItem(identifier: "history")
-        history.label = "История"
-        history.view = buildHistory()
-        tabView.addTabViewItem(history)
+        pageDocument = FlippedView()
+        pageDocument.translatesAutoresizingMaskIntoConstraints = false
+        pageHost = NSView()
+        pageHost.translatesAutoresizingMaskIntoConstraints = false
+        pageDocument.addSubview(pageHost)
+        pageScroll.documentView = pageDocument
+        let hostWidth = pageHost.widthAnchor.constraint(equalTo: pageDocument.widthAnchor,
+                                                        constant: -2 * SettingsStyle.pageInset)
+        hostWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            pageDocument.widthAnchor.constraint(equalTo: pageScroll.contentView.widthAnchor),
+            pageHost.topAnchor.constraint(equalTo: pageDocument.topAnchor, constant: 8),
+            pageHost.bottomAnchor.constraint(equalTo: pageDocument.bottomAnchor, constant: -24),
+            pageHost.centerXAnchor.constraint(equalTo: pageDocument.centerXAnchor),
+            pageHost.leadingAnchor.constraint(greaterThanOrEqualTo: pageDocument.leadingAnchor,
+                                              constant: SettingsStyle.pageInset),
+            pageHost.trailingAnchor.constraint(lessThanOrEqualTo: pageDocument.trailingAnchor,
+                                              constant: -SettingsStyle.pageInset),
+            pageHost.widthAnchor.constraint(lessThanOrEqualToConstant: SettingsStyle.contentMaxWidth),
+            hostWidth
+        ])
 
-        let hotkeys = NSTabViewItem(identifier: "hotkeys")
-        hotkeys.label = "Хоткеи"
-        hotkeys.view = buildHotkeys()
-        tabView.addTabViewItem(hotkeys)
-
-        let api = NSTabViewItem(identifier: "api")
-        api.label = "API"
-        api.view = buildAPI()
-        tabView.addTabViewItem(api)
-
-        resetButton = NSButton(title: "Сбросить вкладку", target: self, action: #selector(resetDefaults))
-        let logButton = NSButton(title: "Лог", target: self, action: #selector(openLog))
-        let dataButton = NSButton(title: "Данные", target: self, action: #selector(openData))
-        logButton.bezelStyle = .inline
-        dataButton.bezelStyle = .inline
+        footer = SettingsFooter()
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        footer.resetButton.target = self
+        footer.resetButton.action = #selector(resetDefaults)
+        footer.cancelButton.target = self
+        footer.cancelButton.action = #selector(cancel)
+        footer.saveButton.target = self
+        footer.saveButton.action = #selector(saveSettings)
+        contentArea.addSubview(footer)
 
         let hiddenVersion = SampleAccessLabel(labelWithString: "")
         hiddenVersion.onOpen = { [weak self] in self?.showAudioSamples() }
@@ -307,80 +355,135 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         versionLabel = hiddenVersion
         versionLabel.font = .systemFont(ofSize: 10)
         versionLabel.textColor = .secondaryLabelColor
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(versionLabel)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
         versionLabel.stringValue = (build.isEmpty || build == version) ? "v\(version)" : "v\(version) (\(build))"
 
-        let footer = NSStackView(views: [resetButton, logButton, dataButton, versionLabel])
-        footer.orientation = .horizontal
-        footer.alignment = .centerY
-        footer.spacing = 10
-        footer.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(footer)
-
-        let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancel))
-        cancel.keyEquivalent = "\u{1b}"
-        let save = NSButton(title: "Сохранить", target: self, action: #selector(saveSettings))
-        save.keyEquivalent = "\r"
-
-        for view in [cancel, save] as [NSView] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(view)
-        }
-
         NSLayoutConstraint.activate([
-            tabView.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
-            tabView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            tabView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            tabView.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
+            sidebar.topAnchor.constraint(equalTo: content.topAnchor),
+            sidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: SettingsStyle.sidebarWidth),
 
-            footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            contentArea.topAnchor.constraint(equalTo: content.topAnchor),
+            contentArea.leadingAnchor.constraint(equalTo: sidebar.trailingAnchor),
+            contentArea.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            contentArea.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
-            save.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            save.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-            cancel.trailingAnchor.constraint(equalTo: save.leadingAnchor, constant: -8),
-            cancel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            headerHost.topAnchor.constraint(equalTo: contentArea.topAnchor, constant: 22),
+            headerHost.centerXAnchor.constraint(equalTo: contentArea.centerXAnchor),
+            headerHost.widthAnchor.constraint(equalTo: pageHost.widthAnchor),
+
+            pageTitleLabel.topAnchor.constraint(equalTo: headerHost.topAnchor),
+            pageTitleLabel.leadingAnchor.constraint(equalTo: headerHost.leadingAnchor),
+            pageTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerHost.trailingAnchor),
+
+            pageSubtitleLabel.topAnchor.constraint(equalTo: pageTitleLabel.bottomAnchor, constant: 3),
+            pageSubtitleLabel.leadingAnchor.constraint(equalTo: pageTitleLabel.leadingAnchor),
+            pageSubtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerHost.trailingAnchor),
+            pageSubtitleLabel.bottomAnchor.constraint(equalTo: headerHost.bottomAnchor),
+
+            pageScroll.topAnchor.constraint(equalTo: pageSubtitleLabel.bottomAnchor, constant: 10),
+            pageScroll.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
+            pageScroll.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
+            pageScroll.bottomAnchor.constraint(equalTo: footer.topAnchor),
+
+            footer.leadingAnchor.constraint(equalTo: contentArea.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: contentArea.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: contentArea.bottomAnchor),
+            footer.heightAnchor.constraint(equalToConstant: 52),
+
+            versionLabel.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 18),
+            versionLabel.bottomAnchor.constraint(equalTo: sidebar.bottomAnchor, constant: -12)
         ])
+
+        pages["general"] = buildGeneral()
+        pages["models"] = buildModels()
+        pages["dictionary"] = buildDictionaryPage()
+        pages["providers"] = buildProviders()
+        pages["ai"] = buildAI()
+        pages["history"] = buildHistory()
+        pages["hotkeys"] = buildHotkeys()
+        pages["api"] = buildAPI()
+
+        selectTab("general")
     }
+
+    private func buildDictionaryPage() -> NSView {
+        let container = NSView()
+        vocabularyEditor.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(vocabularyEditor)
+        NSLayoutConstraint.activate([
+            vocabularyEditor.topAnchor.constraint(equalTo: container.topAnchor),
+            vocabularyEditor.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            vocabularyEditor.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            vocabularyEditor.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+        return container
+    }
+
+    private func updateDirtyState() {
+        guard footer != nil else { return }
+        footer.dirtyLabel.isHidden = !hasUnsavedChanges()
+    }
+
 
     // MARK: - General
 
     private func buildGeneral() -> NSView {
-        let view = NSView()
-        let micLabel = label("Микрофон")
-        let diagLabel = label("Диагностика", bold: true)
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
 
         micPopup = NSPopUpButton()
-        micPopup.widthAnchor.constraint(equalToConstant: 230).isActive = true
-        micTestButton = NSButton(title: "Проверить", target: self, action: #selector(testMicrophone))
-        micTestButton.bezelStyle = .rounded
-        micTestLabel = label("")
+        micPopup.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        micTestButton = SettingsText.secondaryButton("Проверить", target: self, action: #selector(testMicrophone))
+        micTestLabel = SettingsText.footnote("")
         micTestLabel.lineBreakMode = .byTruncatingTail
+        micTestLabel.isHidden = true
 
-        let micRow = NSStackView(views: [micLabel, micPopup, micTestButton, micTestLabel])
-        micRow.orientation = .horizontal
-        micRow.alignment = .centerY
-        micRow.spacing = 8
-        micRow.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(micRow)
+        let micCard = SettingsCard()
+        micCard.addRow(SettingsRow(title: "Микрофон",
+                                   subtitle: "Устройство, с которого записывается диктовка.",
+                                   trailing: [micPopup, micTestButton],
+                                   subtitleWidth: 290))
+        let micTestRow = SettingsContentRow(micTestLabel, verticalInset: 6)
+        micTestRow.isHidden = micTestLabel.stringValue.isEmpty
+        self.micTestRow = micTestRow
+        micCard.addRow(micTestRow)
 
-        restoreCheck = NSButton(checkboxWithTitle: "Возвращать прежний буфер обмена после вставки",
-                                target: nil, action: nil)
-        launchCheck = NSButton(checkboxWithTitle: "Запускать при входе", target: nil, action: nil)
-        launchNote = label("")
+        restoreCheck = NSSwitch()
+        restoreCheck.identifier = NSUserInterfaceItemIdentifier("restore-clipboard")
+        let insertCard = SettingsCard()
+        insertCard.addRow(SettingsRow(title: "Восстанавливать буфер обмена",
+                                      subtitle: "Возвращать прежнее содержимое после вставки текста.",
+                                      trailing: [restoreCheck]))
+
+        launchCheck = NSSwitch()
+        launchCheck.identifier = NSUserInterfaceItemIdentifier("launch-at-login")
+        launchNote = SettingsText.footnote("")
         launchNote.textColor = .systemOrange
-        launchNote.font = .systemFont(ofSize: 10)
-        accessLabel = label("Accessibility: проверка…")
-        accessButton = NSButton(title: "Открыть настройки", target: self, action: #selector(openAccessibility))
+        launchNote.isHidden = true
+        let launchCard = SettingsCard()
+        launchCard.addRow(SettingsRow(title: "Запускать при входе",
+                                      subtitle: "Runvoice будет доступен сразу после входа в систему.",
+                                      subtitleView: launchNote,
+                                      trailing: [launchCheck]))
 
+        accessLabel = SettingsText.rowSubtitle("", width: 130)
+        accessLabel.alignment = .right
+        accessButton = SettingsText.secondaryButton("Открыть настройки",
+                                                    target: self,
+                                                    action: #selector(openAccessibility))
         depStack = NSStackView()
         depStack.orientation = .vertical
         depStack.alignment = .leading
         depStack.spacing = 4
-        depStack.translatesAutoresizingMaskIntoConstraints = false
         depLabels = Dependency.diagnosticsCases.map { _ in
-            let field = label("")
+            let field = SettingsText.footnote("")
             field.lineBreakMode = .byTruncatingMiddle
             field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             return field
@@ -390,140 +493,139 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
             depStack.addArrangedSubview(depLabel)
             depLabel.widthAnchor.constraint(equalTo: depStack.widthAnchor).isActive = true
         }
+        let accessCard = SettingsCard()
+        accessCard.addRow(SettingsRow(title: "Accessibility",
+                                      subtitle: "Нужен для вставки текста в другие приложения.",
+                                      trailing: [accessLabel, accessButton]))
+        accessCard.addRow(SettingsContentRow(depStack, verticalInset: 12))
+        let logRow = SettingsRow(title: "Лог и данные",
+                                 subtitle: "Файлы состояния и журнал работы Runvoice.",
+                                 trailing: [
+                                    SettingsText.linkButton("Открыть лог", target: self, action: #selector(openLog)),
+                                    SettingsText.linkButton("Папка данных", target: self, action: #selector(openData))
+                                 ])
+        accessCard.addRow(logRow)
 
-        let views: [NSView] = [micRow, restoreCheck,
-                               launchCheck, launchNote,
-                               diagLabel, accessLabel, accessButton]
-        for v in views {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(v)
-        }
-        view.addSubview(depStack)
-
-        NSLayoutConstraint.activate([
-            micRow.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            micRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            micRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-
-            restoreCheck.topAnchor.constraint(equalTo: micRow.bottomAnchor, constant: 16),
-            restoreCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            launchCheck.topAnchor.constraint(equalTo: restoreCheck.bottomAnchor, constant: 8),
-            launchCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            launchNote.topAnchor.constraint(equalTo: launchCheck.bottomAnchor, constant: 2),
-            launchNote.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 36),
-
-            diagLabel.topAnchor.constraint(equalTo: launchNote.bottomAnchor, constant: 24),
-            diagLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            accessLabel.centerYAnchor.constraint(equalTo: accessButton.centerYAnchor),
-            accessLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            accessButton.topAnchor.constraint(equalTo: diagLabel.bottomAnchor, constant: 8),
-            accessButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            depStack.topAnchor.constraint(equalTo: accessButton.bottomAnchor, constant: 10),
-            depStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            depStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-        ])
-
-        let updateTitle = label("Обновления Runvoice", bold: true)
-        let updateButton = NSButton(title: "Проверить обновления…", target: self, action: #selector(checkUpdates))
+        let updateButton = SettingsText.secondaryButton("Проверить обновления…",
+                                                        target: self,
+                                                        action: #selector(checkUpdates))
         updateButton.identifier = NSUserInterfaceItemIdentifier("check-updates")
-        let updateRow = NSStackView(views: [updateTitle, updateButton])
-        updateRow.orientation = .horizontal; updateRow.spacing = 20
-        for field in [updateRow as NSView, updateStatusLabel] { field.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(field) }
-        NSLayoutConstraint.activate([
-            updateRow.topAnchor.constraint(equalTo: depStack.bottomAnchor, constant: 20),
-            updateRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            updateStatusLabel.topAnchor.constraint(equalTo: updateRow.bottomAnchor, constant: 8),
-            updateStatusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            updateStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16)
-        ])
-        return view
+        updateStatusLabel.font = .systemFont(ofSize: 11.5)
+        updateStatusLabel.textColor = .secondaryLabelColor
+        updateStatusLabel.maximumNumberOfLines = 0
+        updateStatusLabel.preferredMaxLayoutWidth = 430
+        let updateCard = SettingsCard()
+        updateCard.addRow(SettingsRow(title: "Обновления Runvoice",
+                                      subtitleView: updateStatusLabel,
+                                      trailing: [updateButton]))
+
+        root.addArrangedFullWidth(SettingsSection(title: "Ввод", card: micCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Вставка", card: insertCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Запуск", card: launchCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Разрешения и диагностика", card: accessCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Обновления", card: updateCard))
+        return root
     }
 
     @objc private func checkUpdates() { UpdateCoordinator.shared.check() }
 
     private func buildAPI() -> NSView {
-        let root = NSView()
-        root.clipsToBounds = true
-        let view = FlippedView()
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.drawsBackground = false
-        scroll.borderType = .noBorder
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        root.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: root.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor)
-        ])
-        scroll.contentView.clipsToBounds = true
-        scroll.documentView = view
-        view.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([view.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
-        let title = label("Локальный сервис распознавания", bold: true)
-        let hint = NSTextField(wrappingLabelWithString: "Работает вместе с Runvoice. Модель API можно выбрать независимо от диктовки; язык и словарь общие. Два движка требуют дополнительной памяти.")
-        hint.textColor = .secondaryLabelColor
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
+
         apiEnable.identifier = NSUserInterfaceItemIdentifier("api-enabled")
         apiImprove.identifier = NSUserInterfaceItemIdentifier("api-improve-text")
         apiPortField.identifier = NSUserInterfaceItemIdentifier("api-port")
         apiModelPopup.identifier = NSUserInterfaceItemIdentifier("api-recognition-model")
         apiModelPopup.autoenablesItems = false
-        apiModelPopup.target = self; apiModelPopup.action = #selector(apiModelChanged)
-        let modelRow = NSStackView(views: [label("Модель распознавания"), apiModelPopup])
-        modelRow.orientation = .horizontal; modelRow.spacing = 8; modelRow.alignment = .centerY
-        apiModelPopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        apiModelPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 450).isActive = true
-        let modelHint = NSTextField(wrappingLabelWithString: "В списке только скачанные модели. Добавление и скачивание — в разделе «Распознавание».")
-        modelHint.textColor = .secondaryLabelColor
+        apiModelPopup.target = self
+        apiModelPopup.action = #selector(apiModelChanged)
+        apiModelPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 380).isActive = true
+
         apiEnable.target = self; apiEnable.action = #selector(refreshAPI)
         apiImprove.target = self; apiImprove.action = #selector(refreshAPI)
         apiPortField.target = self; apiPortField.action = #selector(refreshAPI)
         apiPortField.widthAnchor.constraint(equalToConstant: 80).isActive = true
-        let portRow = NSStackView(views: [label("Порт"), apiPortField])
-        portRow.orientation = .horizontal; portRow.spacing = 8; portRow.alignment = .centerY
-        let copy = NSButton(title: "Копировать адрес", target: self, action: #selector(copyAPIAddress))
+
         apiAddress.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        apiAddress.textColor = .secondaryLabelColor
         apiAddress.isSelectable = true
-        let addressRow = NSStackView(views: [apiAddress, copy])
-        addressRow.orientation = .horizontal; addressRow.spacing = 8; addressRow.alignment = .centerY
-        let contract = NSTextField(wrappingLabelWithString: "Для ktalk-assist: способ «Свой сервис», модель runvoice-active, ключ пустой. Сервер доступен только на 127.0.0.1. Изменения применяются после сохранения.")
-        contract.textColor = .secondaryLabelColor
-        let privacy = NSTextField(wrappingLabelWithString: "AI выключен по умолчанию. При включении используется профиль и промпт правки диктовки; настройка диктовки не меняется. API не вставляет текст и не добавляет записи в историю.")
-        privacy.textColor = .secondaryLabelColor
+        apiAddress.lineBreakMode = .byTruncatingMiddle
+        apiAddress.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let copy = SettingsText.linkButton("Копировать", target: self, action: #selector(copyAPIAddress))
+
+        apiStatus.font = .systemFont(ofSize: 11.5)
+        apiStatus.maximumNumberOfLines = 0
+        apiStatus.preferredMaxLayoutWidth = 430
+        apiStatus.textColor = .secondaryLabelColor
+        apiModel.font = .systemFont(ofSize: 11.5)
+        apiModel.textColor = .secondaryLabelColor
+        apiModel.maximumNumberOfLines = 0
+        apiModel.preferredMaxLayoutWidth = 430
+        apiProfile.font = .systemFont(ofSize: 11.5)
+        apiProfile.textColor = .secondaryLabelColor
+        apiProfile.maximumNumberOfLines = 0
+        apiProfile.preferredMaxLayoutWidth = 430
+
+        let serviceCard = SettingsCard()
+        serviceCard.addRow(SettingsRow(title: "Включить локальный API",
+                                       subtitle: "Работает вместе с Runvoice. Язык и словарь общие, модель можно выбрать отдельно.",
+                                       trailing: [apiEnable]))
+        serviceCard.addRow(SettingsRow(title: "Порт", trailing: [apiPortField]))
+        serviceCard.addRow(SettingsRow(title: "Адрес", subtitleView: apiAddress, trailing: [copy]))
+        serviceCard.addRow(SettingsRow(title: "Модель распознавания",
+                                       trailing: [apiModelPopup]))
+        serviceCard.addRow(SettingsRow(title: "Текущая модель", subtitleView: apiModel))
+        serviceCard.addRow(SettingsRow(title: "Состояние", subtitleView: apiStatus))
+        let contract = SettingsText.footnote("Для ktalk-assist: способ «Свой сервис», модель runvoice-active, ключ пустой. Сервер доступен только на 127.0.0.1. Изменения применяются после сохранения.")
+
         apiFilter.identifier = NSUserInterfaceItemIdentifier("api-audio-filter")
         apiVocabulary.identifier = NSUserInterfaceItemIdentifier("api-use-vocabulary")
         apiThreshold.identifier = NSUserInterfaceItemIdentifier("api-minimum-dbfs")
-        apiThreshold.numberOfTickMarks = 51; apiThreshold.allowsTickMarkValuesOnly = true
-        apiThreshold.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        apiThreshold.numberOfTickMarks = 0
+        apiThreshold.allowsTickMarkValuesOnly = false
+        apiThreshold.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        apiThresholdLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        apiThresholdLabel.textColor = .secondaryLabelColor
         for control in [apiFilter as NSControl, apiVocabulary, apiThreshold] {
-            control.target = self; control.action = #selector(refreshAPI)
+            control.target = self
+            control.action = #selector(refreshAPI)
         }
-        let thresholdRow = NSStackView(views: [label("Минимальная громкость"), apiThreshold, apiThresholdLabel])
-        thresholdRow.spacing = 8
-        let filterHint = NSTextField(wrappingLabelWithString: "Ближе к нулю — строже фильтрация. Влияет только на аудио API. Словарь API применяется к распознаванию и AI-правке; диктовка по хоткеям не меняется.")
-        filterHint.textColor = .secondaryLabelColor
-        let stack = NSStackView(views: [title, hint, apiEnable, portRow, addressRow, modelRow, modelHint, apiStatus, apiModel,
-                                        apiFilter, thresholdRow, apiVocabulary, filterHint,
-                                        apiImprove, apiProfile, privacy, contract])
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
-        for field in [filterHint, hint, modelHint, apiStatus, apiModel, apiProfile, privacy, contract] {
-            field.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        }
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -16)
-        ])
+
+        let audioCard = SettingsCard()
+        audioCard.addRow(SettingsRow(title: "Фильтровать слабый сигнал и неречевые звуки",
+                                     subtitle: "Звук ниже порога не отправляется в распознавание.",
+                                     trailing: [apiFilter]))
+        audioCard.addRow(SettingsRow(title: "Минимальная громкость",
+                                     trailing: [apiThreshold, apiThresholdLabel]))
+        audioCard.addRow(SettingsRow(title: "Использовать словарь",
+                                     subtitle: "Словарь применяется к распознаванию и AI-правке.",
+                                     trailing: [apiVocabulary]))
+        let filterHint = SettingsText.footnote("Ближе к нулю — строже фильтрация. Влияет только на аудио API.")
+
+        let aiCard = SettingsCard()
+        aiCard.addRow(SettingsRow(title: "Улучшать текст через AI",
+                                  subtitle: "Используется профиль и промпт правки диктовки.",
+                                  trailing: [apiImprove]))
+        aiCard.addRow(SettingsRow(title: "Профиль", subtitleView: apiProfile))
+        let privacy = SettingsText.footnote("AI выключен по умолчанию. API не вставляет текст и не добавляет записи в историю.")
+
+        root.addArrangedFullWidth(sectionWithFootnote(SettingsSection(title: "Сервис", card: serviceCard), contract))
+        root.addArrangedFullWidth(sectionWithFootnote(SettingsSection(title: "Обработка звука", card: audioCard), filterHint))
+        root.addArrangedFullWidth(sectionWithFootnote(SettingsSection(title: "AI-правка", card: aiCard), privacy))
         return root
+    }
+
+    private func sectionWithFootnote(_ section: NSView, _ footnote: NSView) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.addArrangedFullWidth(section)
+        stack.addArrangedFullWidth(footnote)
+        return stack
     }
 
     @objc private func refreshAPI() {
@@ -535,17 +637,25 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         draft.hiddenModelPaths = hiddenModelPaths
         refreshAPIModels(settings: draft)
         let port = Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        apiAddress.stringValue = LocalAPIService.validPort(port) ? LocalAPIService.endpoint(port: port) : "Укажите корректный порт"
-        apiStatus.stringValue = "Состояние: " + LocalAPIService.shared.status
+        setLabel(apiAddress, LocalAPIService.validPort(port) ? LocalAPIService.endpoint(port: port) : "Укажите корректный порт")
+        setLabel(apiStatus, LocalAPIService.shared.status)
         apiStatus.textColor = LocalAPIService.shared.status.hasPrefix("Ошибка") ? .systemOrange : .secondaryLabelColor
         let settings = SettingsStore.load()
         let effective = settings.apiRecognitionSettings
-        apiModel.stringValue = LocalAPIService.shared.loadedModelDescription.map { "Загружено: " + $0 }
-            ?? ("Сохранено: " + effective.recognitionTechnology.title + " · " + LocalAPIService.modelName(settings))
+        setLabel(apiModel, LocalAPIService.shared.loadedModelDescription.map { "Загружено: " + $0 }
+            ?? ("Сохранено: " + effective.recognitionTechnology.title + " · " + LocalAPIService.modelName(settings)))
         let selected = providers.first { $0.id == dictationProviderID }
-        apiProfile.stringValue = selected.map { "AI: " + $0.displayTitle + " · " + $0.detail }
-            ?? "Для AI выберите профиль правки диктовки во вкладке «Постобработка»."
+        setLabel(apiProfile, selected.map { "AI: " + $0.displayTitle + " · " + $0.detail }
+            ?? "Для AI выберите профиль правки диктовки в разделе «Постобработка».")
         apiProfile.textColor = apiImprove.state == .on && selected == nil ? .systemOrange : .secondaryLabelColor
+    }
+
+    private func setLabel(_ field: NSTextField, _ text: String) {
+        guard field.stringValue != text else { return }
+        field.stringValue = text
+        field.invalidateIntrinsicContentSize()
+        field.superview?.invalidateIntrinsicContentSize()
+        field.superview?.superview?.needsLayout = true
     }
 
     private func refreshAPIModels(settings: Settings) {
@@ -582,131 +692,118 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - Providers
 
     private func buildProviders() -> NSView {
-        let view = NSView()
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
 
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        view.addSubview(scroll)
+        providersStack = SettingsCard()
+        providersEmptyLabel = SettingsText.footnote("Провайдеры не добавлены. Добавьте хотя бы один, чтобы использовать AI.")
+        providersEmptyLabel.maximumNumberOfLines = 0
+        providersEmptyLabel.preferredMaxLayoutWidth = 430
 
-        let doc = FlippedView()
-        doc.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = doc
+        let add = SettingsText.secondaryButton("+ Добавить провайдера", target: self, action: #selector(addProvider))
+        let addRow = NSStackView(views: [add])
+        addRow.orientation = .horizontal
+        addRow.spacing = 8
 
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 16, bottom: 16, right: 16)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.widthAnchor.constraint(greaterThanOrEqualToConstant: 860).isActive = true
-        doc.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            stack.topAnchor.constraint(equalTo: doc.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
-        ])
-
-        let title = label("AI-провайдеры и модели", bold: true)
-        let hint = label("Здесь настраиваются профили. Какой профиль использовать для диктовки и улучшения — выбирается в «Постобработке».")
-        hint.lineBreakMode = .byWordWrapping
-        hint.maximumNumberOfLines = 2
-
-        let add = NSButton(title: "+ Добавить провайдера", target: self, action: #selector(addProvider))
-        add.bezelStyle = .rounded
-
-        providersEmptyLabel = label("Провайдеры не добавлены. Добавьте хотя бы один, чтобы использовать AI.")
-        providersEmptyLabel.textColor = .secondaryLabelColor
-        providersEmptyLabel.lineBreakMode = .byWordWrapping
-        providersEmptyLabel.maximumNumberOfLines = 2
-
-        providersStack = NSStackView()
-        providersStack.orientation = .vertical
-        providersStack.alignment = .leading
-        providersStack.spacing = 8
-
-        for row in [title, hint, add, providersEmptyLabel, providersStack] as [NSView] {
-            stack.addArrangedSubview(row)
-            row.translatesAutoresizingMaskIntoConstraints = false
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
-        }
-
-        return view
+        root.addArrangedFullWidth(SettingsSection(title: "AI-провайдеры",
+                                                note: "Какой профиль использовать для диктовки и улучшения — выбирается в «Постобработке».",
+                                                card: providersStack))
+        root.addArrangedFullWidth(addRow)
+        refreshProvidersList()
+        return root
     }
 
     private func providerRow(_ provider: AIProvider) -> NSView {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 10
+        row.spacing = 12
+        row.edgeInsets = NSEdgeInsets(top: 11, left: 16, bottom: 11, right: 16)
+
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemPurple]))
+        icon.contentTintColor = .systemPurple
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 18).isActive = true
 
         let info = NSStackView()
         info.orientation = .vertical
         info.alignment = .leading
-        info.spacing = 3
+        info.spacing = 2
+        info.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let name = label(provider.displayTitle, bold: true)
-        let details = label("\(provider.typeTitle) · \(provider.detail)")
+        let name = SettingsText.rowTitle(provider.displayTitle)
+        name.font = .systemFont(ofSize: 13, weight: .medium)
+        let details = SettingsText.rowSubtitle("\(provider.typeTitle) · \(provider.detail)")
         details.lineBreakMode = .byTruncatingMiddle
         var usageParts: [String] = []
         if provider.id == dictationProviderID { usageParts.append("диктовка") }
         if provider.id == improveProviderID { usageParts.append("улучшение") }
-        let usage = label(usageParts.isEmpty
-                          ? "Не используется"
-                          : "Используется: " + usageParts.joined(separator: ", "))
+        let usage = SettingsText.rowSubtitle(usageParts.isEmpty
+                                             ? "Не используется"
+                                             : "Используется: " + usageParts.joined(separator: ", "))
         usage.textColor = usageParts.isEmpty ? .secondaryLabelColor : .systemGreen
+        usage.font = .systemFont(ofSize: 11)
 
         info.addArrangedSubview(name)
         info.addArrangedSubview(details)
         info.addArrangedSubview(usage)
 
-        let edit = NSButton(title: "Изменить", target: self, action: #selector(editProvider(_:)))
-        edit.bezelStyle = .rounded
-        edit.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
-        let delete = NSButton(title: "Удалить", target: self, action: #selector(deleteProvider(_:)))
-        delete.bezelStyle = .rounded
-        delete.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
+        let menuButton = NSButton()
+        menuButton.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Действия с провайдером")
+        menuButton.isBordered = false
+        menuButton.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
+        menuButton.target = self
+        menuButton.action = #selector(providerMenu(_:))
+        menuButton.toolTip = "Изменить или удалить провайдера"
+        menuButton.setAccessibilityLabel("Действия с провайдером \(provider.displayTitle)")
 
+        row.addArrangedSubview(icon)
         row.addArrangedSubview(info)
-        row.addArrangedSubview(edit)
-        row.addArrangedSubview(delete)
-        info.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        row.addArrangedSubview(spacer)
+        row.addArrangedSubview(menuButton)
         return row
     }
 
+    @objc private func providerMenu(_ sender: NSButton) {
+        guard let id = providerID(from: sender) else { return }
+        let menu = NSMenu()
+        let edit = NSMenuItem(title: "Изменить…", action: #selector(editProviderMenu(_:)), keyEquivalent: "")
+        edit.target = self
+        edit.representedObject = id
+        let delete = NSMenuItem(title: "Удалить…", action: #selector(deleteProviderMenu(_:)), keyEquivalent: "")
+        delete.target = self
+        delete.representedObject = id
+        menu.addItem(edit)
+        menu.addItem(.separator())
+        menu.addItem(delete)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc private func editProviderMenu(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? UUID,
+              let provider = providers.first(where: { $0.id == id }) else { return }
+        showProviderEditor(provider, apiKey: providerKeys[id] ?? "")
+    }
+
     private func refreshProvidersList() {
-        guard providersStack != nil else { return }
-        for view in providersStack.arrangedSubviews {
-            providersStack.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
+        guard let providersStack else { return }
+        providersStack.removeAllRows()
         providersEmptyLabel?.isHidden = !providers.isEmpty
 
-        for (index, provider) in providers.enumerated() {
-            let row = providerRow(provider)
-            row.translatesAutoresizingMaskIntoConstraints = false
-            providersStack.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: providersStack.widthAnchor).isActive = true
-
-            if index < providers.count - 1 {
-                let separator = NSBox()
-                separator.boxType = .separator
-                separator.translatesAutoresizingMaskIntoConstraints = false
-                providersStack.addArrangedSubview(separator)
-                separator.widthAnchor.constraint(equalTo: providersStack.widthAnchor).isActive = true
-            }
+        if providers.isEmpty {
+            providersStack.addRow(SettingsContentRow(providersEmptyLabel, verticalInset: 12))
+            return
+        }
+        for provider in providers {
+            providersStack.addRow(providerRow(provider))
         }
     }
 
@@ -743,15 +840,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         let improve = providers.first { $0.id == improveProviderID }
 
         promptGroup?.isHidden = dictation == nil
-        promptSeparator?.isHidden = dictation == nil
-        dictationProviderNote?.stringValue = dictation == nil
-            ? "AI не используется: вставляется сырой текст Whisper."
-            : "Используется для исправления распознанного текста."
-        improveProviderNote?.stringValue = improve == nil
-            ? (improveEnabledCheck?.state == .on
-                ? "Выберите провайдера для улучшения."
-                : "Улучшение выключено.")
-            : "Используется при ⌥⌘E."
+        if let dictationProviderNote {
+            setLabel(dictationProviderNote, dictation == nil
+                ? "AI не используется: вставляется сырой текст Whisper."
+                : "Используется для исправления распознанного текста.")
+        }
+        if let improveProviderNote {
+            setLabel(improveProviderNote, improve == nil
+                ? (improveEnabledCheck?.state == .on
+                    ? "Выберите провайдера для улучшения."
+                    : "Улучшение выключено.")
+                : "Используется при ⌥⌘E.")
+        }
+        promptGroup?.needsLayout = true
+        improveGroup?.needsLayout = true
     }
 
     @objc private func addProvider() {
@@ -763,15 +865,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         showProviderEditor(provider, apiKey: "")
     }
 
-    @objc private func editProvider(_ sender: NSButton) {
-        guard let id = providerID(from: sender),
-              let provider = providers.first(where: { $0.id == id }) else { return }
+    private func editProvider(id: UUID) {
+        guard let provider = providers.first(where: { $0.id == id }) else { return }
         showProviderEditor(provider, apiKey: providerKeys[id] ?? "")
     }
 
-    @objc private func deleteProvider(_ sender: NSButton) {
-        guard let id = providerID(from: sender),
-              let provider = providers.first(where: { $0.id == id }) else { return }
+    @objc private func deleteProviderMenu(_ item: NSMenuItem) {
+        guard let id = item.representedObject as? UUID else { return }
+        deleteProvider(id: id)
+    }
+
+    private func deleteProvider(id: UUID) {
+        guard let provider = providers.first(where: { $0.id == id }) else { return }
         if id == dictationProviderID || id == improveProviderID {
             let alert = NSAlert()
             alert.messageText = "Провайдер используется"
@@ -833,75 +938,36 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - Postprocessing
 
     private func buildAI() -> NSView {
-        let view = NSView()
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
 
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        view.addSubview(scroll)
-
-        let doc = FlippedView()
-        doc.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = doc
-        aiScroll = scroll
-
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 16, bottom: 16, right: 16)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.widthAnchor.constraint(greaterThanOrEqualToConstant: 860).isActive = true
-        doc.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            stack.topAnchor.constraint(equalTo: doc.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
-        ])
-
-        let dictationHeader = label("Провайдер для диктовки", bold: true)
         dictationProviderPopup = NSPopUpButton()
         dictationProviderPopup.target = self
         dictationProviderPopup.action = #selector(dictationProviderChanged)
-        dictationProviderPopup.widthAnchor.constraint(equalToConstant: 430).isActive = true
-        let dictationHint = label("Модели и подключения настраиваются во вкладке «Провайдеры».")
-        dictationProviderNote = label("")
-        dictationProviderNote.lineBreakMode = .byWordWrapping
-        dictationProviderNote.maximumNumberOfLines = 2
+        dictationProviderPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 330).isActive = true
+        dictationProviderNote = SettingsText.footnote("", width: 520)
 
-        promptSeparator = NSBox()
-        promptSeparator.boxType = .separator
+        promptTestLabel = SettingsText.footnote("")
+        promptTestLabel.maximumNumberOfLines = 2
+
+        let dictationCard = SettingsCard()
+        dictationCard.addRow(SettingsRow(title: "Провайдер",
+                                         subtitle: "Профили настраиваются в «Провайдерах».",
+                                         subtitleView: dictationProviderNote,
+                                         trailing: [dictationProviderPopup],
+                                         subtitleWidth: 250))
+
         promptGroup = buildPromptSection()
-
-        improveSeparator = NSBox()
-        improveSeparator.boxType = .separator
         improveGroup = buildImproveSection()
-
-        let summarySeparator = NSBox()
-        summarySeparator.boxType = .separator
         summaryGroup = buildSummarySection()
 
-        let rows: [NSView] = [dictationHeader, dictationProviderPopup, dictationHint,
-                              dictationProviderNote, promptSeparator, promptGroup,
-                              improveSeparator, improveGroup, summarySeparator, summaryGroup]
-        for row in rows {
-            stack.addArrangedSubview(row)
-            row.translatesAutoresizingMaskIntoConstraints = false
-            row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
-        }
-
-        return view
+        root.addArrangedFullWidth(SettingsSection(title: "Исправление диктовки", card: dictationCard))
+        root.addArrangedFullWidth(promptGroup)
+        root.addArrangedFullWidth(improveGroup)
+        root.addArrangedFullWidth(summaryGroup)
+        return root
     }
 
     @objc private func dictationProviderChanged() {
@@ -923,21 +989,19 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - История
 
     private func buildHistory() -> NSView {
-        let view = NSView()
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
 
-        historyEnabledCheck = NSButton(checkboxWithTitle: "Сохранять историю распознаваний",
-                                       target: nil, action: nil)
+        historyEnabledCheck = NSSwitch()
+        historyEnabledCheck.identifier = NSUserInterfaceItemIdentifier("history-enabled")
+
         historySearch = NSSearchField()
         historySearch.placeholderString = "Поиск по тексту"
         historySearch.delegate = self
         historySearch.widthAnchor.constraint(equalToConstant: 240).isActive = true
-        let refresh = NSButton(title: "Обновить", target: self, action: #selector(reloadHistoryAction))
-        refresh.bezelStyle = .inline
-
-        let topRow = NSStackView(views: [historyEnabledCheck, historySearch, refresh])
-        topRow.orientation = .horizontal
-        topRow.alignment = .centerY
-        topRow.spacing = 10
+        let refresh = SettingsText.secondaryButton("Обновить", target: self, action: #selector(reloadHistoryAction))
 
         historyItemsField = NSTextField(string: "100")
         historyItemsField.alignment = .right
@@ -965,18 +1029,22 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         historyDaysStepper.target = self
         historyDaysStepper.action = #selector(historyDaysStepperChanged)
 
-        let limitsRow = NSStackView(views: [
-            label("Хранить последних"), historyItemsField, historyItemsStepper,
-            label("сообщений"), label("Удалять старше"), historyDaysField,
-            historyDaysStepper, label("дней"),
-        ])
-        limitsRow.orientation = .horizontal
-        limitsRow.alignment = .centerY
-        limitsRow.spacing = 6
+        let itemsSuffix = SettingsText.rowSubtitle("сообщений", width: 90)
+        let daysSuffix = SettingsText.rowSubtitle("дней", width: 60)
+        let storageCard = SettingsCard()
+        storageCard.addRow(SettingsRow(title: "Сохранять историю распознаваний",
+                                       subtitle: "Тексты хранятся только на этом Mac.",
+                                       trailing: [historyEnabledCheck]))
+        storageCard.addRow(SettingsRow(title: "Хранить последних",
+                                       trailing: [historyItemsField, historyItemsStepper, itemsSuffix]))
+        storageCard.addRow(SettingsRow(title: "Удалять старше",
+                                       trailing: [historyDaysField, historyDaysStepper, daysSuffix]))
 
         historyTable = NSTableView()
-        historyTable.rowHeight = 26
-        historyTable.usesAlternatingRowBackgroundColors = true
+        historyTable.rowHeight = 28
+        historyTable.style = .inset
+        historyTable.usesAlternatingRowBackgroundColors = false
+        historyTable.backgroundColor = .clear
         historyTable.dataSource = self
         historyTable.delegate = self
         historyTable.target = self
@@ -993,25 +1061,32 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         historyTable.headerView = NSTableHeaderView()
 
         let tableScroll = NSScrollView()
-        tableScroll.translatesAutoresizingMaskIntoConstraints = false
         tableScroll.hasVerticalScroller = true
         tableScroll.autohidesScrollers = true
-        tableScroll.borderType = .bezelBorder
+        tableScroll.borderType = .noBorder
+        tableScroll.drawsBackground = false
         tableScroll.documentView = historyTable
-        tableScroll.heightAnchor.constraint(equalToConstant: 190).isActive = true
+        tableScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
 
-        let detailTitle = label("Текст", bold: true)
-        historyStatusLabel = label("")
+        let searchRow = NSStackView(views: [historySearch, refresh, NSView()])
+        searchRow.orientation = .horizontal
+        searchRow.alignment = .centerY
+        searchRow.spacing = 8
+        searchRow.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let recordsCard = SettingsCard()
+        recordsCard.addRow(SettingsContentRow(searchRow, verticalInset: 10))
+        recordsCard.addRow(SettingsContentRow(tableScroll, verticalInset: 0, horizontalInset: 0))
+
+        historyStatusLabel = SettingsText.rowSubtitle("", width: 160)
+        let copy = SettingsText.linkButton("Копировать", target: self, action: #selector(copySelectedHistory))
+        let delete = SettingsText.destructiveButton("Удалить", target: self, action: #selector(deleteSelectedHistory))
         let spacer = NSView()
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let copy = NSButton(title: "Копировать", target: self, action: #selector(copySelectedHistory))
-        copy.bezelStyle = .rounded
-        let delete = NSButton(title: "Удалить", target: self, action: #selector(deleteSelectedHistory))
-        delete.bezelStyle = .rounded
-        let detailHeader = NSStackView(views: [detailTitle, historyStatusLabel, spacer, copy, delete])
+        let detailHeader = NSStackView(views: [historyStatusLabel, spacer, copy, delete])
         detailHeader.orientation = .horizontal
         detailHeader.alignment = .centerY
-        detailHeader.spacing = 8
+        detailHeader.spacing = 12
 
         historyDetail = NSTextView()
         historyDetail.isEditable = false
@@ -1020,44 +1095,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         historyDetail.textContainerInset = NSSize(width: 6, height: 6)
         historyDetail.string = "Выберите запись в списке."
         let detailScroll = makeScroll(historyDetail)
-        historyDetail.font = .systemFont(ofSize: 12)
         detailScroll.heightAnchor.constraint(equalToConstant: 130).isActive = true
 
-        let clear = NSButton(title: "Очистить историю", target: self, action: #selector(clearHistory))
-        clear.bezelStyle = .rounded
+        let detailCard = SettingsCard()
+        detailCard.addRow(SettingsContentRow(detailHeader, verticalInset: 10))
+        detailCard.addRow(SettingsContentRow(detailScroll, verticalInset: 0))
 
-        let views: [NSView] = [topRow, limitsRow, tableScroll, detailHeader, detailScroll, clear]
-        for item in views {
-            item.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(item)
-        }
+        let clear = SettingsText.destructiveButton("Очистить историю…", target: self, action: #selector(clearHistory))
+        let clearRow = NSStackView(views: [clear, NSView()])
+        clearRow.orientation = .horizontal
+        clearRow.spacing = 8
+        clearRow.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
-        NSLayoutConstraint.activate([
-            topRow.topAnchor.constraint(equalTo: view.topAnchor, constant: 16),
-            topRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            topRow.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-
-            limitsRow.topAnchor.constraint(equalTo: topRow.bottomAnchor, constant: 10),
-            limitsRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-
-            tableScroll.topAnchor.constraint(equalTo: limitsRow.bottomAnchor, constant: 10),
-            tableScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            tableScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            detailHeader.topAnchor.constraint(equalTo: tableScroll.bottomAnchor, constant: 10),
-            detailHeader.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            detailHeader.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            detailScroll.topAnchor.constraint(equalTo: detailHeader.bottomAnchor, constant: 4),
-            detailScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            detailScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-
-            clear.topAnchor.constraint(equalTo: detailScroll.bottomAnchor, constant: 8),
-            clear.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            clear.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -12),
-        ])
-
-        return view
+        root.addArrangedFullWidth(SettingsSection(title: "Хранение", card: storageCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Записи", card: recordsCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Выбранная запись", card: detailCard))
+        root.addArrangedFullWidth(clearRow)
+        return root
     }
 
     private func reloadHistory() {
@@ -1150,7 +1204,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - Модели
 
     private func buildModels() -> NSView {
-        let view = NSView()
         languagePopup = NSPopUpButton()
         languagePopup.addItems(withTitles: ["Русский", "English", "Авто"])
         languagePopup.setAccessibilityLabel("Язык распознавания")
@@ -1162,40 +1215,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         technologyPopup.item(at: 1)?.isEnabled = FluidModelStore.supported
         if !FluidModelStore.supported { technologyPopup.item(at: 1)?.title += " · требуется Apple Silicon" }
 
-        let scroll = NSScrollView()
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        view.addSubview(scroll)
-
-        let doc = FlippedView()
-        doc.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = doc
-
         modelsStack = NSStackView()
         modelsStack.orientation = .vertical
-        modelsStack.alignment = .leading
-        modelsStack.spacing = 10
-        modelsStack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        modelsStack.translatesAutoresizingMaskIntoConstraints = false
-        doc.addSubview(modelsStack)
-
-        NSLayoutConstraint.activate([
-            scroll.topAnchor.constraint(equalTo: view.topAnchor),
-            scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
-            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            modelsStack.topAnchor.constraint(equalTo: doc.topAnchor),
-            modelsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
-            modelsStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
-            modelsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
-        ])
-
-        return view
+        modelsStack.alignment = .width
+        modelsStack.spacing = SettingsStyle.sectionSpacing
+        return modelsStack
     }
 
     private func refreshModels() {
@@ -1212,64 +1236,98 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         fluidStatuses.removeAll()
         modelsDiskLabel = nil
 
-        let technologyRow = NSStackView(views: [sectionLabel("1. Технология распознавания"), technologyPopup])
-        technologyRow.orientation = .horizontal
-        technologyRow.alignment = .centerY
-        technologyRow.spacing = 16
         technologyPopup.selectItem(at: RecognitionTechnology.allCases.firstIndex(of: selectedTechnology) ?? 0)
-        addRow(technologyRow)
-        addModelsNote("Технология определяет доступные модели ниже. Распознавание выполняется локально.")
-        if !recognitionValidationMessage.isEmpty { addModelsNote(recognitionValidationMessage, warning: true) }
 
-        addRow(sectionLabel("2. Параметры распознавания"))
-        let languageRow = NSStackView(views: [sectionLabel("Язык распознавания"), languagePopup])
-        languageRow.orientation = .horizontal
-        languageRow.alignment = .centerY
-        languageRow.spacing = 16
-        addRow(languageRow)
+        let languageNote: String
         if selectedTechnology == .whisper {
-            addModelsNote("Язык — подсказка модели. Для русской речи с английскими терминами сравните «Русский» и «Авто» на своём голосе.")
+            languageNote = "Язык — подсказка модели. Для русской речи с английскими терминами сравните «Русский» и «Авто» на своём голосе."
         } else if selectedFluidModel == .nemotron {
-            addModelsNote("Язык задаёт подсказку потоковой модели. Для смешанной русско-английской речи начните с «Авто».")
+            languageNote = "Язык задаёт подсказку потоковой модели. Для смешанной русско-английской речи начните с «Авто»."
         } else {
-            addModelsNote("Здесь выбор языка ограничивает алфавит: «Русский» — кириллица, English — латиница. Для русского с английскими словами выберите «Авто», чтобы снять это ограничение.")
+            languageNote = "Здесь выбор языка ограничивает алфавит: «Русский» — кириллица, English — латиница. Для русского с английскими словами выберите «Авто», чтобы снять это ограничение."
         }
 
-        addRow(sectionLabel("3. Модель распознавания"))
+        let engineCard = SettingsCard()
+        engineCard.addRow(SettingsRow(title: "Технология распознавания",
+                                      subtitle: "Определяет доступные модели. Распознавание идёт локально.",
+                                      trailing: [technologyPopup],
+                                      subtitleWidth: 300))
+        engineCard.addRow(SettingsRow(title: "Язык распознавания",
+                                      subtitle: languageNote,
+                                      trailing: [languagePopup],
+                                      subtitleWidth: 300))
+        engineCard.addRow(SettingsContentRow(previewControls, verticalInset: 12))
+        addSection(SettingsSection(title: "Движок", card: engineCard))
+
+        if !recognitionValidationMessage.isEmpty {
+            addSectionFootnote(SettingsText.footnote(recognitionValidationMessage))
+        }
+
         if selectedTechnology == .fluidAudio {
-            for model in FluidModel.allCases { addRow(fluidModelRow(model)) }
-            if !FluidModelStore.installed(selectedFluidModel) {
-                addModelsNote("Выбрана \(selectedFluidModel.title). Для диктовки сначала скачайте модель.", warning: true)
-            }
-            if selectedFluidModel.usesWindowedRecognition {
-                addModelsNote("Технический словарь для этой модели учитывается при AI-правке текста.")
-            }
+            addFluidModels()
         } else {
             addWhisperModels(to: modelsStack)
         }
+
         if selectedTechnology == .fluidAudio {
-            let backup = NSButton(title: "Настроить резервный Whisper…", target: self,
-                                  action: #selector(openRecognitionBackup))
-            backup.bezelStyle = .rounded
+            let backup = SettingsText.secondaryButton("Настроить резервный Whisper…",
+                                                      target: self,
+                                                      action: #selector(openRecognitionBackup))
             backup.setAccessibilityLabel("Резервное распознавание Whisper")
-            addRow(backup)
+            let row = NSStackView(views: [backup, NSView()])
+            row.orientation = .horizontal
+            row.spacing = 8
+            row.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+            addSectionFootnote(row)
         }
-        addRow(sectionLabel("4. Предварительное распознавание"))
-        addRow(previewControls)
+
         if let backupModelsStack {
             for view in backupModelsStack.arrangedSubviews {
                 backupModelsStack.removeArrangedSubview(view)
                 view.removeFromSuperview()
             }
+            backupModelsStack.spacing = SettingsStyle.sectionSpacing
             addWhisperModels(to: backupModelsStack)
         }
     }
 
+    private func addFluidModels() {
+        let card = SettingsCard()
+        for model in FluidModel.allCases {
+            card.addRow(SettingsContentRow(fluidModelRow(model), verticalInset: 9))
+        }
+        addSection(SettingsSection(title: "Модель", card: card))
+
+        if !FluidModelStore.installed(selectedFluidModel) {
+            addSectionFootnote(SettingsText.footnote("Выбрана \(selectedFluidModel.title). Для диктовки сначала скачайте модель.",
+                                                     warning: true))
+        }
+        if selectedFluidModel.usesWindowedRecognition {
+            addSectionFootnote(SettingsText.footnote("Технический словарь для этой модели учитывается при AI-правке текста."))
+        }
+    }
+
+    private func addSection(_ view: NSView) {
+        modelsStack.addArrangedSubview(view)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalTo: modelsStack.widthAnchor).isActive = true
+    }
+
+    private func addSectionFootnote(_ view: NSView) {
+        let wrapper = NSStackView()
+        wrapper.orientation = .vertical
+        wrapper.alignment = .leading
+        wrapper.addArrangedFullWidth(view)
+        modelsStack.addArrangedSubview(wrapper)
+        wrapper.widthAnchor.constraint(equalTo: modelsStack.widthAnchor).isActive = true
+    }
+
     private func addWhisperModels(to stack: NSStackView) {
-        func add(_ view: NSView) {
+        let widthInset = stack.edgeInsets.left + stack.edgeInsets.right
+        func appendFullWidth(_ view: NSView) {
             stack.addArrangedSubview(view)
             view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -widthInset).isActive = true
         }
         let active = WhisperModelStore.file(at: selectedModelPath)
         var found = WhisperModelStore.foundModels(extraDirectories: modelDirs,
@@ -1278,67 +1336,50 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
             found.insert(active, at: 0)
         }
 
-        // Баннер состояния
-        let banner = NSTextField(wrappingLabelWithString: "")
-        banner.font = .systemFont(ofSize: 12)
+        let banner = SettingsText.footnote("")
         if selectedModelPath.isEmpty {
             banner.stringValue = "Модель не выбрана. Скачайте модель или добавьте уже скачанную."
             banner.textColor = .systemOrange
         } else if let active {
             banner.stringValue = "\(selectedTechnology == .fluidAudio ? "Резервная модель" : "Выбрана"): \(active.fileName) · \(active.sizeText)"
-            banner.textColor = .secondaryLabelColor
         } else {
             banner.stringValue = "Выбранная модель недоступна: \(selectedModelPath)"
             banner.textColor = .systemOrange
         }
-        add(banner)
 
-        let foundHeader = NSStackView()
-        foundHeader.orientation = .horizontal
-        foundHeader.alignment = .centerY
-        foundHeader.spacing = 8
-        foundHeader.addArrangedSubview(sectionLabel("Найдены на компьютере"))
-        let foundSpacer = NSView()
-        foundSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        foundHeader.addArrangedSubview(foundSpacer)
-        let refresh = NSButton(title: "Обновить", target: self, action: #selector(refreshModelsList))
-        refresh.bezelStyle = .inline
-        foundHeader.addArrangedSubview(refresh)
-        add(foundHeader)
-
-        if found.isEmpty {
-            let empty = NSTextField(labelWithString: "Модели ggml-*.bin не найдены.")
-            empty.font = .systemFont(ofSize: 11)
-            empty.textColor = .secondaryLabelColor
-            add(empty)
-        } else {
-            for model in found { add(modelRow(model)) }
-        }
-
-        if !hiddenModelPaths.isEmpty {
-            add(sectionLabel("Скрытые модели"))
-            for path in hiddenModelPaths {
-                add(hiddenModelRow(path))
-            }
+        let refresh = SettingsText.linkButton("Обновить", target: self, action: #selector(refreshModelsList))
+        let modelCard = SettingsCard()
+        modelCard.addRow(SettingsContentRow(banner, verticalInset: 10))
+        modelCard.addRow(SettingsRow(title: "Найдены на компьютере",
+                                     subtitle: found.isEmpty ? "Модели ggml-*.bin не найдены." : "Выберите модель для диктовки.",
+                                     trailing: [refresh]))
+        for model in found {
+            modelCard.addRow(SettingsContentRow(modelRow(model), verticalInset: 7))
         }
 
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 8
-        let addFile = NSButton(title: "Добавить файл…", target: self, action: #selector(addModelFile))
-        addFile.bezelStyle = .rounded
-        let addFolder = NSButton(title: "Добавить папку…", target: self, action: #selector(addModelFolder))
-        addFolder.bezelStyle = .rounded
-        let openFolder = NSButton(title: "Открыть папку моделей", target: self, action: #selector(openModelsFolder))
-        openFolder.bezelStyle = .rounded
-        buttons.addArrangedSubview(addFile)
-        buttons.addArrangedSubview(addFolder)
-        buttons.addArrangedSubview(openFolder)
-        add(buttons)
+        buttons.addArrangedSubview(SettingsText.secondaryButton("Добавить файл…", target: self, action: #selector(addModelFile)))
+        buttons.addArrangedSubview(SettingsText.secondaryButton("Добавить папку…", target: self, action: #selector(addModelFolder)))
+        buttons.addArrangedSubview(SettingsText.secondaryButton("Открыть папку моделей", target: self, action: #selector(openModelsFolder)))
+        modelCard.addRow(SettingsContentRow(buttons, verticalInset: 10))
 
-        if !modelDirs.isEmpty {
-            add(sectionLabel("Папки"))
-            for dir in modelDirs { add(folderRow(dir)) }
+        appendFullWidth(SettingsSection(title: "Модель", card: modelCard))
+
+        if !hiddenModelPaths.isEmpty || !modelDirs.isEmpty {
+            let extras = SettingsCard()
+            if !hiddenModelPaths.isEmpty {
+                for path in hiddenModelPaths {
+                    extras.addRow(SettingsContentRow(hiddenModelRow(path), verticalInset: 7))
+                }
+            }
+            if !modelDirs.isEmpty {
+                for dir in modelDirs {
+                    extras.addRow(SettingsContentRow(folderRow(dir), verticalInset: 7))
+                }
+            }
+            appendFullWidth(SettingsDisclosure(title: "Папки и скрытые модели", content: [extras]))
         }
 
         let hiddenNames = Set(hiddenModelPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
@@ -1352,17 +1393,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
                 return a.sizeBytes < b.sizeBytes
             }
         if !missing.isEmpty {
-            add(sectionLabel("Доступны для скачивания (\(missing.count))"))
-            add(modelNote("Сначала скачайте модель, затем выберите её выше. Q5/Q8 уменьшают размер; точность сравнивайте на своей речи."))
-            for model in missing { add(downloadRow(model)) }
+            let downloadCard = SettingsCard()
+            for model in missing {
+                downloadCard.addRow(SettingsContentRow(downloadRow(model), verticalInset: 12))
+            }
+            appendFullWidth(SettingsSection(title: "Скачивание (\(missing.count))",
+                                            note: "Сначала скачайте модель, затем выберите её выше. Q5/Q8 уменьшают размер; точность сравнивайте на своей речи.",
+                                            card: downloadCard))
         }
 
-        add(sectionLabel("Хранилище"))
-        modelsDiskLabel = NSTextField(labelWithString: "")
-        modelsDiskLabel.font = .systemFont(ofSize: 11)
-        modelsDiskLabel.textColor = .secondaryLabelColor
+        modelsDiskLabel = SettingsText.footnote("")
         updateDiskLabel()
-        add(modelsDiskLabel)
+        let storageCard = SettingsCard()
+        storageCard.addRow(SettingsRow(title: "Хранилище", subtitleView: modelsDiskLabel))
+        appendFullWidth(SettingsSection(title: "Хранилище", card: storageCard))
     }
 
     private func modelNote(_ text: String, warning: Bool = false) -> NSTextField {
@@ -1370,10 +1414,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         label.font = .systemFont(ofSize: 11)
         label.textColor = warning ? .systemOrange : .secondaryLabelColor
         return label
-    }
-
-    private func addModelsNote(_ text: String, warning: Bool = false) {
-        addRow(modelNote(text, warning: warning))
     }
 
     private func fluidModelRow(_ model: FluidModel) -> NSView {
@@ -1409,19 +1449,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         row.spacing = 12
         row.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         return row
-    }
-
-    private func addRow(_ view: NSView) {
-        modelsStack.addArrangedSubview(view)
-        view.translatesAutoresizingMaskIntoConstraints = false
-        view.widthAnchor.constraint(equalTo: modelsStack.widthAnchor, constant: -32).isActive = true
-    }
-
-    private func sectionLabel(_ text: String) -> NSTextField {
-        let field = NSTextField(labelWithString: text)
-        field.font = .systemFont(ofSize: 12, weight: .bold)
-        field.textColor = .secondaryLabelColor
-        return field
     }
 
     private func displayTitle(for model: WhisperModelFile) -> String {
@@ -1812,55 +1839,50 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - Prompt
 
     private func buildImproveSection() -> NSStackView {
-        let section = NSStackView()
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 6
-
-        let header = label("Улучшение выделенного текста", bold: true)
-        improveEnabledCheck = NSButton(checkboxWithTitle: "Включить улучшение выделенного текста",
-                                       target: self, action: #selector(improveEnabledChanged))
-        let providerLabel = label("Провайдер для улучшения")
+        improveEnabledCheck = NSSwitch()
+        improveEnabledCheck.identifier = NSUserInterfaceItemIdentifier("improve-enabled")
+        improveEnabledCheck.target = self
+        improveEnabledCheck.action = #selector(improveEnabledChanged)
         improveProviderPopup = NSPopUpButton()
         improveProviderPopup.target = self
         improveProviderPopup.action = #selector(improveProviderChanged)
-        improveProviderPopup.widthAnchor.constraint(equalToConstant: 430).isActive = true
-        improveProviderNote = label("")
-        improveProviderNote.lineBreakMode = .byWordWrapping
-        improveProviderNote.maximumNumberOfLines = 2
-
-        let hint = label("Провайдер и модель выбираются здесь; профили — во вкладке «Провайдеры». Пустое поле промпта заменяется встроенным.")
-
-        let reset = NSButton(title: "Сбросить к встроенному", target: self, action: #selector(resetImprovePromptToDefault))
-        reset.bezelStyle = .rounded
-        let test = NSButton(title: "Проверить на примере", target: self, action: #selector(testImprovePrompt))
-        test.bezelStyle = .rounded
-        let buttons = NSStackView(views: [reset, test])
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-
-        improveTestLabel = label("")
-        improveTestLabel.lineBreakMode = .byWordWrapping
+        improveProviderPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 330).isActive = true
+        improveProviderNote = SettingsText.footnote("", width: 520)
+        improveTestLabel = SettingsText.footnote("")
         improveTestLabel.maximumNumberOfLines = 2
+
+        let reset = SettingsText.secondaryButton("Сбросить к встроенному", target: self, action: #selector(resetImprovePromptToDefault))
+        let test = SettingsText.secondaryButton("Проверить на примере", target: self, action: #selector(testImprovePrompt))
+        let buttons = NSStackView(views: [reset, test, NSView()])
+        buttons.orientation = .horizontal
+        buttons.alignment = .centerY
+        buttons.spacing = 8
+        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let scroll = makeScroll(improveText)
         scroll.heightAnchor.constraint(equalToConstant: 170).isActive = true
 
-        section.addArrangedSubview(header)
-        section.addArrangedSubview(improveEnabledCheck)
-        section.addArrangedSubview(providerLabel)
-        section.addArrangedSubview(improveProviderPopup)
-        section.addArrangedSubview(improveProviderNote)
-        section.addArrangedSubview(hint)
-        section.addArrangedSubview(buttons)
-        section.addArrangedSubview(scroll)
-        section.addArrangedSubview(improveTestLabel)
+        let block = NSStackView()
+        block.orientation = .vertical
+        block.alignment = .width
+        block.spacing = 8
+        block.addArrangedSubview(buttons)
+        block.addArrangedSubview(scroll)
+        block.addArrangedSubview(improveTestLabel)
 
-        for view in [header, hint, scroll, improveTestLabel, improveProviderPopup, improveProviderNote] as [NSView] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        }
-        return section
+        let card = SettingsCard()
+        card.addRow(SettingsRow(title: "Включить улучшение выделенного текста",
+                                subtitle: "Работает по сочетанию ⌥⌘E.",
+                                trailing: [improveEnabledCheck]))
+        card.addRow(SettingsRow(title: "Провайдер",
+                                subtitleView: improveProviderNote,
+                                trailing: [improveProviderPopup],
+                                subtitleWidth: 250))
+        card.addRow(SettingsContentRow(block, verticalInset: 12))
+
+        return SettingsSection(title: "Улучшение выделенного текста",
+                               note: "Провайдер и модель выбираются здесь; профили — в «Провайдерах». Пустое поле промпта заменяется встроенным.",
+                               card: card)
     }
 
     @objc private func resetImprovePromptToDefault() {
@@ -1890,44 +1912,36 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     }
 
     private func buildSummarySection() -> NSStackView {
-        let section = NSStackView()
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 6
+        summaryTestLabel = SettingsText.footnote("")
+        summaryTestLabel.maximumNumberOfLines = 2
 
-        let header = label("Саммари расшифровки аудио", bold: true)
-        let hint = label("Используется провайдер для улучшения текста. Пустое поле заменяется встроенным промптом. Кастомный промпт в окне расшифровки заменяет этот текст для финального саммари.")
-        hint.lineBreakMode = .byWordWrapping
-        hint.maximumNumberOfLines = 3
-
-        let reset = NSButton(title: "Сбросить к встроенному",
-                             target: self, action: #selector(resetSummaryPromptToDefault))
-        reset.bezelStyle = .rounded
-        let test = NSButton(title: "Проверить на примере",
-                            target: self, action: #selector(testSummaryPrompt))
-        test.bezelStyle = .rounded
-        let buttons = NSStackView(views: [reset, test])
+        let reset = SettingsText.secondaryButton("Сбросить к встроенному",
+                                                 target: self, action: #selector(resetSummaryPromptToDefault))
+        let test = SettingsText.secondaryButton("Проверить на примере",
+                                                target: self, action: #selector(testSummaryPrompt))
+        let buttons = NSStackView(views: [reset, test, NSView()])
         buttons.orientation = .horizontal
+        buttons.alignment = .centerY
         buttons.spacing = 8
+        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let scroll = makeScroll(summaryText)
         scroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
 
-        summaryTestLabel = label("")
-        summaryTestLabel.lineBreakMode = .byWordWrapping
-        summaryTestLabel.maximumNumberOfLines = 2
+        let block = NSStackView()
+        block.orientation = .vertical
+        block.alignment = .width
+        block.spacing = 8
+        block.addArrangedSubview(buttons)
+        block.addArrangedSubview(scroll)
+        block.addArrangedSubview(summaryTestLabel)
 
-        section.addArrangedSubview(header)
-        section.addArrangedSubview(hint)
-        section.addArrangedSubview(buttons)
-        section.addArrangedSubview(scroll)
-        section.addArrangedSubview(summaryTestLabel)
+        let card = SettingsCard()
+        card.addRow(SettingsContentRow(block, verticalInset: 12))
 
-        for view in [header, hint, scroll, summaryTestLabel] as [NSView] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        }
-        return section
+        return SettingsSection(title: "Саммари расшифровки аудио",
+                               note: "Используется провайдер для улучшения текста. Пустое поле заменяется встроенным промптом. Кастомный промпт в окне расшифровки заменяет этот текст для финального саммари.",
+                               card: card)
     }
 
     @objc private func resetSummaryPromptToDefault() {
@@ -1957,48 +1971,31 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     }
 
     private func buildPromptSection() -> NSStackView {
-        let section = NSStackView()
-        section.orientation = .vertical
-        section.alignment = .leading
-        section.spacing = 6
+        let block = NSStackView()
+        block.orientation = .vertical
+        block.alignment = .width
+        block.spacing = 8
 
-        let fixLabel = label("Промпт для исправления текста  (⌥Space)", bold: true)
-        let fixHint = label("Используется при включённой постобработке. Пустое поле заменяется встроенным промптом.")
-
-        let reset = NSButton(title: "Сбросить к встроенному", target: self, action: #selector(resetPromptToDefault))
-        reset.bezelStyle = .rounded
-        let test = NSButton(title: "Проверить на примере", target: self, action: #selector(testPrompt))
-        test.bezelStyle = .rounded
-        let buttons = NSStackView(views: [reset, test])
+        let reset = SettingsText.secondaryButton("Сбросить к встроенному", target: self, action: #selector(resetPromptToDefault))
+        let test = SettingsText.secondaryButton("Проверить на примере", target: self, action: #selector(testPrompt))
+        let buttons = NSStackView(views: [reset, test, NSView()])
         buttons.orientation = .horizontal
+        buttons.alignment = .centerY
         buttons.spacing = 8
-
-        promptTestLabel = label("")
-        promptTestLabel.lineBreakMode = .byWordWrapping
-        promptTestLabel.maximumNumberOfLines = 2
+        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let fixScroll = makeScroll(fixText)
         fixScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
 
-        section.addArrangedSubview(fixLabel)
-        section.addArrangedSubview(buttons)
-        section.addArrangedSubview(fixScroll)
-        section.addArrangedSubview(fixHint)
-        section.addArrangedSubview(promptTestLabel)
+        block.addArrangedSubview(buttons)
+        block.addArrangedSubview(fixScroll)
+        block.addArrangedSubview(promptTestLabel)
 
-        for view in [fixLabel, fixScroll, fixHint, promptTestLabel] as [NSView] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalTo: section.widthAnchor).isActive = true
-        }
-
-        return section
-    }
-
-    private func label(_ text: String, bold: Bool = false) -> NSTextField {
-        let field = NSTextField(labelWithString: text)
-        field.font = bold ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 11)
-        field.textColor = bold ? .labelColor : .secondaryLabelColor
-        return field
+        let card = SettingsCard()
+        card.addRow(SettingsContentRow(block, verticalInset: 12))
+        return SettingsSection(title: "Промпт для исправления текста (⌥Space)",
+                               note: "Используется при включённой постобработке. Пустое поле заменяется встроенным промптом.",
+                               card: card)
     }
 
     private func makeScroll(_ textView: NSTextView) -> NSScrollView {
@@ -2018,6 +2015,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .bezelBorder
+        scroll.focusRingType = .none
         scroll.documentView = textView
         scroll.translatesAutoresizingMaskIntoConstraints = false
         return scroll
@@ -2026,72 +2024,48 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
     // MARK: - Hotkeys
 
     private func buildHotkeys() -> NSView {
-        let view = NSView()
-        let toggleLabel = label("Диктовка")
-        let improveLabel = label("Улучшение текста")
-        let note = label("Для сочетаний выше нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.")
-        let enterHint = NSTextField(wrappingLabelWithString: "Во время записи и на паузе Enter завершает диктовку и запускает обработку текста.")
-        enterHint.font = .systemFont(ofSize: 11)
-        enterHint.textColor = .secondaryLabelColor
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
+
+        toggleHotkeyButton = SettingsText.secondaryButton(toggleHotkey.display,
+                                                          target: self,
+                                                          action: #selector(captureToggle))
+        toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 190).isActive = true
+        improveHotkeyButton = SettingsText.secondaryButton(improveHotkey.display,
+                                                           target: self,
+                                                           action: #selector(captureImprove))
+        improveHotkeyButton.widthAnchor.constraint(equalToConstant: 190).isActive = true
+
         stopOnEnterCheck.identifier = NSUserInterfaceItemIdentifier("stop-recording-on-enter")
         cancelOnEscapeCheck.identifier = NSUserInterfaceItemIdentifier("cancel-recording-on-escape")
         pauseOnSpaceCheck.identifier = NSUserInterfaceItemIdentifier("pause-recording-on-space")
-        let escapeHint = NSTextField(wrappingLabelWithString: "Во время записи и на паузе Esc отменяет диктовку без распознавания и вставки текста.")
-        escapeHint.font = .systemFont(ofSize: 11)
-        escapeHint.textColor = .secondaryLabelColor
-        let pauseHint = NSTextField(wrappingLabelWithString: "Пробел ставит диктовку на паузу; повторное нажатие продолжает запись. Сочетания с модификаторами работают как обычно.")
-        pauseHint.font = .systemFont(ofSize: 11)
-        pauseHint.textColor = .secondaryLabelColor
 
-        toggleHotkeyButton = NSButton(title: toggleHotkey.display, target: self, action: #selector(captureToggle))
-        toggleHotkeyButton.bezelStyle = .rounded
-        improveHotkeyButton = NSButton(title: improveHotkey.display, target: self, action: #selector(captureImprove))
-        improveHotkeyButton.bezelStyle = .rounded
+        let shortcutsCard = SettingsCard()
+        shortcutsCard.addRow(SettingsRow(title: "Диктовка",
+                                         subtitle: "Начало и завершение записи.",
+                                         trailing: [toggleHotkeyButton]))
+        shortcutsCard.addRow(SettingsRow(title: "Улучшение текста",
+                                         subtitle: "Правка выделенного текста через AI.",
+                                         trailing: [improveHotkeyButton]))
 
-        let views: [NSView] = [toggleLabel, improveLabel, note,
-                               toggleHotkeyButton, improveHotkeyButton, stopOnEnterCheck, enterHint,
-                               cancelOnEscapeCheck, escapeHint, pauseOnSpaceCheck, pauseHint]
-        for v in views {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            view.addSubview(v)
-        }
+        let recordingCard = SettingsCard()
+        recordingCard.addRow(SettingsRow(title: "Останавливать распознавание по нажатию Enter",
+                                         subtitle: "Во время записи и на паузе Enter завершает диктовку и запускает обработку текста.",
+                                         trailing: [stopOnEnterCheck]))
+        recordingCard.addRow(SettingsRow(title: "Отменять диктовку по Esc",
+                                         subtitle: "Во время записи и на паузе Esc отменяет диктовку без распознавания и вставки текста.",
+                                         trailing: [cancelOnEscapeCheck]))
+        recordingCard.addRow(SettingsRow(title: "Пауза диктовки по пробелу",
+                                         subtitle: "Пробел ставит диктовку на паузу; повторное нажатие продолжает запись. Сочетания с модификаторами работают как обычно.",
+                                         trailing: [pauseOnSpaceCheck]))
 
-        NSLayoutConstraint.activate([
-            toggleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
-            toggleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            toggleHotkeyButton.centerYAnchor.constraint(equalTo: toggleLabel.centerYAnchor),
-            toggleHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            toggleHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
-
-            improveLabel.topAnchor.constraint(equalTo: toggleLabel.bottomAnchor, constant: 18),
-            improveLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            improveHotkeyButton.centerYAnchor.constraint(equalTo: improveLabel.centerYAnchor),
-            improveHotkeyButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            improveHotkeyButton.widthAnchor.constraint(equalToConstant: 190),
-
-            note.topAnchor.constraint(equalTo: improveLabel.bottomAnchor, constant: 22),
-            note.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stopOnEnterCheck.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 22),
-            stopOnEnterCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            stopOnEnterCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-            enterHint.topAnchor.constraint(equalTo: stopOnEnterCheck.bottomAnchor, constant: 6),
-            enterHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            enterHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            cancelOnEscapeCheck.topAnchor.constraint(equalTo: enterHint.bottomAnchor, constant: 18),
-            cancelOnEscapeCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            cancelOnEscapeCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-            escapeHint.topAnchor.constraint(equalTo: cancelOnEscapeCheck.bottomAnchor, constant: 6),
-            escapeHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            escapeHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            pauseOnSpaceCheck.topAnchor.constraint(equalTo: escapeHint.bottomAnchor, constant: 18),
-            pauseOnSpaceCheck.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            pauseOnSpaceCheck.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-            pauseHint.topAnchor.constraint(equalTo: pauseOnSpaceCheck.bottomAnchor, constant: 6),
-            pauseHint.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
-            pauseHint.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-        ])
-
-        return view
+        root.addArrangedFullWidth(SettingsSection(title: "Сочетания",
+                                                note: "Для сочетаний нужен хотя бы один модификатор из ⌃ / ⌥ / ⌘.",
+                                                card: shortcutsCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Во время записи", card: recordingCard))
+        return root
     }
 
     // MARK: - Горячие клавиши
@@ -2224,10 +2198,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
 
     private func refreshDiagnostics(force: Bool = false) {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
-        updateStatusLabel.stringValue = "Версия \(version). " + UpdateCoordinator.shared.status
+        setLabel(updateStatusLabel, "Версия \(version). " + UpdateCoordinator.shared.status)
         refreshAPI()
         let ok = AXIsProcessTrusted()
-        accessLabel.stringValue = ok ? "Accessibility: ✓ разрешено" : "Accessibility: ⚠️ нет доступа"
+        accessLabel.stringValue = ok ? "✓ разрешено" : "⚠️ нет доступа"
         accessLabel.textColor = ok ? .systemGreen : .systemOrange
         accessButton.isHidden = ok
 
@@ -2340,11 +2314,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         return samplePanel?.window?.contentView
     }
 
+    private func setMicTest(_ text: String, color: NSColor) {
+        micTestLabel.stringValue = text
+        micTestLabel.textColor = color
+        micTestLabel.invalidateIntrinsicContentSize()
+        micTestRow?.isHidden = text.isEmpty
+    }
+
     @objc private func testMicrophone() {
         let name = micPopup.titleOfSelectedItem ?? ""
         micTestButton.isEnabled = false
-        micTestLabel.stringValue = "Запись 1 с…"
-        micTestLabel.textColor = .secondaryLabelColor
+        setMicTest("Запись 1 с…", color: .secondaryLabelColor)
         let uid = micPopup.selectedItem?.representedObject as? String ?? ""
         MicTester.test(micName: name, deviceUID: uid) { [weak self] result in
             guard let self else { return }
@@ -2353,15 +2333,12 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
             case .success(let level):
                 let value = Double(level.replacingOccurrences(of: ",", with: ".")) ?? -100
                 if value > -50 {
-                    self.micTestLabel.stringValue = "✓ \(level) dB"
-                    self.micTestLabel.textColor = .systemGreen
+                    self.setMicTest("✓ \(level) dB", color: .systemGreen)
                 } else {
-                    self.micTestLabel.stringValue = "⚠️ тишина (\(level) dB)"
-                    self.micTestLabel.textColor = .systemOrange
+                    self.setMicTest("⚠️ тишина (\(level) dB)", color: .systemOrange)
                 }
             case .failure(let error):
-                self.micTestLabel.stringValue = "⚠️ \(error.localizedDescription)"
-                self.micTestLabel.textColor = .systemOrange
+                self.setMicTest("⚠️ \(error.localizedDescription)", color: .systemOrange)
             }
         }
     }
@@ -2646,7 +2623,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         promptTestLabel?.stringValue = ""
         improveTestLabel?.stringValue = ""
         summaryTestLabel?.stringValue = ""
-        micTestLabel?.stringValue = ""
+        setMicTest("", color: .secondaryLabelColor)
 
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
         reloadMicrophones(selected: settings.microphone, uid: settings.microphoneUID)
@@ -2711,22 +2688,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate, NSTabViewDeleg
         loadedSettings.whisperModelPath = selectedModelPath
         loadedSettings.recognitionTechnology = selectedTechnology
         loadedSettings.fluidModel = selectedFluidModel
-        if loadedSettings.microphone.isEmpty {
-            loadedSettings.microphone = micPopup.titleOfSelectedItem ?? ""
-        }
+        loadedSettings.microphone = micPopup.titleOfSelectedItem ?? loadedSettings.microphone
         loadedSettings.microphoneUID = micPopup.selectedItem?.representedObject as? String ?? ""
+        updateDirtyState()
     }
 
     @objc private func resetDefaults() {
-        let tabName = tabView.selectedTabViewItem?.label ?? "вкладки"
+        let tabName = pageMeta(currentTab).title
         let confirm = NSAlert()
-        confirm.messageText = "Сбросить вкладку «\(tabName)»?"
-        confirm.informativeText = "Несохранённые изменения на этой вкладке будут заменены значениями по умолчанию."
+        confirm.messageText = "Сбросить раздел «\(tabName)»?"
+        confirm.informativeText = "Несохранённые изменения в этом разделе будут заменены значениями по умолчанию."
         confirm.addButton(withTitle: "Сбросить")
         confirm.addButton(withTitle: "Отмена")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        switch tabView.selectedTabViewItem?.identifier as? String {
+        switch currentTab {
         case "api":
             apiFilter.state = .on; apiVocabulary.state = .on; apiThreshold.doubleValue = -55
             selectedAPIModel = .application

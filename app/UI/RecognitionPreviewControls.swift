@@ -1,15 +1,15 @@
 import AppKit
 
 final class RecognitionPreviewControls: NSStackView, NSTextFieldDelegate {
-    private let enabledCheck = NSButton(checkboxWithTitle: "Показывать предварительный текст", target: nil, action: nil)
+    private let enabledSwitch = NSSwitch()
     private let countField = NSTextField(string: "3")
     private let countStepper = NSStepper()
-    private let countLabel = NSTextField(labelWithString: "Количество строк в предварительном распознавании")
+    private let countLabel = SettingsText.rowSubtitle("Количество строк", width: 220)
 
     var options: RecognitionPreview {
-        get { RecognitionPreview(enabled: enabledCheck.state == .on, lineCount: Int(countField.stringValue) ?? RecognitionPreview.defaultLineCount) }
+        get { RecognitionPreview(enabled: enabledSwitch.state == .on, lineCount: Int(countField.stringValue) ?? RecognitionPreview.defaultLineCount) }
         set {
-            enabledCheck.state = newValue.enabled ? .on : .off
+            enabledSwitch.state = newValue.enabled ? .on : .off
             countField.integerValue = newValue.lineCount
             countStepper.integerValue = newValue.lineCount
             updateEnabledState()
@@ -21,12 +21,23 @@ final class RecognitionPreviewControls: NSStackView, NSTextFieldDelegate {
     init() {
         super.init(frame: .zero)
         orientation = .vertical
-        alignment = .leading
-        spacing = 8
-        enabledCheck.identifier = NSUserInterfaceItemIdentifier("preview-enabled")
-        enabledCheck.target = self
-        enabledCheck.action = #selector(previewToggled)
-        enabledCheck.state = .on
+        alignment = .width
+        spacing = 10
+
+        enabledSwitch.identifier = NSUserInterfaceItemIdentifier("preview-enabled")
+        enabledSwitch.target = self
+        enabledSwitch.action = #selector(previewToggled)
+        enabledSwitch.state = .on
+        enabledSwitch.setAccessibilityLabel("Показывать предварительный текст")
+
+        let title = SettingsText.rowTitle("Показывать предварительный текст")
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let header = NSStackView(views: [title, spacer, enabledSwitch])
+        header.orientation = .horizontal
+        header.alignment = .centerY
+        header.spacing = 8
+
         countField.identifier = NSUserInterfaceItemIdentifier("preview-lines")
         countField.setAccessibilityLabel(countLabel.stringValue)
         countField.delegate = self
@@ -44,14 +55,16 @@ final class RecognitionPreviewControls: NSStackView, NSTextFieldDelegate {
         countStepper.integerValue = RecognitionPreview.defaultLineCount
         countStepper.target = self
         countStepper.action = #selector(stepCount)
-        countLabel.font = .systemFont(ofSize: 12)
         let range = NSTextField(labelWithString: "1–10")
         range.textColor = .secondaryLabelColor
         range.font = .systemFont(ofSize: 11)
-        let row = NSStackView(views: [countLabel, countField, countStepper, range])
+        let row = NSStackView(views: [countLabel, countField, countStepper, range, NSView()])
+        row.orientation = .horizontal
         row.spacing = 8
         row.alignment = .centerY
-        addArrangedSubview(enabledCheck)
+        row.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        addArrangedSubview(header)
         addArrangedSubview(row)
         updateEnabledState()
     }
@@ -69,7 +82,7 @@ final class RecognitionPreviewControls: NSStackView, NSTextFieldDelegate {
     @objc private func stepCount() { countField.integerValue = countStepper.integerValue }
 
     private func updateEnabledState() {
-        let enabled = enabledCheck.state == .on
+        let enabled = enabledSwitch.state == .on
         countField.isEnabled = enabled
         countStepper.isEnabled = enabled
         countLabel.textColor = enabled ? .labelColor : .disabledControlTextColor

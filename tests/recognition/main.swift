@@ -34,8 +34,8 @@ func runChecks() throws {
     isolation.onAPISettingsSaved = { apiSaves += 1 }
     isolation.show(); isolation.selectTab("api")
     let isolationViews = descendants(isolation.window!.contentView!)
-    let filter = isolationViews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-audio-filter" }!
-    let dictionary = isolationViews.compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-use-vocabulary" }!
+    let filter = isolationViews.compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "api-audio-filter" }!
+    let dictionary = isolationViews.compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "api-use-vocabulary" }!
     let threshold = isolationViews.compactMap { $0 as? NSSlider }.first { $0.identifier?.rawValue == "api-minimum-dbfs" }!
     expect(filter.state == .on && dictionary.state == .on && threshold.doubleValue == -55, "Фильтр и словарь API включены, порог -55")
     filter.performClick(nil); dictionary.performClick(nil); threshold.doubleValue = -40
@@ -57,7 +57,34 @@ func runChecks() throws {
     controller.selectTab("general")
     expect(views().contains { $0.identifier?.rawValue == "check-updates" }, "В Основных доступна ручная проверка обновлений")
     expect(labels().contains { $0.contains("Проверка при запуске и раз в сутки") }, "Основные показывают состояние механизма обновлений без сетевого запуска в тестах")
-    expect(!views().contains { $0.identifier?.rawValue == "record-audio-sample" }, "Во вкладке Основные нет записи сэмпла")
+    expect(!views().contains { $0.identifier?.rawValue == "record-audio-sample" }, "В разделе Основные нет записи сэмпла")
+    let sidebarSearch = views().compactMap { $0 as? NSSearchField }.first!
+    func filterSidebar(_ text: String) {
+        sidebarSearch.stringValue = text
+        application.sendAction(sidebarSearch.action!, to: sidebarSearch.target, from: sidebarSearch)
+    }
+    filterSidebar("словарь")
+    expect(views().compactMap { $0 as? SettingsSidebarItem }.filter { !$0.isHidden }.map(\.title) == ["Словарь"],
+           "Поиск оставляет только совпадающий раздел")
+    filterSidebar("zzz")
+    let emptySearch = views().compactMap { $0 as? NSTextField }.first { $0.stringValue == "Ничего не найдено" }
+    expect(emptySearch?.isHidden == false, "Поиск без совпадений показывает пустое состояние")
+    filterSidebar("")
+    expect(emptySearch?.isHidden == true, "Очистка поиска скрывает пустое состояние")
+    expect(views().compactMap { $0 as? SettingsSidebarItem }.allSatisfy { !$0.isHidden },
+           "Очистка поиска возвращает все разделы")
+    let hotkeysItem = views().compactMap { $0 as? SettingsSidebarItem }.first { $0.pageID == "hotkeys" }!
+    hotkeysItem.performClick(nil)
+    expect(views().contains { $0.identifier?.rawValue == "pause-recording-on-space" },
+           "Клик по пункту сайдбара открывает раздел")
+    let draftPause = views().compactMap { $0 as? NSSwitch }
+        .first { $0.identifier?.rawValue == "pause-recording-on-space" }!
+    draftPause.state = .off
+    views().compactMap { $0 as? SettingsSidebarItem }.first { $0.pageID == "general" }!.performClick(nil)
+    hotkeysItem.performClick(nil)
+    expect(draftPause.state == .off, "Клик по сайдбару сохраняет черновик")
+    draftPause.state = .on
+    controller.selectTab("general")
     let version = views().compactMap { $0 as? SampleAccessLabel }.first!
     for count in 1...3 {
         let event = NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [],
@@ -82,21 +109,23 @@ func runChecks() throws {
     sampleButtons.first { $0.title == "Закрыть" }!.performClick(nil)
     waitFor("Скрытая модалка закрыта") { controller.window!.attachedSheet == nil }
     controller.selectTab("api")
-    let apiEnabled = views().compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-enabled" }!
-    let apiImprove = views().compactMap { $0 as? NSButton }.first { $0.identifier?.rawValue == "api-improve-text" }!
+    let apiEnabled = views().compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "api-enabled" }!
+    let apiImprove = views().compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "api-improve-text" }!
     let apiPort = views().compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "api-port" }!
     expect(apiEnabled.state == .off && apiImprove.state == .off && apiPort.stringValue == "8790",
-           "Вкладка API содержит независимые выключенные переключатели и порт 8790")
+           "Раздел API содержит независимые выключенные переключатели и порт 8790")
     root.layoutSubtreeIfNeeded()
-    expect(apiEnabled.convert(apiEnabled.bounds, to: root).intersects(root.bounds) && apiEnabled.window != nil, "Элементы API видны в области вкладки после раскладки прокрутки")
-    expect(labels().contains { $0.contains("127.0.0.1:8790/runvoice/v1/audio/transcriptions") }, "Вкладка показывает полный совместимый адрес")
+    expect(apiEnabled.convert(apiEnabled.bounds, to: root).intersects(root.bounds) && apiEnabled.window != nil, "Элементы API видны в области раздела после раскладки прокрутки")
+    expect(labels().contains { $0.contains("127.0.0.1:8790/runvoice/v1/audio/transcriptions") }, "Раздел показывает полный совместимый адрес")
     let apiModel = views().compactMap { $0 as? NSPopUpButton }.first { $0.identifier?.rawValue == "api-recognition-model" }!
     expect(apiModel.titleOfSelectedItem == "Как в приложении", "Модель API наследуется по умолчанию")
     expect(!apiModel.itemTitles.contains { $0.hasPrefix("FluidAudio") }, "Нескачанные FluidAudio отсутствуют в списке API")
     controller.selectTab("hotkeys")
-    let pauseOnSpace = button { $0.identifier?.rawValue == "pause-recording-on-space" }
-    expect(pauseOnSpace.state == .on && pauseOnSpace.title == "Пауза диктовки по пробелу",
-           "Пауза по пробелу доступна во вкладке Хоткеи и включена по умолчанию")
+    let pauseOnSpace = views().compactMap { $0 as? NSSwitch }
+        .first { $0.identifier?.rawValue == "pause-recording-on-space" }!
+    let pauseTitle = (pauseOnSpace.accessibilityTitleUIElement() as? NSTextField)?.stringValue
+    expect(pauseOnSpace.state == .on && pauseTitle == "Пауза диктовки по пробелу",
+           "Пауза по пробелу доступна в разделе Хоткеи и включена по умолчанию")
     expect(labels().contains { $0.contains("на паузе Enter") }
         && labels().contains { $0.contains("на паузе Esc") }, "Enter и Esc объясняют действие на паузе")
     pauseOnSpace.state = .off
@@ -114,13 +143,14 @@ func runChecks() throws {
     expect(whisperButtons.contains { $0.identifier?.rawValue == "medium-q5_0" }, "Средняя квантованная модель доступна по кнопке")
     expect(!views().contains { ($0 as? NSButton)?.title == FluidModel.parakeet.title }, "В каталоге Whisper нет моделей FluidAudio")
     expect(labels().contains("Экспериментальная"), "Донастройки Whisper явно помечены как экспериментальные")
-    let headings = ["1. Технология распознавания", "2. Параметры распознавания",
-                    "3. Модель распознавания", "4. Предварительное распознавание"]
+    let headings = ["Движок", "Модель"]
     func expectSectionOrder() {
         expect(labels().filter { headings.contains($0) } == headings,
-               "Блоки идут в порядке: технология, язык, модель, предпросмотр")
+               "Блоки идут в порядке: движок, модель")
     }
     expectSectionOrder()
+    expect(labels().contains { $0.hasPrefix("Скачивание (") },
+           "В каталоге Whisper есть отдельный блок скачивания")
     expect(labels().contains { $0.contains("Язык — подсказка модели") }, "Whisper объясняет язык как подсказку")
     let language = views().compactMap { $0 as? NSPopUpButton }
         .first { $0.accessibilityLabel() == "Язык распознавания" }!
@@ -134,7 +164,7 @@ func runChecks() throws {
         && $0.contains("для всех моделей") }, "Словарь объясняет три способа применения и общий этап AI-правки")
     vocabulary.input.string = "Cypress, shared"
     controller.selectTab("models")
-    expect(vocabulary.input.string == "Cypress, shared", "Переход между вкладками сохраняет незавершённый ввод словаря")
+    expect(vocabulary.input.string == "Cypress, shared", "Переход между разделами сохраняет незавершённый ввод словаря")
     if !RecognitionTechnology.fluidAudio.isSupported {
         expect(technology.item(at: 1)?.isEnabled == false, "На Intel FluidAudio недоступен")
         controller.window?.orderOut(nil)
@@ -273,7 +303,7 @@ func runChecks() throws {
     let reopened = SettingsWindow()
     reopened.show()
     reopened.selectTab("hotkeys")
-    let loadedPause = descendants(reopened.window!.contentView!).compactMap { $0 as? NSButton }
+    let loadedPause = descendants(reopened.window!.contentView!).compactMap { $0 as? NSSwitch }
         .first { $0.identifier?.rawValue == "pause-recording-on-space" }!
     expect(loadedPause.state == .off, "Повторное открытие Хоткеев восстанавливает отключённую паузу")
     reopened.selectTab("api")

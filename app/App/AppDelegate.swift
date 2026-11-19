@@ -158,6 +158,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 || arguments.contains("--snapshot-hud") || arguments.contains("--snapshot-hint")
                 || arguments.contains("--snapshot-transcribe")
                 || arguments.contains("--snapshot-transcribe-summary") else { return false }
+        switch ProcessInfo.processInfo.environment["RUNVOICE_SNAPSHOT_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
         setupStatusItem()
         hud = HUDController()
         let countIndex = arguments.firstIndex(of: "--snapshot-preview-lines")
@@ -482,7 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             view.cacheDisplay(in: view.bounds, to: rep)
             let image = NSImage(size: view.bounds.size)
             image.lockFocus()
-            NSColor.windowBackgroundColor.setFill()
+            (settingsWindow?.window?.backgroundColor ?? .windowBackgroundColor).setFill()
             view.bounds.fill()
             if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
                 ctx.draw(cg, in: view.bounds)
@@ -520,6 +525,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     : self.settingsWindow?.prepareSampleSnapshot(recording: tab == "sample-recording")
                 guard let view = target else { next(index + 1); return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    NSApp.activate(ignoringOtherApps: true)
+                    self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
                     capture(to: path, view: view)
                     if let panel = self.settingsWindow?.window?.attachedSheet {
                         self.settingsWindow?.window?.endSheet(panel, returnCode: .cancel)
@@ -529,11 +536,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 return
             }
+            NSApp.activate(ignoringOtherApps: true)
+            self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
             self.settingsWindow?.selectTab(tab == "improve" || tab == "summary" ? "ai" : tab)
             if tab == "dictionary" { self.settingsWindow?.prepareDictionarySnapshot() }
             if tab == "improve" { self.settingsWindow?.scrollAIToImprove() }
             if tab == "summary" { self.settingsWindow?.scrollAIToSummary() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                NSApp.activate(ignoringOtherApps: true)
+                self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
+                self.settingsWindow?.window?.contentView?.layoutSubtreeIfNeeded()
                 capture(to: path)
                 next(index + 1)
             }

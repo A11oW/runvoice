@@ -18,7 +18,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 swiftc -target "$(uname -m)-apple-macos15.0" -module-cache-path "$REPO/.build/clang-module-cache" \
   "$REPO/app/App/TextEditingCommands.swift" "$REPO/app/Core/RecognitionPreview.swift" \
-  "$REPO/app/UI/RecognitionPreviewControls.swift" "$REPO/app/UI/HUDSpinnerView.swift" \
+  "$REPO/app/UI/SettingsComponents.swift" "$REPO/app/UI/RecognitionPreviewControls.swift" "$REPO/app/UI/HUDSpinnerView.swift" \
   "$REPO/app/Core/SpeechVocabulary.swift" "$REPO/app/UI/SpeechVocabularyEditor.swift" \
   "$REPO/app/UI/StatusHintController.swift" \
   "$REPO/tests/editing/main.swift" -o "$APP/Contents/MacOS/EditingTests"

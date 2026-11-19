@@ -124,21 +124,19 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
     }
 
     private func build() {
-        let note = NSTextField(wrappingLabelWithString: [
-            "Whisper — термины передаются как подсказка при распознавании.",
-            "Nemotron — термины передаются в словарь потоковой модели.",
-            "Parakeet и Phonon — термины учитываются только при AI-правке; при отключённой AI-правке словарь для них не применяется.",
-            "При включённой AI-правке словарь дополнительно учитывается для всех моделей.",
-        ].joined(separator: "\n"))
-        note.font = .systemFont(ofSize: 12)
-        note.textColor = .secondaryLabelColor
+        let root = NSStackView()
+        root.orientation = .vertical
+        root.alignment = .leading
+        root.spacing = SettingsStyle.sectionSpacing
+        root.translatesAutoresizingMaskIntoConstraints = false
+
         countLabel.font = .systemFont(ofSize: 11)
         countLabel.textColor = .secondaryLabelColor
-        let heading = NSTextField(labelWithString: "Технические термины")
-        heading.font = .systemFont(ofSize: 13, weight: .semibold)
-        let header = NSStackView(views: [heading, NSView(), countLabel])
+        let headerTitle = SettingsText.rowSubtitle("Терминов", width: 120)
+        let header = NSStackView(views: [headerTitle, NSView(), countLabel])
         header.orientation = .horizontal
         header.alignment = .centerY
+        header.arrangedSubviews[1].setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("term"))
         column.title = "Термин"
@@ -147,7 +145,9 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         table.headerView = nil
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.rowHeight = 28
-        table.usesAlternatingRowBackgroundColors = true
+        table.style = .inset
+        table.usesAlternatingRowBackgroundColors = false
+        table.backgroundColor = .clear
         table.allowsMultipleSelection = true
         table.delegate = self
         table.dataSource = self
@@ -155,57 +155,76 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
         scroll.documentView = table
+        scroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
 
-        let inputNote = NSTextField(wrappingLabelWithString:
-            "Одна строка — один термин или фраза, до 80 символов.\nДобавьте термин или список через запятую либо с новой строки")
-        inputNote.font = .systemFont(ofSize: 11)
-        inputNote.textColor = .secondaryLabelColor
+        let termsCard = SettingsCard()
+        termsCard.addRow(SettingsContentRow(header, verticalInset: 10))
+        termsCard.addRow(SettingsContentRow(scroll, verticalInset: 0))
+        let termsNote = [
+            "Whisper — термины передаются как подсказка при распознавании.",
+            "Nemotron — термины передаются в словарь потоковой модели.",
+            "Parakeet и Phonon — термины учитываются только при AI-правке; при отключённой AI-правке словарь для них не применяется.",
+            "При включённой AI-правке словарь дополнительно учитывается для всех моделей."
+        ].joined(separator: " ")
+
         input.isRichText = false
         input.font = .systemFont(ofSize: 13)
         input.allowsUndo = true
         input.isAutomaticQuoteSubstitutionEnabled = false
         input.isAutomaticDashSubstitutionEnabled = false
         input.isAutomaticSpellingCorrectionEnabled = false
-        input.textContainerInset = NSSize(width: 5, height: 5)
+        input.textContainerInset = NSSize(width: 6, height: 6)
         input.isVerticallyResizable = true
         input.isHorizontallyResizable = false
         input.autoresizingMask = [.width]
         input.textContainer?.widthTracksTextView = true
+        input.drawsBackground = false
         input.setAccessibilityLabel("Новые термины")
         let inputScroll = NSScrollView()
         inputScroll.hasVerticalScroller = true
         inputScroll.autohidesScrollers = true
         inputScroll.borderType = .bezelBorder
+        inputScroll.focusRingType = .none
         inputScroll.documentView = input
-        let addButton = NSButton(title: "Добавить", target: self, action: #selector(addTerms))
+        inputScroll.heightAnchor.constraint(equalToConstant: 74).isActive = true
+
+        let addButton = SettingsText.secondaryButton("Добавить", target: self, action: #selector(addTerms))
+        removeButton.bezelStyle = .rounded
         removeButton.target = self
         removeButton.action = #selector(removeSelected)
-        let buttons = NSStackView(views: [addButton, removeButton])
+        let buttons = NSStackView(views: [addButton, removeButton, NSView()])
         buttons.orientation = .horizontal
         buttons.spacing = 8
+        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemOrange
+        errorLabel.maximumNumberOfLines = 0
+        errorLabel.preferredMaxLayoutWidth = SettingsStyle.contentMaxWidth - 32
 
-        for view in [note, header, scroll, inputNote, inputScroll, buttons, errorLabel] as [NSView] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
-            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16).isActive = true
-            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16).isActive = true
-        }
+        let inputBlock = NSStackView()
+        inputBlock.orientation = .vertical
+        inputBlock.alignment = .leading
+        inputBlock.spacing = 8
+        inputBlock.addArrangedFullWidth(inputScroll)
+        inputBlock.addArrangedFullWidth(buttons)
+        inputBlock.addArrangedFullWidth(errorLabel)
+
+        let inputCard = SettingsCard()
+        inputCard.addRow(SettingsContentRow(inputBlock, verticalInset: 12))
+
+        root.addArrangedFullWidth(SettingsSection(title: "Технические термины", note: termsNote, card: termsCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Добавить термины",
+                                                  note: "Одна строка — один термин или фраза, до 80 символов. Можно вставить список через запятую или с новой строки.",
+                                                  card: inputCard))
+        addSubview(root)
         NSLayoutConstraint.activate([
-            note.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-            header.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 16),
-            scroll.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
-            inputNote.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 12),
-            inputScroll.topAnchor.constraint(equalTo: inputNote.bottomAnchor, constant: 6),
-            inputScroll.heightAnchor.constraint(equalToConstant: 62),
-            buttons.topAnchor.constraint(equalTo: inputScroll.bottomAnchor, constant: 8),
-            errorLabel.topAnchor.constraint(equalTo: buttons.bottomAnchor, constant: 6),
-            errorLabel.heightAnchor.constraint(equalToConstant: 32),
-            errorLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            root.topAnchor.constraint(equalTo: topAnchor),
+            root.leadingAnchor.constraint(equalTo: leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: trailingAnchor),
+            root.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
     }
 }
