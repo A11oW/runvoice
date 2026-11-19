@@ -356,6 +356,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.reloadHotkeys()
                 self.statusHint.update(shortcut: settings.hotkeyToggle.display)
                 self.dictation.prewarm()
+                self.transcribeWindow?.refreshSettings()
                 LocalAPIService.shared.configure(settings)
             }
         }

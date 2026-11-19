@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 // MARK: - Окно расшифровки аудиофайла
@@ -14,6 +15,11 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         case summary
     }
 
+    private enum FailedOperation {
+        case transcription
+        case summary
+    }
+
     private let runner: DictationRunner
 
     private let chooseButton = NSButton()
@@ -21,15 +27,26 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
     private let copyButton = NSButton()
     private let clearButton = NSButton()
     private let summaryButton = NSButton()
+    private let saveButton = NSButton()
+    private let openEditorButton = NSButton()
+    private let retryButton = NSButton()
+    private let logButton = NSButton()
     private let fileLabel = NSTextField(labelWithString: "Файл не выбран")
+    private let fileMetaLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "Выберите аудиофайл или перетащите его в окно.")
     private let countLabel = NSTextField(labelWithString: "")
     private let spinner = NSProgressIndicator()
     private var textView = NSTextView()
     private let dropView = AudioDropView()
+    private var dropHeight: NSLayoutConstraint!
+    private var fileInfoStack: NSStackView!
 
     private let modePopup = NSPopUpButton()
     private let modeLabel = NSTextField(labelWithString: "Режим:")
+    private let modelBadge = BadgeView()
+    private let languageBadge = BadgeView()
+    private let aiBadge = BadgeView()
+    private let presetPopup = NSPopUpButton()
     private let promptToggle = NSButton()
     private let promptContent = NSStackView()
     private var promptView = NSTextView()
@@ -40,6 +57,11 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
     private var promptExpanded = false
 
     private let promptLimit = 4_000
+    private let summaryPresetTexts = [
+        "Сделай краткое саммари в 3–5 предложениях. Оставь только главные мысли и итог.",
+        "Сделай саммари в виде маркированного списка из 5–10 пунктов. Один пункт — одна мысль.",
+        "Выдели решения, задачи, сроки и ответственных. Если чего-то нет — не придумывай. Верни структурированный список.",
+    ]
     private var mode: Mode = .transcription
     private var displayedKind: DisplayedKind = .transcript
     private var transcriptText = ""
@@ -58,6 +80,17 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
     private var busyPrefix = ""
     private var textObserver: NSObjectProtocol?
     private var promptObserver: NSObjectProtocol?
+    private let searchField = NSSearchField()
+    private let searchCountLabel = NSTextField(labelWithString: "")
+    private let searchPrevButton = NSButton()
+    private let searchNextButton = NSButton()
+    private var searchRow: NSStackView!
+    private var searchHeight: NSLayoutConstraint!
+    private var searchMatches: [NSRange] = []
+    private var searchIndex = 0
+    private var failedOperation: FailedOperation?
+    private var lastFileURL: URL?
+    private var isApplyingPreset = false
 
     var onOpenSettings: (() -> Void)?
 
@@ -65,15 +98,21 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
 
     init(runner: DictationRunner) {
         self.runner = runner
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 700),
+        let window = TranscribeWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 760),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                               backing: .buffered, defer: false)
         window.title = "Runvoice — Расшифровка аудио"
-        window.minSize = NSSize(width: 640, height: 640)
+        window.minSize = NSSize(width: 680, height: 680)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
         window.delegate = self
+        window.onCommandF = { [weak self] in self?.toggleSearch() }
+        window.onEscape = { [weak self] in
+            guard let self, !self.searchRow.isHidden else { return false }
+            self.toggleSearch()
+            return true
+        }
         mode = Mode(rawValue: UserDefaults.standard.integer(forKey: "transcribeMode")) ?? .transcription
         build()
         textObserver = NotificationCenter.default.addObserver(
@@ -102,8 +141,16 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
     }
 
     func show() {
+        normalizeModeForContent()
+        refreshBadges()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Обновляет бейджи после сохранения настроек.
+    func refreshSettings() {
+        refreshBadges()
+        updateSummaryButton()
     }
 
     /// Запуск расшифровки извне — используется отладочным флагом `--transcribe-file`.
@@ -118,6 +165,8 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         updateModeUI()
         fileLabel.stringValue = fileName
         fileLabel.toolTip = fileName
+        fileMetaLabel.stringValue = "12:34 · 38 МБ · M4A"
+        refreshBadges()
         transcriptText = text
         summaryText = ""
         summarySource = ""
@@ -144,9 +193,12 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         displayedKind = .summary
         fileLabel.stringValue = fileName
         fileLabel.toolTip = fileName
+        fileMetaLabel.stringValue = "12:34 · 38 МБ · M4A"
+        refreshBadges()
         textView.string = summary
         updateModeUI()
         updatePromptState()
+        syncPresetSelection()
         setStatus("Саммари готово", color: .secondaryLabelColor)
         updateCount()
     }
@@ -175,6 +227,13 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         modeRow.alignment = .centerY
         modeRow.spacing = 8
 
+        let badgesSpacer = NSView()
+        badgesSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let badgesRow = NSStackView(views: [modelBadge, languageBadge, aiBadge, badgesSpacer])
+        badgesRow.orientation = .horizontal
+        badgesRow.alignment = .centerY
+        badgesRow.spacing = 6
+
         chooseButton.title = "Выбрать аудиофайл…"
         chooseButton.target = self
         chooseButton.action = #selector(chooseFile)
@@ -187,12 +246,23 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         cancelButton.bezelStyle = .rounded
         cancelButton.isHidden = true
 
+        fileLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        fileLabel.textColor = .labelColor
         fileLabel.lineBreakMode = .byTruncatingMiddle
-        fileLabel.textColor = .secondaryLabelColor
         fileLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         fileLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let top = NSStackView(views: [chooseButton, fileLabel, cancelButton])
+        fileMetaLabel.font = .systemFont(ofSize: 10)
+        fileMetaLabel.textColor = .secondaryLabelColor
+        fileMetaLabel.lineBreakMode = .byTruncatingTail
+
+        fileInfoStack = NSStackView(views: [fileLabel, fileMetaLabel])
+        fileInfoStack.orientation = .vertical
+        fileInfoStack.alignment = .leading
+        fileInfoStack.spacing = 2
+        fileInfoStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let top = NSStackView(views: [chooseButton, fileInfoStack, cancelButton])
         top.orientation = .horizontal
         top.alignment = .centerY
         top.spacing = 10
@@ -261,19 +331,31 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
             view.widthAnchor.constraint(equalTo: promptContent.widthAnchor).isActive = true
         }
 
-        promptContainer = NSStackView(views: [promptHeader, promptContent])
+        let presetLabel = NSTextField(labelWithString: "Пресет:")
+        presetLabel.font = .systemFont(ofSize: 11)
+        presetLabel.textColor = .secondaryLabelColor
+        presetPopup.addItems(withTitles: ["По умолчанию", "Кратко", "Тезисы", "Задачи", "Свой…"])
+        presetPopup.target = self
+        presetPopup.action = #selector(presetChanged)
+        presetPopup.widthAnchor.constraint(equalToConstant: 180).isActive = true
+        let presetRow = NSStackView(views: [presetLabel, presetPopup])
+        presetRow.orientation = .horizontal
+        presetRow.alignment = .centerY
+        presetRow.spacing = 8
+
+        promptContainer = NSStackView(views: [presetRow, promptHeader, promptContent])
         promptContainer.orientation = .vertical
         promptContainer.alignment = .leading
         promptContainer.spacing = 8
         promptContainer.detachesHiddenViews = true
         promptContainer.isHidden = true
 
-        for view in [promptHeader, promptContent] as [NSView] {
+        for view in [presetRow, promptHeader, promptContent] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.widthAnchor.constraint(equalTo: promptContainer.widthAnchor).isActive = true
         }
 
-        let headerStack = NSStackView(views: [modeRow, top, promptContainer])
+        let headerStack = NSStackView(views: [modeRow, badgesRow, top, promptContainer])
         headerStack.orientation = .vertical
         headerStack.alignment = .leading
         headerStack.spacing = 10
@@ -281,7 +363,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         headerStack.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(headerStack)
 
-        for view in [modeRow, top, promptContainer] as [NSView] {
+        for view in [modeRow, badgesRow, top, promptContainer] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.widthAnchor.constraint(equalTo: headerStack.widthAnchor).isActive = true
         }
@@ -302,12 +384,56 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let statusRow = NSStackView(views: [spinner, statusLabel])
+        retryButton.title = "Повторить"
+        retryButton.target = self
+        retryButton.action = #selector(retryLastOperation)
+        retryButton.bezelStyle = .rounded
+        retryButton.isHidden = true
+
+        logButton.title = "Открыть лог"
+        logButton.target = self
+        logButton.action = #selector(openDictationLog)
+        logButton.bezelStyle = .rounded
+        logButton.isHidden = true
+
+        let statusRow = NSStackView(views: [spinner, statusLabel, retryButton, logButton])
         statusRow.orientation = .horizontal
         statusRow.alignment = .centerY
         statusRow.spacing = 8
+        statusRow.detachesHiddenViews = true
         statusRow.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(statusRow)
+
+        searchField.placeholderString = "Поиск по тексту"
+        searchField.delegate = self
+        searchField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+
+        searchPrevButton.title = "‹"
+        searchPrevButton.target = self
+        searchPrevButton.action = #selector(previousMatch)
+        searchPrevButton.bezelStyle = .rounded
+        searchPrevButton.widthAnchor.constraint(equalToConstant: 30).isActive = true
+
+        searchNextButton.title = "›"
+        searchNextButton.target = self
+        searchNextButton.action = #selector(nextMatch)
+        searchNextButton.bezelStyle = .rounded
+        searchNextButton.widthAnchor.constraint(equalToConstant: 30).isActive = true
+
+        searchCountLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        searchCountLabel.textColor = .secondaryLabelColor
+        searchCountLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        searchRow = NSStackView(views: [searchField, searchPrevButton,
+                                        searchNextButton, searchCountLabel])
+        searchRow.orientation = .horizontal
+        searchRow.alignment = .centerY
+        searchRow.spacing = 6
+        searchRow.isHidden = true
+        searchRow.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(searchRow)
+        searchHeight = searchRow.heightAnchor.constraint(equalToConstant: 0)
+        searchHeight.isActive = true
 
         let scroll = NSTextView.scrollableTextView()
         scroll.hasVerticalScroller = true
@@ -338,6 +464,16 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         summaryButton.bezelStyle = .rounded
         summaryButton.isHidden = true
 
+        saveButton.title = "Сохранить…"
+        saveButton.target = self
+        saveButton.action = #selector(saveText)
+        saveButton.bezelStyle = .rounded
+
+        openEditorButton.title = "В TextEdit"
+        openEditorButton.target = self
+        openEditorButton.action = #selector(openInTextEdit)
+        openEditorButton.bezelStyle = .rounded
+
         clearButton.title = "Очистить"
         clearButton.target = self
         clearButton.action = #selector(clearText)
@@ -348,13 +484,16 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         copyButton.action = #selector(copyText)
         copyButton.bezelStyle = .rounded
 
-        let bottom = NSStackView(views: [countLabel, spacer, summaryButton, clearButton, copyButton])
+        let bottom = NSStackView(views: [countLabel, spacer, summaryButton,
+                                         saveButton, openEditorButton, copyButton, clearButton])
         bottom.orientation = .horizontal
         bottom.alignment = .centerY
         bottom.spacing = 8
+        bottom.detachesHiddenViews = true
         bottom.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(bottom)
 
+        dropHeight = dropView.heightAnchor.constraint(equalToConstant: 76)
         NSLayoutConstraint.activate([
             headerStack.topAnchor.constraint(equalTo: content.topAnchor, constant: 18),
             headerStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -363,16 +502,20 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
             dropView.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 12),
             dropView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             dropView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            dropView.heightAnchor.constraint(equalToConstant: 76),
+            dropHeight,
 
             statusRow.topAnchor.constraint(equalTo: dropView.bottomAnchor, constant: 12),
             statusRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             statusRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
 
-            scroll.topAnchor.constraint(equalTo: statusRow.bottomAnchor, constant: 8),
+            searchRow.topAnchor.constraint(equalTo: statusRow.bottomAnchor, constant: 6),
+            searchRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            searchRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+
+            scroll.topAnchor.constraint(equalTo: searchRow.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
 
             bottom.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 10),
             bottom.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -381,17 +524,35 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         ])
 
         promptView.string = SettingsStore.load().promptSummary
+        normalizeModeForContent()
         updateModeUI()
         updatePromptState()
         updateCount()
+        refreshBadges()
     }
 
     private func updateModeUI() {
         let summaryMode = mode == .summary
+        chooseButton.isHidden = summaryMode
+        fileInfoStack.isHidden = summaryMode
+        dropView.isHidden = summaryMode
+        dropHeight.constant = summaryMode ? 0 : 76
+        dropView.acceptsDrop = !summaryMode && !isBusy
         promptContainer.isHidden = !summaryMode
         summaryButton.isHidden = !summaryMode
+        modePopup.item(at: Mode.summary.rawValue)?.isEnabled =
+            !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         promptToggle.title = promptExpanded ? "Промпт саммари ▾" : "Промпт саммари ▸"
         updateSummaryButton()
+    }
+
+    private func normalizeModeForContent() {
+        guard mode == .summary,
+              transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        mode = .transcription
+        modePopup.selectItem(at: Mode.transcription.rawValue)
+        UserDefaults.standard.set(mode.rawValue, forKey: "transcribeMode")
+        updateModeUI()
     }
 
     // MARK: - Выбор файла
@@ -413,6 +574,14 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
 
     private func start(_ url: URL) {
         guard !isBusy else { return }
+        if mode != .transcription {
+            mode = .transcription
+            modePopup.selectItem(at: Mode.transcription.rawValue)
+            UserDefaults.standard.set(mode.rawValue, forKey: "transcribeMode")
+            updateModeUI()
+        }
+        lastFileURL = url
+        clearFailure()
         removeCurrentDirectory()
 
         let token = UUID()
@@ -426,6 +595,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
 
         fileLabel.stringValue = url.lastPathComponent
         fileLabel.toolTip = url.path
+        updateFileMetadata(url)
         transcriptText = ""
         summaryText = ""
         summarySource = ""
@@ -446,6 +616,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
             self.stopElapsed()
             switch result {
             case .success(let text):
+                self.clearFailure()
                 self.transcriptText = text
                 self.summaryText = ""
                 self.summarySource = ""
@@ -461,8 +632,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
                 self.window?.makeFirstResponder(self.textView)
                 Log.write("import: готово, chars=\(text.count)")
             case .failure(let error):
-                self.setStatus(error.localizedDescription, color: .systemRed)
-                Log.write("import: ошибка \(error.localizedDescription)")
+                self.showFailure(error.localizedDescription, operation: .transcription)
             }
             self.updateCount()
             self.removeCurrentDirectory()
@@ -520,6 +690,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         promptView.string = SettingsStore.load().promptSummary
         setStatus("Промпт саммари сброшен к настройкам", color: .secondaryLabelColor)
         updatePromptState()
+        syncPresetSelection()
     }
 
     @objc private func savePrompt() {
@@ -530,6 +701,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         setStatus("Промпт саммари сохранён в настройках", color: .secondaryLabelColor)
         Log.write("summary: prompt saved chars=\(promptView.string.count)")
         updateSummaryButton()
+        syncPresetSelection()
     }
 
     private func currentPrompt() -> String {
@@ -548,6 +720,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
 
     private func promptDidChange() {
         updatePromptState()
+        if !isApplyingPreset { syncPresetSelection() }
         if mode == .summary, !summaryText.isEmpty, !summaryIsCurrent {
             setStatus("Промпт или текст изменены — нажмите «Сделать саммари».",
                       color: .secondaryLabelColor)
@@ -607,6 +780,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         }
 
         let prompt = currentPrompt()
+        clearFailure()
         let token = UUID()
         summaryToken = token
         isSummarizing = true
@@ -632,6 +806,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
                 self.stopElapsed()
                 switch result {
                 case .success(let summary):
+                    self.clearFailure()
                     self.summaryText = summary
                     self.summarySource = self.transcriptText
                     self.summaryPromptUsed = prompt
@@ -640,9 +815,8 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
                     Log.write("summary: готово chars=\(summary.count)")
                 case .failure(let error):
                     self.displayTranscription()
-                    self.setStatus("Не удалось сделать саммари: \(error.localizedDescription)",
-                                   color: .systemRed)
-                    Log.write("summary: ошибка \(error.localizedDescription)")
+                    self.showFailure("Не удалось сделать саммари: \(error.localizedDescription)",
+                                     operation: .summary)
                 }
                 self.updateCount()
             })
@@ -658,6 +832,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
             isRunning = false
             setBusy(false)
             stopElapsed()
+            clearFailure()
             setStatus("Отменено", color: .secondaryLabelColor)
             updateCount()
             Log.write("import: отменено пользователем")
@@ -674,6 +849,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         } else {
             displayTranscription()
         }
+        clearFailure()
         setStatus("Саммари отменено", color: .secondaryLabelColor)
         updateCount()
         Log.write("summary: отменено пользователем")
@@ -685,8 +861,17 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         summaryText = ""
         summarySource = ""
         summaryPromptUsed = ""
+        lastFileURL = nil
+        fileLabel.stringValue = "Файл не выбран"
+        fileLabel.toolTip = nil
+        fileMetaLabel.stringValue = ""
         displayedKind = .transcript
         textView.string = ""
+        clearFailure()
+        mode = .transcription
+        modePopup.selectItem(at: Mode.transcription.rawValue)
+        UserDefaults.standard.set(mode.rawValue, forKey: "transcribeMode")
+        updateModeUI()
         setStatus("Выберите аудиофайл или перетащите его в окно.",
                   color: .secondaryLabelColor)
         updateCount()
@@ -700,13 +885,328 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         setStatus("Скопировано в буфер обмена", color: .secondaryLabelColor)
     }
 
+    // MARK: - Сохранение и открытие
+
+    @objc private func saveText() {
+        guard !isBusy, !textView.string.isEmpty, let window else { return }
+        let panel = NSSavePanel()
+        var types: [UTType] = [.plainText]
+        if let markdown = UTType(filenameExtension: "md") { types.append(markdown) }
+        panel.allowedContentTypes = types
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = defaultExportName()
+        panel.message = "Сохранить результат расшифровки"
+        panel.isExtensionHidden = false
+
+        let formatLabel = NSTextField(labelWithString: "Формат:")
+        formatLabel.font = .systemFont(ofSize: 11)
+        formatLabel.textColor = .secondaryLabelColor
+        let formatPopup = NSPopUpButton()
+        formatPopup.addItems(withTitles: ["Текст (.txt)", "Markdown (.md)"])
+        formatPopup.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 38))
+        let accessoryStack = NSStackView(views: [formatLabel, formatPopup])
+        accessoryStack.orientation = .horizontal
+        accessoryStack.alignment = .centerY
+        accessoryStack.spacing = 8
+        accessoryStack.translatesAutoresizingMaskIntoConstraints = false
+        accessory.addSubview(accessoryStack)
+        NSLayoutConstraint.activate([
+            accessoryStack.leadingAnchor.constraint(equalTo: accessory.leadingAnchor, constant: 16),
+            accessoryStack.centerYAnchor.constraint(equalTo: accessory.centerYAnchor),
+        ])
+        panel.accessoryView = accessory
+
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .OK, var url = panel.url else { return }
+            let extensionName = formatPopup.indexOfSelectedItem == 1 ? "md" : "txt"
+            if url.pathExtension.lowercased() != extensionName {
+                url = url.deletingPathExtension().appendingPathExtension(extensionName)
+            }
+            do {
+                try self.textView.string.write(to: url, atomically: true, encoding: .utf8)
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                       ofItemAtPath: url.path)
+                self.clearFailure()
+                self.setStatus("Сохранено: \(url.lastPathComponent)", color: .secondaryLabelColor)
+                Log.write("import: сохранено \(url.lastPathComponent), chars=\(self.textView.string.count)")
+            } catch {
+                self.showFailure("Не удалось сохранить: \(error.localizedDescription)", operation: nil)
+            }
+        }
+    }
+
+    @objc private func openInTextEdit() {
+        guard !isBusy, !textView.string.isEmpty else { return }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Runvoice-\(UUID().uuidString).txt")
+        do {
+            try textView.string.write(to: url, atomically: true, encoding: .utf8)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: url.path)
+            guard let app = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.apple.TextEdit") else {
+                showFailure("TextEdit не найден", operation: nil)
+                return
+            }
+            NSWorkspace.shared.open([url], withApplicationAt: app,
+                                    configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let error {
+                        self.showFailure("Не удалось открыть TextEdit: \(error.localizedDescription)",
+                                         operation: nil)
+                    } else {
+                        self.clearFailure()
+                        self.setStatus("Открыто в TextEdit", color: .secondaryLabelColor)
+                    }
+                }
+            }
+        } catch {
+            showFailure("Не удалось открыть текст: \(error.localizedDescription)", operation: nil)
+        }
+    }
+
+    private func defaultExportName() -> String {
+        let base: String
+        if let lastFileURL {
+            base = lastFileURL.deletingPathExtension().lastPathComponent
+        } else if fileLabel.stringValue != "Файл не выбран" {
+            base = (fileLabel.stringValue as NSString).deletingPathExtension
+        } else {
+            base = "расшифровка"
+        }
+        let suffix = displayedKind == .summary ? "-саммари" : "-транскрипт"
+        return "\(base)\(suffix).txt"
+    }
+
+    // MARK: - Поиск
+
+    @objc private func toggleSearch() {
+        let show = searchRow.isHidden
+        searchRow.isHidden = !show
+        searchHeight.constant = show ? 24 : 0
+        if show {
+            window?.makeFirstResponder(searchField)
+            updateSearch()
+        } else {
+            searchField.stringValue = ""
+            searchMatches = []
+            searchIndex = 0
+            searchCountLabel.stringValue = ""
+            window?.makeFirstResponder(textView)
+        }
+    }
+
+    private func updateSearch() {
+        let query = searchField.stringValue
+        searchMatches.removeAll()
+        searchIndex = 0
+        guard !query.isEmpty else {
+            searchCountLabel.stringValue = ""
+            return
+        }
+        let source = textView.string as NSString
+        var location = 0
+        while location < source.length {
+            let range = NSRange(location: location, length: source.length - location)
+            let found = source.range(of: query, options: [.caseInsensitive, .diacriticInsensitive],
+                                     range: range)
+            if found.location == NSNotFound { break }
+            searchMatches.append(found)
+            location = found.location + max(found.length, 1)
+        }
+        searchPrevButton.isEnabled = !searchMatches.isEmpty && !isBusy
+        searchNextButton.isEnabled = !searchMatches.isEmpty && !isBusy
+        if searchMatches.isEmpty {
+            searchCountLabel.stringValue = "Нет совпадений"
+        } else {
+            selectSearchMatch()
+        }
+    }
+
+    private func selectSearchMatch() {
+        guard !searchMatches.isEmpty else {
+            searchCountLabel.stringValue = "Нет совпадений"
+            return
+        }
+        searchIndex = min(max(0, searchIndex), searchMatches.count - 1)
+        let range = searchMatches[searchIndex]
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        searchCountLabel.stringValue = "\(searchIndex + 1) из \(searchMatches.count)"
+    }
+
+    @objc private func previousMatch() {
+        guard !searchMatches.isEmpty else { return }
+        searchIndex = (searchIndex - 1 + searchMatches.count) % searchMatches.count
+        selectSearchMatch()
+    }
+
+    @objc private func nextMatch() {
+        guard !searchMatches.isEmpty else { return }
+        searchIndex = (searchIndex + 1) % searchMatches.count
+        selectSearchMatch()
+    }
+
+    // MARK: - Пресеты промпта
+
+    @objc private func presetChanged() {
+        guard !isBusy else { syncPresetSelection(); return }
+        let index = presetPopup.indexOfSelectedItem
+        if index == 4 {
+            expandPrompt()
+            window?.makeFirstResponder(promptView)
+            setStatus("Введите свой промпт саммари", color: .secondaryLabelColor)
+            return
+        }
+        isApplyingPreset = true
+        if index == 0 {
+            promptView.string = SettingsStore.load().promptSummary
+        } else if index - 1 < summaryPresetTexts.count {
+            promptView.string = summaryPresetTexts[index - 1]
+        }
+        isApplyingPreset = false
+        syncPresetSelection()
+        updatePromptState()
+        setStatus("Пресет: \(presetPopup.titleOfSelectedItem ?? "По умолчанию")",
+                  color: .secondaryLabelColor)
+    }
+
+    private func expandPrompt() {
+        promptExpanded = true
+        promptContent.isHidden = false
+        promptToggle.title = "Промпт саммари ▾"
+    }
+
+    private func syncPresetSelection() {
+        let value = promptView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty {
+            presetPopup.selectItem(at: 0)
+            return
+        }
+        let stored = SettingsStore.load().promptSummary
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !stored.isEmpty, value == stored {
+            presetPopup.selectItem(at: 0)
+            return
+        }
+        for (index, preset) in summaryPresetTexts.enumerated()
+        where value == preset.trimmingCharacters(in: .whitespacesAndNewlines) {
+            presetPopup.selectItem(at: index + 1)
+            return
+        }
+        presetPopup.selectItem(at: 4)
+    }
+
+    // MARK: - Ошибки
+
+    private func showFailure(_ message: String, operation: FailedOperation?) {
+        setStatus(message, color: .systemRed)
+        failedOperation = operation
+        retryButton.isHidden = operation == nil
+        logButton.isHidden = false
+        let prefix = operation == .summary ? "summary" : "import"
+        Log.write("\(prefix): ошибка \(message)")
+    }
+
+    private func clearFailure() {
+        failedOperation = nil
+        retryButton.isHidden = true
+        logButton.isHidden = true
+    }
+
+    @objc private func retryLastOperation() {
+        guard !isBusy, let operation = failedOperation else { return }
+        clearFailure()
+        switch operation {
+        case .transcription:
+            if let lastFileURL {
+                start(lastFileURL)
+            } else {
+                setStatus("Файл не выбран", color: .systemOrange)
+            }
+        case .summary:
+            makeSummary()
+        }
+    }
+
+    @objc private func openDictationLog() {
+        if !FileManager.default.fileExists(atPath: Paths.log.path) {
+            FileManager.default.createFile(atPath: Paths.log.path, contents: nil)
+        }
+        NSWorkspace.shared.open(Paths.log)
+    }
+
+    // MARK: - Бейджи и метаданные
+
+    private func refreshBadges() {
+        let settings = SettingsStore.load()
+        let model = WhisperModelStore.activeModel(settings: settings)
+        let modelTitle = model?.catalogModel?.title ?? model?.fileName
+        modelBadge.set(text: "Whisper · \(modelTitle ?? "модель не выбрана")",
+                       tone: model == nil ? .warning : .neutral)
+        modelBadge.toolTip = model?.path
+        languageBadge.set(text: "Язык: \(languageTitle(settings.language))", tone: .neutral)
+        languageBadge.toolTip = settings.language
+        if let provider = settings.improveProvider {
+            aiBadge.set(text: "AI: \(provider.displayTitle)", tone: .neutral)
+            aiBadge.toolTip = "\(provider.kind.rawValue) · \(provider.model)"
+        } else {
+            aiBadge.set(text: "AI: не настроен", tone: .warning)
+            aiBadge.toolTip = "Выберите профиль для улучшения в «Постобработке»"
+        }
+    }
+
+    private func languageTitle(_ value: String) -> String {
+        switch value.lowercased() {
+        case "ru": return "RU"
+        case "en": return "EN"
+        case "auto": return "AUTO"
+        default: return value.uppercased()
+        }
+    }
+
+    private func updateFileMetadata(_ url: URL) {
+        var sizeText = ""
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? NSNumber {
+            sizeText = ByteCountFormatter.string(fromByteCount: size.int64Value,
+                                                 countStyle: .file)
+        }
+        let ext = url.pathExtension.uppercased()
+        let baseParts = [sizeText, ext].filter { !$0.isEmpty }
+        fileMetaLabel.stringValue = baseParts.joined(separator: " · ")
+
+        let asset = AVURLAsset(url: url)
+        Task { [weak self] in
+            guard let duration = try? await asset.load(.duration) else { return }
+            let seconds = CMTimeGetSeconds(duration)
+            guard let self, seconds.isFinite, seconds > 0, self.lastFileURL == url else { return }
+            var parts = [self.durationText(seconds)]
+            parts.append(contentsOf: baseParts)
+            self.fileMetaLabel.stringValue = parts.joined(separator: " · ")
+        }
+    }
+
+    private func durationText(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        if total >= 3600 {
+            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+        }
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
     private func setBusy(_ busy: Bool) {
         chooseButton.isEnabled = !busy
-        dropView.acceptsDrop = !busy
+        dropView.acceptsDrop = !busy && mode == .transcription
         modePopup.isEnabled = !busy
         promptToggle.isEnabled = !busy
         promptView.isEditable = !busy
         textView.isEditable = !busy
+        searchField.isEnabled = !busy
+        searchPrevButton.isEnabled = !busy && !searchMatches.isEmpty
+        searchNextButton.isEnabled = !busy && !searchMatches.isEmpty
         cancelButton.isHidden = !busy
         if busy {
             spinner.startAnimation(nil)
@@ -733,18 +1233,21 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
             transcriptText = textView.string
         }
         updateCount()
+        if !searchRow.isHidden { updateSearch() }
     }
 
     private func displayTranscription() {
         displayedKind = .transcript
         textView.string = transcriptText
         updateCount()
+        if !searchRow.isHidden { updateSearch() }
     }
 
     private func displaySummary() {
         displayedKind = .summary
         textView.string = summaryText
         updateCount()
+        if !searchRow.isHidden { updateSearch() }
     }
 
     private func updateCount() {
@@ -753,7 +1256,11 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         let prefix = displayedKind == .summary && mode == .summary ? "Саммари · " : ""
         countLabel.stringValue = count == 0 ? "" : "\(prefix)\(count) символов"
         copyButton.isEnabled = count > 0
+        saveButton.isEnabled = count > 0 && !isBusy
+        openEditorButton.isEnabled = count > 0 && !isBusy
         clearButton.isEnabled = count > 0 && !isBusy
+        modePopup.item(at: Mode.summary.rawValue)?.isEnabled =
+            !transcriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         updateSummaryButton()
     }
 
@@ -791,6 +1298,87 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
         guard let directory = currentDirectory else { return }
         currentDirectory = nil
         try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+final class TranscribeWindow: NSWindow {
+    var onCommandF: (() -> Void)?
+    var onEscape: (() -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "f" {
+            onCommandF?()
+            return true
+        }
+        if event.keyCode == 53, onEscape?() == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+extension AudioTranscribeWindow: NSSearchFieldDelegate {
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSSearchField) === searchField else { return }
+        updateSearch()
+    }
+}
+
+// MARK: - Бейдж
+
+final class BadgeView: NSView {
+    enum Tone {
+        case neutral
+        case warning
+    }
+
+    private let label = NSTextField(labelWithString: "")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 3),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
+        ])
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+    }
+
+    convenience init() {
+        self.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let size = label.intrinsicContentSize
+        return NSSize(width: size.width + 16, height: size.height + 6)
+    }
+
+    func set(text: String, tone: Tone) {
+        label.stringValue = text
+        switch tone {
+        case .neutral:
+            label.textColor = .secondaryLabelColor
+            layer?.backgroundColor = NSColor.controlBackgroundColor
+                .withAlphaComponent(0.65).cgColor
+        case .warning:
+            label.textColor = .systemOrange
+            layer?.backgroundColor = NSColor.systemOrange
+                .withAlphaComponent(0.16).cgColor
+        }
+        invalidateIntrinsicContentSize()
     }
 }
 

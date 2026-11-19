@@ -35,8 +35,8 @@
 
 | Окно | Файл |
 |---|---|
-| Транскрибация (режим, выбор файла, текст, копирование) | [transcribe.png](transcribe.png) |
-| Саммари (кастомный промпт, кнопка, результат) | [transcribe-summary.png](transcribe-summary.png) |
+| Транскрибация (режим, бейджи, метаданные, поиск, экспорт) | [transcribe.png](transcribe.png) |
+| Саммари (пресеты промпта, результат; выбор файла скрыт) | [transcribe-summary.png](transcribe-summary.png) |
 
 ## Настройки
 
