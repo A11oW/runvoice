@@ -5,7 +5,9 @@
 Актуальные инструкции — в [руководстве](README.md), [архитектуре](docs/architecture.md),
 [тест-плане](docs/testing.md) и [каталоге скриншотов](docs/screenshots/README.md).
 
-## Не выпущено
+## [1.1.15]
+
+[Опубликованный релиз](https://github.com/A11oW/runvoice/releases/tag/v1.1.15)
 
 ### Интерфейс настроек
 
