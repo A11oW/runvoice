@@ -55,6 +55,9 @@ jobs:
           for image in dist/*.dmg; do hdiutil verify "$image"; done
           cd dist
           for checksum in *.dmg.sha256; do shasum -a 256 -c "$checksum"; done
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
       - name: Regression tests
         run: |
           for script in bin/dictate.sh scripts/*.sh; do bash -n "$script"; done
