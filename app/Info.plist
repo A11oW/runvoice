@@ -27,7 +27,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Runvoice записывает голос, чтобы распознать речь и вставить текст в активное окно.</string>
 	<key>SUPublicEDKey</key>
-	<string>vr0IMlYdviflJpD5Y4UejOz+Xe7MqvN/7J7YxkzHAGg=</string>
+	<string>E5J5ka5VzpQonMGfALtfwhavTbizxub1KVPqdER/VRs=</string>
 	<key>SUFeedURL</key>
 	<string>https://github.com/A11oW/runvoice/releases/latest/download/appcast-arm64.xml</string>
 	<key>SUEnableAutomaticChecks</key>
