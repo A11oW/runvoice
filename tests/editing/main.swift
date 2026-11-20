@@ -109,11 +109,18 @@ func runChecks() {
     let controls = RecognitionPreviewControls()
     expect(controls.options == RecognitionPreview(), "Настройки preview по умолчанию: включён, 3 строки")
     expect(controls.isLineCountEnabled, "Поле строк доступно при включённом preview")
-    let previewCheck = controls.arrangedSubviews[0] as! NSButton
-    previewCheck.performClick(nil)
-    expect(!controls.options.enabled && !controls.isLineCountEnabled, "Флажок отключает поле и stepper")
-    previewCheck.performClick(nil)
-    expect(controls.options.enabled && controls.isLineCountEnabled, "Флажок снова включает поле и stepper")
+    func findSwitch(_ view: NSView) -> NSSwitch? {
+        if let toggle = view as? NSSwitch { return toggle }
+        for sub in view.subviews {
+            if let toggle = findSwitch(sub) { return toggle }
+        }
+        return nil
+    }
+    let previewToggle = findSwitch(controls)!
+    previewToggle.performClick(nil)
+    expect(!controls.options.enabled && !controls.isLineCountEnabled, "Переключатель отключает поле и stepper")
+    previewToggle.performClick(nil)
+    expect(controls.options.enabled && controls.isLineCountEnabled, "Переключатель снова включает поле и stepper")
     controls.options = RecognitionPreview(enabled: false, lineCount: 8)
     expect(!controls.isLineCountEnabled && controls.options.lineCount == 8, "Отключение блокирует поле, сохраняя значение")
     controls.options = RecognitionPreview(enabled: true, lineCount: 8)

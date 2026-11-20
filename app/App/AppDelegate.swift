@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var dictation = DictationSession(runner: runner)
     private var wakeObserver: NSObjectProtocol?
     private var settingsWindow: SettingsWindow?
+    private var transcribeWindow: AudioTranscribeWindow?
     private var lastTrust: Bool?
     private var toggleItem: NSMenuItem?
     private var improveItem: NSMenuItem?
@@ -123,6 +124,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
+        if let index = CommandLine.arguments.firstIndex(of: "--transcribe-file"),
+           index + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[index + 1]
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.showTranscribe()
+                self?.transcribeWindow?.transcribe(url: URL(fileURLWithPath: path))
+            }
+        }
+
         LocalAPIService.shared.configure(saved)
         dictation.prewarm()
         UpdateCoordinator.shared.isBusy = { [weak self] in
@@ -145,7 +155,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func startSnapshotMode() -> Bool {
         let arguments = CommandLine.arguments
         guard arguments.contains("--snapshot-states") || arguments.contains("--snapshot")
-                || arguments.contains("--snapshot-hud") || arguments.contains("--snapshot-hint") else { return false }
+                || arguments.contains("--snapshot-hud") || arguments.contains("--snapshot-hint")
+                || arguments.contains("--snapshot-transcribe")
+                || arguments.contains("--snapshot-transcribe-summary") else { return false }
+        switch ProcessInfo.processInfo.environment["RUNVOICE_SNAPSHOT_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
         setupStatusItem()
         hud = HUDController()
         let countIndex = arguments.firstIndex(of: "--snapshot-preview-lines")
@@ -168,6 +185,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             } else if arguments.contains("--snapshot") {
                 self.openSettings()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self.snapshotSettings() }
+            } else if arguments.contains("--snapshot-transcribe") {
+                self.showTranscribe()
+                self.transcribeWindow?.showSample(
+                    text: """
+                    Сегодня мы разберём, как устроена локальная расшифровка аудио. \
+                    Модель Whisper работает прямо на этом компьютере: запись не \
+                    отправляется в облако. Выберите файл или перетащите его в окно, \
+                    дождитесь результата и скопируйте готовый текст.
+                    """,
+                    fileName: "лекция-2026-11-12.m4a")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self.snapshotWindow(self.transcribeWindow?.window,
+                                        to: "/tmp/runvoice-transcribe.png")
+                    NSApp.terminate(nil)
+                }
+            } else if arguments.contains("--snapshot-transcribe-summary") {
+                self.showTranscribe()
+                self.transcribeWindow?.showSummarySample(
+                    transcript: """
+                    Сегодня мы разберём, как устроена локальная расшифровка аудио. \
+                    Модель Whisper работает прямо на этом компьютере: запись не \
+                    отправляется в облако. Выберите файл или перетащите его в окно, \
+                    дождитесь результата и скопируйте готовый текст.
+                    """,
+                    summary: """
+                    • Расшифровка аудио выполняется локально моделью Whisper.
+                    • Запись не отправляется в облако.
+                    • Файл можно выбрать вручную или перетащить в окно.
+                    • Готовый текст доступен для редактирования и копирования.
+                    """,
+                    fileName: "лекция-2026-11-12.m4a",
+                    prompt: "Сделай саммари в 4 пунктах, деловой стиль.")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    self.snapshotWindow(self.transcribeWindow?.window,
+                                        to: "/tmp/runvoice-transcribe-summary.png")
+                    NSApp.terminate(nil)
+                }
             } else {
                 let content = HUDContent(text: "Слушаю…", busy: true, icon: "mic",
                                          hudIcon: "mic", accent: .neutral,
@@ -197,6 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         toggleItem = add(menu, "Диктовка", #selector(toggleDictation))
         improveItem = add(menu, "Улучшить текст", #selector(improveSelection))
+        add(menu, "Расшифровать аудио…", #selector(openTranscribe))
         menu.addItem(.separator())
         add(menu, "Настройки…", #selector(openSettings))
         updateItem = add(menu, "Проверить обновления…", #selector(checkUpdates))
@@ -275,6 +330,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openSettings() { showSettings(tab: nil) }
 
+    @objc private func openTranscribe() { showTranscribe() }
+
+    private func showTranscribe() {
+        if transcribeWindow == nil {
+            let window = AudioTranscribeWindow(runner: runner)
+            window.onOpenSettings = { [weak self] in
+                self?.showSettings(tab: "ai")
+            }
+            transcribeWindow = window
+        }
+        transcribeWindow?.show()
+    }
+
     private func showSettings(tab: String?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindow()
@@ -293,6 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.reloadHotkeys()
                 self.statusHint.update(shortcut: settings.hotkeyToggle.display)
                 self.dictation.prewarm()
+                self.transcribeWindow?.refreshSettings()
                 LocalAPIService.shared.configure(settings)
             }
         }
@@ -392,6 +461,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         capture(0)
     }
 
+    private func snapshotWindow(_ window: NSWindow?, to path: String) {
+        guard let view = window?.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let image = NSImage(size: view.bounds.size)
+        image.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        view.bounds.fill()
+        if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
+            ctx.draw(cg, in: view.bounds)
+        }
+        image.unlockFocus()
+        if let tiff = image.tiffRepresentation,
+           let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
     private func snapshotSettings() {
         func capture(to path: String, view target: NSView? = nil) {
             guard let view = target ?? settingsWindow?.window?.contentView,
@@ -399,7 +487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             view.cacheDisplay(in: view.bounds, to: rep)
             let image = NSImage(size: view.bounds.size)
             image.lockFocus()
-            NSColor.windowBackgroundColor.setFill()
+            (settingsWindow?.window?.backgroundColor ?? .windowBackgroundColor).setFill()
             view.bounds.fill()
             if let cg = rep.cgImage, let ctx = NSGraphicsContext.current?.cgContext {
                 ctx.draw(cg, in: view.bounds)
@@ -419,6 +507,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("providers", "/tmp/runvoice-settings-providers.png"),
             ("ai", "/tmp/runvoice-settings-ai.png"),
             ("improve", "/tmp/runvoice-settings-improve.png"),
+            ("summary", "/tmp/runvoice-settings-summary.png"),
             ("history", "/tmp/runvoice-settings-history.png"),
             ("hotkeys", "/tmp/runvoice-settings-hotkeys.png"),
             ("api", "/tmp/runvoice-settings-api.png"),
@@ -436,6 +525,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     : self.settingsWindow?.prepareSampleSnapshot(recording: tab == "sample-recording")
                 guard let view = target else { next(index + 1); return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    NSApp.activate(ignoringOtherApps: true)
+                    self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
                     capture(to: path, view: view)
                     if let panel = self.settingsWindow?.window?.attachedSheet {
                         self.settingsWindow?.window?.endSheet(panel, returnCode: .cancel)
@@ -445,10 +536,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 return
             }
-            self.settingsWindow?.selectTab(tab == "improve" ? "ai" : tab)
+            NSApp.activate(ignoringOtherApps: true)
+            self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
+            self.settingsWindow?.selectTab(tab == "improve" || tab == "summary" ? "ai" : tab)
             if tab == "dictionary" { self.settingsWindow?.prepareDictionarySnapshot() }
             if tab == "improve" { self.settingsWindow?.scrollAIToImprove() }
+            if tab == "summary" { self.settingsWindow?.scrollAIToSummary() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                NSApp.activate(ignoringOtherApps: true)
+                self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
+                self.settingsWindow?.window?.contentView?.layoutSubtreeIfNeeded()
                 capture(to: path)
                 next(index + 1)
             }

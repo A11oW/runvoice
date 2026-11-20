@@ -1,7 +1,8 @@
 # Скриншоты Runvoice
 
-Сняты встроенным отладочным рендером приложения (`--snapshot-states`, `--snapshot` и `--snapshot-hint`),
-поэтому не требуют разрешения Screen Recording. Тема соответствует системной.
+Сняты встроенным отладочным рендером приложения (`--snapshot-states`, `--snapshot`,
+`--snapshot-hint`, `--snapshot-transcribe` и `--snapshot-transcribe-summary`),
+поэтому не требуют разрешения Screen Recording. Настройки сняты в светлой теме; тему снимка можно выбрать переменной `RUNVOICE_SNAPSHOT_APPEARANCE` (`light` или `dark`).
 
 ## Состояния HUD
 
@@ -30,23 +31,39 @@
 | ![](hud-improve.png) | `improve` — «Улучшаю текст…» с тем же спиннером |
 | ![](hud-improve-copied.png) | `improve-copied` — «Улучшено и скопировано», синяя иконка |
 
+## Расшифровка аудио
+
+| Окно | Файл |
+|---|---|
+| Транскрибация (режим, бейджи, метаданные, поиск, экспорт) | [transcribe.png](transcribe.png) |
+| Саммари (пресеты промпта, результат; выбор файла скрыт) | [transcribe-summary.png](transcribe-summary.png) |
+
 ## Настройки
 
-| Вкладка | Файл |
+| Раздел | Файл |
 |---|---|
-| Основные (микрофон, автозапуск, диагностика) | [settings-general.png](settings-general.png) |
+| Основные (микрофон, вставка, запуск, разрешения и диагностика, обновления) | [settings-general.png](settings-general.png) |
 | Распознавание: whisper.cpp, подсказка языка и модели Whisper | [settings-models.png](settings-models.png) |
 | Распознавание: FluidAudio, подсказка выбранной модели и совместимый каталог | [settings-fluid.png](settings-fluid.png) |
-| Отдельное окно резервного Whisper для FluidAudio | [settings-backup.png](settings-backup.png) |
-| Словарь (пояснение применения для моделей, редактируемые строки и добавление списка) | [settings-dictionary.png](settings-dictionary.png) |
-| Провайдеры (OpenCode / OpenAI / Anthropic, модели, ключи, проверка) | [settings-providers.png](settings-providers.png) |
+| Отдельное окно резервного распознавания Whisper для FluidAudio | [settings-backup.png](settings-backup.png) |
+| Словарь (пояснение применения, карточка терминов и добавление списка) | [settings-dictionary.png](settings-dictionary.png) |
+| Провайдеры (список профилей, меню действий, добавление) | [settings-providers.png](settings-providers.png) |
 | Постобработка (выбор провайдеров, промпты) | [settings-ai.png](settings-ai.png) |
 | Постобработка → улучшение выделенного текста | [settings-improve.png](settings-improve.png) |
-| История (список, копирование, лимиты) | [settings-history.png](settings-history.png) |
+| Постобработка → промпт саммари аудио | [settings-summary.png](settings-summary.png) |
+| История (хранение, поиск, список и выбранная запись) | [settings-history.png](settings-history.png) |
 | Хоткеи (диктовка, улучшение, Enter, Esc, пауза по Space, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
 | API: включение, порт, адрес, выбор скачанной модели, фильтр громкости/VAD, словарь и отдельная AI-правка | [settings-api.png](settings-api.png) |
 | Скрытая модалка аудиосэмплов: четыре клика по версии | [settings-samples.png](settings-samples.png) |
 | Сэмпл в процессе записи: индикатор, секунды, стандартный эквалайзер | [settings-sample-recording.png](settings-sample-recording.png) |
+
+Тёмная тема:
+
+| Раздел | Файл |
+|---|---|
+| Основные | [settings-general-dark.png](settings-general-dark.png) |
+| Распознавание | [settings-models-dark.png](settings-models-dark.png) |
+| API | [settings-api-dark.png](settings-api-dark.png) |
 
 ## Хинт запуска
 
@@ -57,6 +74,10 @@
 начале диктовки. Клик запускает затухание за 150 мс. PNG содержит только карточку.
 
 ## Оформление и размеры
+
+Окно настроек — боковой список 236 pt и область контента до 700 pt; настройки
+собраны в карточки со строками «заголовок, пояснение, контрол справа». Окно
+не меньше 1020 × 680 pt и не меняет размер при переключении разделов.
 
 - Основной HUD — чёрная скруглённая карточка без хвостика. Позиция мыши фиксируется
   в момент хоткея; центральная ось и край привязки сохраняются во всех состояниях.
@@ -103,11 +124,13 @@
 /Applications/Runvoice.app/Contents/MacOS/Runvoice --snapshot-states
 /Applications/Runvoice.app/Contents/MacOS/Runvoice --snapshot
 /Applications/Runvoice.app/Contents/MacOS/Runvoice --snapshot-hint
+/Applications/Runvoice.app/Contents/MacOS/Runvoice --snapshot-transcribe
+/Applications/Runvoice.app/Contents/MacOS/Runvoice --snapshot-transcribe-summary
 ```
 
 Режимы снимков не открывают микрофон, не регистрируют глобальные хоткеи и не
 сбрасывают status рабочей диктовки. Для рендера нужна графическая сессия macOS,
-разрешение Screen Recording не требуется. Тема настроек соответствует системной.
+разрешение Screen Recording не требуется. Тема снимка настроек задаётся переменной `RUNVOICE_SNAPSHOT_APPEARANCE`; без неё используется системная.
 
 Для публикации снимков настроек используйте отдельный каталог с демонстрационными
 данными. `CFFIXED_USER_HOME` задаёт корень пользовательских путей только тестовому
@@ -123,8 +146,10 @@ env CFFIXED_USER_HOME="$runvoice_snapshot_home" \
   /Applications/Runvoice.app/Contents/MacOS/Runvoice --snapshot
 ```
 
-Файлы появляются в `/tmp/runvoice-state-*.png`, `/tmp/runvoice-settings*.png` (включая `samples` и `sample-recording`) и
-`/tmp/runvoice-startup-hint.png`. Сохранить нужные изображения под именами из таблиц.
+Файлы появляются в `/tmp/runvoice-state-*.png`, `/tmp/runvoice-settings*.png`
+(включая `samples` и `sample-recording`), `/tmp/runvoice-startup-hint.png`,
+`/tmp/runvoice-transcribe.png` и `/tmp/runvoice-transcribe-summary.png`.
+Сохранить нужные изображения под именами из таблиц.
 Для проверки переноса добавить `--snapshot-preview-lines 1` либо
 `--snapshot-preview-lines 10`, для записи без текста — `--snapshot-preview-off`.
 Эти флаги не сохраняются в настройках.

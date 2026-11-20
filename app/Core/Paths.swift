@@ -5,7 +5,11 @@ import Foundation
 enum Paths {
     static let support: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+#if RUNVOICE_TEST_BUILD
+        let dir = base.appendingPathComponent("Runvoice-Test", isDirectory: true)
+#else
         let dir = base.appendingPathComponent("Runvoice", isDirectory: true)
+#endif
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? FileManager.default.setAttributes([.posixPermissions: 0o700],
                                                ofItemAtPath: dir.path)

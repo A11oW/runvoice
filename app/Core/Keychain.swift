@@ -5,6 +5,30 @@ import Security
 enum Keychain {
     static let service = "ai.opencode.runvoice"
     static let directAPIKeyAccount = "direct-api-key"
+
+#if RUNVOICE_TEST_BUILD
+    static let isTestBackend = true
+    private static let storageLock = NSLock()
+    private static var storage: [String: String] = [:]
+
+    static func value(for account: String) -> String? {
+        storageLock.lock()
+        defer { storageLock.unlock() }
+        return storage[account]
+    }
+
+    static func set(_ value: String, for account: String) {
+        storageLock.lock()
+        defer { storageLock.unlock() }
+        storage[account] = value
+    }
+
+    static func delete(account: String) {
+        storageLock.lock()
+        defer { storageLock.unlock() }
+        storage.removeValue(forKey: account)
+    }
+#else
     private static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 
     static func value(for account: String) -> String? {
@@ -60,4 +84,5 @@ enum Keychain {
         ]
         SecItemDelete(query as CFDictionary)
     }
+#endif
 }
