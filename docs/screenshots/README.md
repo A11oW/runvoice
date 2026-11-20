@@ -2,7 +2,7 @@
 
 Сняты встроенным отладочным рендером приложения (`--snapshot-states`, `--snapshot`,
 `--snapshot-hint`, `--snapshot-transcribe` и `--snapshot-transcribe-summary`),
-поэтому не требуют разрешения Screen Recording. Настройки сняты в светлой теме; тему снимка можно выбрать переменной `RUNVOICE_SNAPSHOT_APPEARANCE` (`light` или `dark`).
+поэтому не требуют разрешения Screen Recording. Настройки показаны в светлой и тёмной темах; тему снимка можно выбрать переменной `RUNVOICE_SNAPSHOT_APPEARANCE` (`light` или `dark`).
 
 ## Состояния HUD
 
@@ -43,14 +43,16 @@
 | Раздел | Файл |
 |---|---|
 | Основные (микрофон, вставка, запуск, разрешения и диагностика, обновления) | [settings-general.png](settings-general.png) |
+| Основные → Память (кеш, скачанные модели, история и очистка) | [settings-memory.png](settings-memory.png) |
 | Распознавание: whisper.cpp, таблицы найденных моделей и скачивания | [settings-models.png](settings-models.png) |
 | Распознавание: FluidAudio, те же таблицы для совместимых моделей | [settings-fluid.png](settings-fluid.png) |
-| Словарь (пояснение применения, карточка терминов и добавление списка) | [settings-dictionary.png](settings-dictionary.png) |
+| Словарь (пояснение применения, карточка терминов и кнопка добавления в нижней панели) | [settings-dictionary.png](settings-dictionary.png) |
 | Провайдеры (список профилей, меню действий, добавление) | [settings-providers.png](settings-providers.png) |
 | Постобработка (выбор провайдеров, промпты) | [settings-ai.png](settings-ai.png) |
 | Постобработка → улучшение выделенного текста | [settings-improve.png](settings-improve.png) |
 | Постобработка → промпт саммари аудио | [settings-summary.png](settings-summary.png) |
-| История (хранение, поиск, список и выбранная запись) | [settings-history.png](settings-history.png) |
+| История (хранение, поиск и список) | [settings-history.png](settings-history.png) |
+| История → Выбранная запись (текст во всю ширину карточки) | [settings-history-detail.png](settings-history-detail.png) |
 | Хоткеи (диктовка, улучшение, Enter, Esc, пауза по Space, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
 | API: копирование адреса и `runvoice-active`, выбор модели, проверка соединения и перезапуск | [settings-api.png](settings-api.png) |
 | Скрытая модалка аудиосэмплов: четыре клика по версии | [settings-samples.png](settings-samples.png) |
@@ -61,7 +63,10 @@
 | Раздел | Файл |
 |---|---|
 | Основные | [settings-general-dark.png](settings-general-dark.png) |
+| Основные → Память | [settings-memory-dark.png](settings-memory-dark.png) |
 | Распознавание | [settings-models-dark.png](settings-models-dark.png) |
+| Словарь | [settings-dictionary-dark.png](settings-dictionary-dark.png) |
+| История → Выбранная запись | [settings-history-detail-dark.png](settings-history-detail-dark.png) |
 | API | [settings-api-dark.png](settings-api-dark.png) |
 
 ## Хинт запуска
@@ -77,6 +82,10 @@
 Окно настроек — боковой список 236 pt и область контента до 700 pt; настройки
 собраны в карточки со строками «заголовок, пояснение, контрол справа». Окно
 не меньше 1020 × 680 pt и не меняет размер при переключении разделов.
+Таблицы и карточки настроек имеют общий контур 1 pt. Шапка столбцов и нижняя
+панель таблицы используют одну серую подложку для каждой темы. Обе панели имеют
+минимальную высоту 32 pt и отделены от строк сепаратором 1 pt. Поиск в боковой
+панели имеет высоту 32 pt.
 
 - Основной HUD — чёрная скруглённая карточка без хвостика. Позиция мыши фиксируется
   в момент хоткея; центральная ось и край привязки сохраняются во всех состояниях.

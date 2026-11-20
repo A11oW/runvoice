@@ -186,6 +186,11 @@ enum WhisperModelStore {
                                 isManaged: isManaged(path: url.path))
     }
 
+    static func isDiscoverableModelName(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        return url.pathExtension == "bin" && name.hasPrefix("ggml-") && !name.contains("silero") && !name.contains("vad")
+    }
+
     /// Модели в стандартных папках + дополнительные каталоги пользователя.
     static func foundModels(extraDirectories: [String] = [],
                             externalPaths: [String] = [], excluding: [String] = []) -> [WhisperModelFile] {
@@ -203,11 +208,8 @@ enum WhisperModelStore {
             let dir = URL(fileURLWithPath: directory)
             guard let files = try? FileManager.default.contentsOfDirectory(
                 at: dir, includingPropertiesForKeys: nil) else { continue }
-            for url in files where url.pathExtension == "bin" {
+            for url in files where isDiscoverableModelName(url) {
                 let name = url.lastPathComponent
-                guard name.hasPrefix("ggml-"),
-                      !name.contains("silero"),
-                      !name.contains("vad") else { continue }
                 guard let model = file(at: url.path), !hidden.contains(model.path) else { continue }
                 // Одинаковые имена: предпочитаем модель, скачанную приложением.
                 if let existing = byName[name], !model.isManaged && existing.isManaged { continue }

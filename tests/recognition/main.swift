@@ -102,6 +102,7 @@ func runChecks() throws {
     let historyList = views().compactMap { $0 as? NSTableView }.first!
     expect(historyList.usesAlternatingRowBackgroundColors && labels().contains("Всего: 2"),
            "История отображает общий счётчик и системное чередование")
+    expect(historyList.headerView?.frame.height == 32, "Шапка нативной таблицы имеет высоту 32 pt")
     let search = views().compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Поиск по тексту" }!
     search.stringValue = "Нет совпадений"
     controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
@@ -112,6 +113,7 @@ func runChecks() throws {
     expect(labels().contains { $0.contains("Проверка при запуске и раз в сутки") }, "Основные показывают состояние механизма обновлений без сетевого запуска в тестах")
     expect(!views().contains { $0.identifier?.rawValue == "record-audio-sample" }, "В разделе Основные нет записи сэмпла")
     let sidebarSearch = views().compactMap { $0 as? NSSearchField }.first!
+    expect(sidebarSearch.frame.height == 32, "Боковой поиск имеет высоту 32 pt")
     func filterSidebar(_ text: String) {
         sidebarSearch.stringValue = text
         application.sendAction(sidebarSearch.action!, to: sidebarSearch.target, from: sidebarSearch)
@@ -381,7 +383,7 @@ func runChecks() throws {
     SettingsStore.save(removalSettings)
     controller.show(); controller.selectTab("models"); selectTechnology(0)
 
-    func removeModel(_ file: URL, via choices: [String]) {
+    func chooseModalButtons(_ trigger: NSButton, _ choices: [String]) {
         var pending = choices
         let deadline = Date().addingTimeInterval(4)
         let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
@@ -395,9 +397,13 @@ func runChecks() throws {
             }
         }
         RunLoop.main.add(timer, forMode: .modalPanel)
-        button { $0.identifier?.rawValue == file.path && $0.title == "Удалить модель…" }.performClick(nil)
+        trigger.performClick(nil)
         timer.invalidate()
         expect(pending.isEmpty, "В диалогах удаления доступны ожидаемые действия: \(choices)")
+    }
+
+    func removeModel(_ file: URL, via choices: [String]) {
+        chooseModalButtons(button { $0.identifier?.rawValue == file.path && $0.title == "Удалить модель…" }, choices)
     }
 
     removeModel(first, via: ["Отмена"])
@@ -417,6 +423,61 @@ func runChecks() throws {
            "Используемый профиль защищён от удаления")
     button { $0.accessibilityLabel() == "Выбрать провайдера Черновики" }.performClick(nil)
     expect(labels().contains("Выбрано: 1. Всего: 2"), "У провайдеров единый счётчик отмеченных строк")
+
+    let fm = FileManager.default
+    let partial = WhisperModelStore.modelsDirectory.appendingPathComponent("ggml-tiny.bin.download")
+    let temporaryAudio = Paths.state.appendingPathComponent("capture-\(UUID().uuidString).wav")
+    let modelLink = WhisperModelStore.modelsDirectory.appendingPathComponent("ggml-linked.bin")
+    let vadFile = WhisperModelStore.modelsDirectory.appendingPathComponent("ggml-silero-vad.bin")
+    let unfinishedFluid = FluidModelStore.directory(for: .phonon25)
+    try Data(count: 1700).write(to: partial)
+    try Data(count: 2300).write(to: temporaryAudio)
+    try fm.createSymbolicLink(at: modelLink, withDestinationURL: unlinkOnly)
+    try fakeModel.write(to: vadFile)
+    try fm.removeItem(at: unfinishedFluid.appendingPathComponent("installed-model"))
+    let usage = SettingsStorage.measure()
+    expect((usage.cache ?? 0) >= 4000 && (usage.models ?? 0) >= Int64(fakeModel.count * 2) && (usage.history ?? 0) > 0,
+           "Память считает временные файлы, управляемые модели и историю")
+    let unreadable = FluidModelStore.directory(for: .nemotron).appendingPathComponent("unreadable", isDirectory: true)
+    try fm.createDirectory(at: unreadable, withIntermediateDirectories: false)
+    try Data(count: 100).write(to: unreadable.appendingPathComponent("weights"))
+    try fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: unreadable.path)
+    defer { try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: unreadable.path) }
+    let partialUsage = SettingsStorage.measure()
+    expect(partialUsage.models == nil && partialUsage.total == nil && partialUsage.cache == usage.cache,
+           "Недоступный каталог модели влияет только на подсчёт размера моделей и итога")
+    let settingsBeforeClear = SettingsStore.load()
+    controller.selectTab("general")
+    let cacheButton = button { $0.title == "Очистить кеш" }
+    let dataButton = button { $0.title == "Очистить данные…" }
+    waitFor("Очистка кеша доступна при неполном подсчёте моделей") { cacheButton.isEnabled }
+    cacheButton.performClick(nil)
+    expect(!fm.fileExists(atPath: partial.path) && !fm.fileExists(atPath: temporaryAudio.path)
+           && fm.fileExists(atPath: first.path) && fm.fileExists(atPath: Paths.history.path),
+           "Очистка кеша убирает временные файлы, сохраняя модели и историю")
+    try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: unreadable.path)
+    waitFor("Очистка данных доступна после пересчёта") { dataButton.isEnabled }
+    chooseModalButtons(dataButton, ["Отмена"])
+    expect(fm.fileExists(atPath: first.path) && fm.fileExists(atPath: Paths.history.path), "Отмена общей очистки сохраняет файлы")
+    var modelChanges = 0
+    controller.onModelRemoved = { modelChanges += 1 }
+    chooseModalButtons(dataButton, ["Очистить данные"])
+    let cleared = SettingsStorage.measure()
+    expect(cleared.models == 0 && cleared.history == 0 && !fm.fileExists(atPath: first.path)
+           && !FluidModelStore.installed(.nemotron) && modelChanges == 1, "Очистка данных удаляет загрузки и историю, обновляет движки")
+    expect(SettingsStore.load() == settingsBeforeClear && fm.fileExists(atPath: unlinkOnly.path)
+           && fm.fileExists(atPath: modelLink.path) && fm.fileExists(atPath: vadFile.path)
+           && fm.fileExists(atPath: unfinishedFluid.path),
+           "Настройки, внешний файл, ссылка, VAD и каталог без валидной установки остаются на месте")
+
+    HistoryStore.shared.add(text: "Запись только в памяти", raw: nil, model: nil)
+    try fm.removeItem(at: Paths.history)
+    expect(!HistoryStore.shared.entries.isEmpty, "После внешнего удаления файла записи ещё загружены")
+    waitFor("Общая очистка доступна для загруженной истории") { dataButton.isEnabled }
+    chooseModalButtons(dataButton, ["Очистить данные"])
+    HistoryStore.shared.add(text: "Новая запись", raw: nil, model: nil)
+    expect(HistoryStore.shared.entries.map(\.text) == ["Новая запись"],
+           "После общей очистки отсутствующая на диске история не восстанавливается из памяти")
     controller.window?.orderOut(nil)
 }
 

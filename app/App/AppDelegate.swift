@@ -33,6 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var closeAt: Date?
     private var isImproving = false
     private var improveToken: UUID?
+    private var pendingHistoryWrites = 0
+
+    private var isFinishingDictation: Bool {
+        if pendingHistoryWrites > 0 { return true }
+        guard let raw = try? String(contentsOf: Paths.status, encoding: .utf8),
+              let state = DictationState(raw: raw), case .done = state else { return false }
+        return state != lastState
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -348,7 +356,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settingsWindow = SettingsWindow()
             settingsWindow?.canRemoveModel = { [weak self] in
                 guard let self else { return false }
-                return !self.dictation.isBusy && self.transcribeWindow?.isTranscribingFile != true
+                return !self.dictation.isBusy && !self.isFinishingDictation && !self.isImproving
+                    && self.transcribeWindow?.isTranscribingFile != true
                     && !LocalAPIService.shared.hasPendingWork
             }
             settingsWindow?.onModelRemoved = { [weak self] in
@@ -512,6 +521,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let captures: [(String, String)] = [
             ("general", "/tmp/runvoice-settings.png"),
+            ("general-memory", "/tmp/runvoice-settings-memory.png"),
             ("models", "/tmp/runvoice-settings-models.png"),
             ("dictionary", "/tmp/runvoice-settings-dictionary.png"),
             ("providers", "/tmp/runvoice-settings-providers.png"),
@@ -519,6 +529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("improve", "/tmp/runvoice-settings-improve.png"),
             ("summary", "/tmp/runvoice-settings-summary.png"),
             ("history", "/tmp/runvoice-settings-history.png"),
+            ("history-detail", "/tmp/runvoice-settings-history-detail.png"),
             ("hotkeys", "/tmp/runvoice-settings-hotkeys.png"),
             ("api", "/tmp/runvoice-settings-api.png"),
             ("samples", "/tmp/runvoice-settings-samples.png"),
@@ -544,10 +555,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             NSApp.activate(ignoringOtherApps: true)
             self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
-            self.settingsWindow?.selectTab(tab == "improve" || tab == "summary" ? "ai" : tab)
+            switch tab {
+            case "improve", "summary": self.settingsWindow?.selectTab("ai")
+            case "general-memory": self.settingsWindow?.selectTab("general")
+            case "history-detail": self.settingsWindow?.selectTab("history")
+            default: self.settingsWindow?.selectTab(tab)
+            }
             if tab == "dictionary" { self.settingsWindow?.prepareDictionarySnapshot() }
             if tab == "improve" { self.settingsWindow?.scrollAIToImprove() }
             if tab == "summary" { self.settingsWindow?.scrollAIToSummary() }
+            if tab == "general-memory" { self.settingsWindow?.scrollToStorage() }
+            if tab == "history-detail" { self.settingsWindow?.scrollToHistoryDetail() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 NSApp.activate(ignoringOtherApps: true)
                 self.settingsWindow?.window?.makeKeyAndOrderFront(nil)
@@ -793,7 +811,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Запись истории не задерживает отправку ⌘V и показ результата.
         if let result {
-            DispatchQueue.main.async {
+            pendingHistoryWrites += 1
+            DispatchQueue.main.async { [weak self] in
+                defer { self?.pendingHistoryWrites -= 1 }
                 let date = result.timestamp.map { Date(timeIntervalSince1970: $0) } ?? Date()
                 HistoryStore.shared.add(text: result.fixed, raw: result.raw,
                                         model: result.model, date: date)

@@ -162,7 +162,7 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         input.isAutomaticQuoteSubstitutionEnabled = false
         input.isAutomaticDashSubstitutionEnabled = false
         input.isAutomaticSpellingCorrectionEnabled = false
-        input.textContainerInset = NSSize(width: 6, height: 6)
+        input.textContainerInset = NSSize(width: 11, height: 8)
         input.isVerticallyResizable = true
         input.isHorizontallyResizable = false
         input.autoresizingMask = [.width]
@@ -172,31 +172,30 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         let inputScroll = NSScrollView()
         inputScroll.hasVerticalScroller = true
         inputScroll.autohidesScrollers = true
-        inputScroll.borderType = .bezelBorder
+        inputScroll.borderType = .noBorder
         inputScroll.focusRingType = .none
         inputScroll.documentView = input
         inputScroll.heightAnchor.constraint(equalToConstant: 74).isActive = true
 
         let addButton = SettingsText.secondaryButton("Добавить", target: self, action: #selector(addTerms))
-        let addRow = NSStackView(views: [inputScroll, addButton])
-        addRow.alignment = .top
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let addRow = NSStackView(views: [errorLabel, spacer, addButton])
+        addRow.alignment = .centerY
         addRow.spacing = 8
         addButton.setContentHuggingPriority(.required, for: .horizontal)
         addButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemOrange
         errorLabel.maximumNumberOfLines = 0
-        errorLabel.preferredMaxLayoutWidth = SettingsStyle.contentMaxWidth - 32
-
-        let inputBlock = NSStackView()
-        inputBlock.orientation = .vertical
-        inputBlock.alignment = .leading
-        inputBlock.spacing = 8
-        inputBlock.addArrangedFullWidth(addRow)
-        inputBlock.addArrangedFullWidth(errorLabel)
+        errorLabel.preferredMaxLayoutWidth = 460
+        errorLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let inputCard = SettingsCard()
-        inputCard.addRow(SettingsContentRow(inputBlock, verticalInset: 12))
+        inputCard.addRow(inputScroll)
+        inputCard.addRow(SettingsSeparatorView(height: 1, color: SettingsStyle.cardBorder), separated: false)
+        inputCard.addRow(SettingsContentRow(addRow, verticalInset: 8), separated: false)
 
         root.addArrangedFullWidth(SettingsSection(title: "Технические термины", note: termsNote, card: dataTable))
         root.addArrangedFullWidth(SettingsSection(title: "Добавить термины",

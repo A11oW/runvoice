@@ -34,6 +34,17 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var samplePanel: AudioSamplePanel?
     var hasActiveOperations: Bool { !downloads.isEmpty || fluidDownload != nil || samplePanel?.isBusy == true }
     private let updateStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let storageCacheLabel = SettingsText.rowTitle("—")
+    private let storageModelsLabel = SettingsText.rowTitle("—")
+    private let storageHistoryLabel = SettingsText.rowTitle("—")
+    private let storageTotalLabel = SettingsText.rowTitle("—")
+    private let storageStatus = SettingsText.footnote("")
+    private lazy var clearCacheButton = SettingsText.secondaryButton("Очистить кеш", target: self, action: #selector(clearCache))
+    private lazy var clearDataButton = SettingsText.destructiveButton("Очистить данные…", target: self, action: #selector(clearStorageData))
+    private var storageUsage: SettingsStorage.Usage?
+    private var storageRequest: UUID?
+    private var lastStorageRefresh = Date.distantPast
+    private var storageSection: NSView?
 
     private var launchCheck: NSSwitch!
     private var launchNote: NSTextField!
@@ -111,6 +122,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         "Очистить историю…", target: self, action: #selector(clearHistory))
     private var historyRecordCount = 0
     private var historyDetail: NSTextView!
+    private var historyDetailSection: NSView?
     private var historySearch: NSSearchField!
     private var historyEnabledCheck: NSSwitch!
     private var historyItemsField: NSTextField!
@@ -188,10 +200,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         allowClose = false
         loadValues()
         refreshDiagnostics(force: true)
+        storageStatus.stringValue = ""
+        refreshStorage(force: true)
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             guard let self, self.window?.isVisible == true else { timer.invalidate(); return }
             self.refreshDiagnostics(force: false)
+            self.refreshStorage()
             self.updateDirtyState()
         }
         let current = window?.contentView?.bounds.size ?? NSSize(width: 1160, height: 780)
@@ -246,6 +261,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             ])
         }
         if identifier == "api" { refreshAPI() }
+        if identifier == "general" { refreshStorage(force: true) }
         pageScroll?.contentView.scroll(to: .zero)
         updateDirtyState()
         window?.contentView?.needsLayout = true
@@ -284,14 +300,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     /// Для отладочного скриншота: показать блок улучшения текста в разделе «Постобработка».
     func scrollAIToImprove() {
-        scrollAITo(improveGroup)
+        scrollToSection(improveGroup)
     }
 
     func scrollAIToSummary() {
-        scrollAITo(summaryGroup)
+        scrollToSection(summaryGroup)
     }
 
-    private func scrollAITo(_ group: NSStackView?) {
+    func scrollToStorage() { scrollToSection(storageSection) }
+
+    func scrollToHistoryDetail() { scrollToSection(historyDetailSection) }
+
+    private func scrollToSection(_ group: NSView?) {
         guard let group, let document = pageDocument else { return }
         let rect = group.convert(group.bounds, to: document)
         let maxY = max(0, document.bounds.height - pageScroll.contentView.bounds.height)
@@ -539,8 +559,121 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         root.addArrangedFullWidth(SettingsSection(title: "Вставка", card: insertCard))
         root.addArrangedFullWidth(SettingsSection(title: "Запуск", card: launchCard))
         root.addArrangedFullWidth(SettingsSection(title: "Разрешения и диагностика", card: accessCard))
+        let storage = buildStorageSection()
+        storageSection = storage
+        root.addArrangedFullWidth(storage)
         root.addArrangedFullWidth(SettingsSection(title: "Обновления", card: updateCard))
         return root
+    }
+
+    private func buildStorageSection() -> SettingsSection {
+        let card = SettingsCard()
+        for label in [storageCacheLabel, storageModelsLabel, storageHistoryLabel, storageTotalLabel] {
+            label.font = .monospacedDigitSystemFont(ofSize: 13, weight: label === storageTotalLabel ? .semibold : .regular)
+        }
+        card.addRow(SettingsRow(title: "Кеш приложения", subtitle: "Временные файлы, которые Runvoice может создать снова.",
+                                 trailing: [storageCacheLabel]))
+        card.addRow(SettingsRow(title: "Скачанные модели", subtitle: "Модели Whisper и FluidAudio в хранилище Runvoice.",
+                                 trailing: [storageModelsLabel]))
+        card.addRow(SettingsRow(title: "История распознаваний", subtitle: "Сохранённые расшифровки на этом Mac.",
+                                 trailing: [storageHistoryLabel]))
+        card.addRow(SettingsRow(title: "Всего", trailing: [storageTotalLabel], verticalInset: 8))
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let actions = NSStackView(views: [storageStatus, spacer, clearCacheButton, clearDataButton])
+        actions.alignment = .centerY
+        actions.spacing = 8
+        card.addRow(SettingsContentRow(actions, verticalInset: 8))
+        updateStorageActions()
+        return SettingsSection(title: "Память", note: "Место на диске, которое занимают кеш, скачанные модели и история Runvoice.", card: card)
+    }
+
+    private var canClearStorage: Bool {
+        canRemoveModel() && !hasActiveOperations && !MicTester.isBusy && !UpdateCoordinator.shared.isInstalling
+    }
+
+    private func updateStorageActions() {
+        let available = canClearStorage && storageRequest == nil
+        clearCacheButton.isEnabled = available && (storageUsage?.cache ?? 0) > 0
+        clearDataButton.isEnabled = available && hasStorageData
+        let hint = canClearStorage ? nil : "Дождитесь завершения распознавания, загрузки или обновления."
+        clearCacheButton.toolTip = hint
+        clearDataButton.toolTip = hint
+    }
+
+    private var hasStorageData: Bool {
+        guard let storageUsage else { return false }
+        return storageUsage.hasFiles || !HistoryStore.shared.entries.isEmpty
+    }
+
+    private func refreshStorage(force: Bool = false) {
+        guard currentTab == "general" else { return }
+        updateStorageActions()
+        guard force || (storageRequest == nil && Date().timeIntervalSince(lastStorageRefresh) >= 5) else { return }
+        let token = UUID()
+        storageRequest = token
+        lastStorageRefresh = Date()
+        updateStorageActions()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let usage = SettingsStorage.measure()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.storageRequest == token else { return }
+                self.storageRequest = nil
+                self.storageUsage = usage
+                self.storageCacheLabel.stringValue = Self.storageSize(usage.cache)
+                self.storageModelsLabel.stringValue = Self.storageSize(usage.models)
+                self.storageHistoryLabel.stringValue = Self.storageSize(usage.history)
+                self.storageTotalLabel.stringValue = Self.storageSize(usage.total)
+                let measurementError = "Не удалось подсчитать размер полностью"
+                if usage.total == nil {
+                    if self.storageStatus.stringValue.isEmpty { self.storageStatus.stringValue = measurementError }
+                } else if self.storageStatus.stringValue == measurementError {
+                    self.storageStatus.stringValue = ""
+                }
+                self.updateStorageActions()
+            }
+        }
+    }
+
+    private static func storageSize(_ bytes: Int64?) -> String {
+        guard let bytes else { return "—" }
+        return bytes == 0 ? "0 МБ" : WhisperSize.text(bytes)
+    }
+
+    @objc private func clearCache() { clearStorage(includingData: false) }
+
+    @objc private func clearStorageData() {
+        guard canClearStorage, hasStorageData else { return }
+        let alert = NSAlert()
+        alert.messageText = "Очистить данные Runvoice?"
+        let estimate = storageUsage?.total.map { " Освободится до \(Self.storageSize($0))." } ?? ""
+        alert.informativeText = "Будут удалены кеш, скачанные модели и история распознаваний.\(estimate) Настройки, словарь, профили провайдеров, API-ключи и внешние файлы моделей сохранятся."
+        alert.addButton(withTitle: "Отмена")
+        let remove = alert.addButton(withTitle: "Очистить данные")
+        remove.hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        clearStorage(includingData: true)
+    }
+
+    private func clearStorage(includingData: Bool) {
+        guard canClearStorage else {
+            storageStatus.stringValue = "Дождитесь завершения распознавания, загрузки или обновления."
+            updateStorageActions()
+            return
+        }
+        let result = SettingsStorage.clear(includingData: includingData)
+        if result.removedModels {
+            refreshModels()
+            refreshAPI()
+            onModelRemoved?()
+        }
+        if let error = result.error {
+            storageStatus.stringValue = "Не удалось очистить всё. \(error.localizedDescription)"
+        } else {
+            storageStatus.stringValue = includingData ? "Данные очищены" : "Кеш очищен"
+        }
+        refreshStorage(force: true)
     }
 
     @objc private func checkUpdates() { UpdateCoordinator.shared.check() }
@@ -831,8 +964,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             .init(id: "model", title: "Модель", width: 165, fixed: true),
             .init(id: "actions", title: "", width: 44, fixed: true)
         ], height: 190, actions: [add, removeProvidersButton], empty: "Провайдеры не добавлены")
-        root.addArrangedFullWidth(SettingsSection(title: "AI-провайдеры", card: providersGrid))
-        root.addArrangedFullWidth(SettingsText.footnote("Используемые профили защищены. Профиль и связанный ключ удаляются после сохранения настроек."))
+        root.addArrangedFullWidth(SettingsSection(title: "AI-провайдеры",
+                                                  note: "Используемые профили защищены. Профиль и связанный ключ удаляются после сохранения настроек.",
+                                                  card: providersGrid))
         refreshProvidersList()
         return root
     }
@@ -1156,11 +1290,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let detailCard = SettingsCard()
         detailCard.addRow(SettingsContentRow(detailHeader, verticalInset: 10))
-        detailCard.addRow(SettingsContentRow(detailScroll, verticalInset: 0))
+        detailCard.addRow(SettingsSeparatorView(height: 1, color: SettingsStyle.cardBorder), separated: false)
+        detailCard.addRow(detailScroll, separated: false)
 
         root.addArrangedFullWidth(SettingsSection(title: "Хранение", card: storageCard))
         root.addArrangedFullWidth(SettingsSection(title: "Записи", card: historyGrid))
-        root.addArrangedFullWidth(SettingsSection(title: "Выбранная запись", card: detailCard))
+        let detailSection = SettingsSection(title: "Выбранная запись", card: detailCard)
+        historyDetailSection = detailSection
+        root.addArrangedFullWidth(detailSection)
         return root
     }
 
@@ -1370,8 +1507,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         } else {
             catalog.showRows(FluidModel.allCases.filter { !installed.contains($0) }.map(fluidDownloadCells))
         }
-        addSection(SettingsSection(title: "Скачивание", card: catalog))
-        addSectionFootnote(SettingsText.footnote("Модели скачиваются в хранилище Runvoice."))
+        addSection(SettingsSection(title: "Скачивание",
+                                   note: "Модели скачиваются в хранилище Runvoice.", card: catalog))
         if !whisper, selectedFluidModel.usesWindowedRecognition {
             addSectionFootnote(SettingsText.footnote("Технический словарь для этой модели учитывается при AI-правке текста."))
         }
@@ -1751,25 +1888,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         improveTestLabel = SettingsText.footnote("")
         improveTestLabel.maximumNumberOfLines = 2
 
-        let reset = SettingsText.secondaryButton("Сбросить к встроенному", target: self, action: #selector(resetImprovePromptToDefault))
-        let test = SettingsText.secondaryButton("Проверить на примере", target: self, action: #selector(testImprovePrompt))
-        let buttons = NSStackView(views: [reset, test, NSView()])
-        buttons.orientation = .horizontal
-        buttons.alignment = .centerY
-        buttons.spacing = 8
-        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let scroll = makeScroll(improveText)
-        scroll.heightAnchor.constraint(equalToConstant: 170).isActive = true
-
-        let block = NSStackView()
-        block.orientation = .vertical
-        block.alignment = .width
-        block.spacing = 8
-        block.addArrangedSubview(buttons)
-        block.addArrangedSubview(scroll)
-        block.addArrangedSubview(improveTestLabel)
-
         let card = SettingsCard()
         card.addRow(SettingsRow(title: "Включить улучшение выделенного текста",
                                 subtitle: "Работает по сочетанию ⌥⌘E.",
@@ -1778,7 +1896,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                 subtitleView: improveProviderNote,
                                 trailing: [improveProviderPopup],
                                 subtitleWidth: 250))
-        card.addRow(SettingsContentRow(block, verticalInset: 12))
+        addPromptEditor(improveText, height: 170, status: improveTestLabel,
+                        reset: #selector(resetImprovePromptToDefault), test: #selector(testImprovePrompt), to: card)
 
         return SettingsSection(title: "Улучшение выделенного текста",
                                note: "Провайдер и модель выбираются здесь; профили — в «Провайдерах». Пустое поле промпта заменяется встроенным.",
@@ -1815,29 +1934,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         summaryTestLabel = SettingsText.footnote("")
         summaryTestLabel.maximumNumberOfLines = 2
 
-        let reset = SettingsText.secondaryButton("Сбросить к встроенному",
-                                                 target: self, action: #selector(resetSummaryPromptToDefault))
-        let test = SettingsText.secondaryButton("Проверить на примере",
-                                                target: self, action: #selector(testSummaryPrompt))
-        let buttons = NSStackView(views: [reset, test, NSView()])
-        buttons.orientation = .horizontal
-        buttons.alignment = .centerY
-        buttons.spacing = 8
-        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let scroll = makeScroll(summaryText)
-        scroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
-
-        let block = NSStackView()
-        block.orientation = .vertical
-        block.alignment = .width
-        block.spacing = 8
-        block.addArrangedSubview(buttons)
-        block.addArrangedSubview(scroll)
-        block.addArrangedSubview(summaryTestLabel)
-
         let card = SettingsCard()
-        card.addRow(SettingsContentRow(block, verticalInset: 12))
+        addPromptEditor(summaryText, height: 150, status: summaryTestLabel,
+                        reset: #selector(resetSummaryPromptToDefault), test: #selector(testSummaryPrompt), to: card)
 
         return SettingsSection(title: "Саммари расшифровки аудио",
                                note: "Используется провайдер для улучшения текста. Пустое поле заменяется встроенным промптом. Кастомный промпт в окне расшифровки заменяет этот текст для финального саммари.",
@@ -1871,31 +1970,31 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     private func buildPromptSection() -> NSStackView {
-        let block = NSStackView()
-        block.orientation = .vertical
-        block.alignment = .width
-        block.spacing = 8
-
-        let reset = SettingsText.secondaryButton("Сбросить к встроенному", target: self, action: #selector(resetPromptToDefault))
-        let test = SettingsText.secondaryButton("Проверить на примере", target: self, action: #selector(testPrompt))
-        let buttons = NSStackView(views: [reset, test, NSView()])
-        buttons.orientation = .horizontal
-        buttons.alignment = .centerY
-        buttons.spacing = 8
-        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let fixScroll = makeScroll(fixText)
-        fixScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
-
-        block.addArrangedSubview(buttons)
-        block.addArrangedSubview(fixScroll)
-        block.addArrangedSubview(promptTestLabel)
-
         let card = SettingsCard()
-        card.addRow(SettingsContentRow(block, verticalInset: 12))
+        addPromptEditor(fixText, height: 220, status: promptTestLabel,
+                        reset: #selector(resetPromptToDefault), test: #selector(testPrompt), to: card)
         return SettingsSection(title: "Промпт для исправления текста (⌥Space)",
                                note: "Используется при включённой постобработке. Пустое поле заменяется встроенным промптом.",
                                card: card)
+    }
+
+    private func addPromptEditor(_ text: NSTextView, height: CGFloat, status: NSTextField,
+                                 reset: Selector, test: Selector, to card: SettingsCard) {
+        let resetButton = SettingsText.secondaryButton("Сбросить к встроенному", target: self, action: reset)
+        let testButton = SettingsText.secondaryButton("Проверить на примере", target: self, action: test)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        status.preferredMaxLayoutWidth = 300
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let buttons = NSStackView(views: [resetButton, testButton, status, spacer])
+        buttons.alignment = .centerY
+        buttons.spacing = 8
+        let scroll = makeScroll(text)
+        scroll.heightAnchor.constraint(equalToConstant: height).isActive = true
+        card.addRow(SettingsContentRow(buttons, verticalInset: 8))
+        card.addRow(SettingsSeparatorView(height: 1, color: SettingsStyle.cardBorder), separated: false)
+        card.addRow(scroll, separated: false)
     }
 
     private func makeScroll(_ textView: NSTextView) -> NSScrollView {
@@ -1905,7 +2004,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
-        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainerInset = NSSize(width: 11, height: 8)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
@@ -1914,7 +2013,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
         scroll.focusRingType = .none
         scroll.documentView = textView
         scroll.translatesAutoresizingMaskIntoConstraints = false

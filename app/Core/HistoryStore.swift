@@ -88,6 +88,21 @@ final class HistoryStore {
         Log.write("history: очищена")
     }
 
+    func clearFromDisk(removingFile: Bool) throws {
+        if removingFile {
+            do {
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                try FileManager.default.removeItem(at: url)
+            } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {}
+        }
+        entries = []
+        notify()
+        Log.write("history: очищена")
+    }
+
     /// Забирает last_result.json после успешной диктовки.
     static func consumeLastResult() -> LastDictationResult? {
         let fm = FileManager.default

@@ -13,6 +13,8 @@ enum SettingsStyle {
     static let sectionSpacing: CGFloat = 22
     static let sectionTitleSpacing: CGFloat = 8
     static let cardCornerRadius: CGFloat = 10
+    static let cardBorderWidth: CGFloat = 1
+    static let tablePanelHeight: CGFloat = 32
     static let rowHorizontalInset: CGFloat = 16
     static let rowVerticalInset: CGFloat = 11
     static let controlSpacing: CGFloat = 8
@@ -33,8 +35,8 @@ enum SettingsStyle {
 
     static var cardBorder: NSColor {
         NSColor(name: "SettingsCardBorder") { appearance in
-            appearance.isDark ? NSColor(white: 1, alpha: 0.09)
-                              : NSColor(white: 0, alpha: 0.07)
+            appearance.isDark ? NSColor(srgbRed: 72 / 255, green: 72 / 255, blue: 79 / 255, alpha: 1)
+                              : NSColor(srgbRed: 217 / 255, green: 217 / 255, blue: 223 / 255, alpha: 1)
         }
     }
 
@@ -162,7 +164,7 @@ final class SettingsCard: NSStackView {
         layer?.cornerRadius = SettingsStyle.cardCornerRadius
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
-        layer?.borderWidth = 0.5
+        layer?.borderWidth = SettingsStyle.cardBorderWidth
         applyColors()
     }
 
@@ -191,17 +193,22 @@ final class SettingsCard: NSStackView {
     }
 
     private func applyColors() {
-        layer?.backgroundColor = SettingsStyle.cardBackground.cgColor
-        layer?.borderColor = SettingsStyle.cardBorder.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = SettingsStyle.cardBackground.cgColor
+            layer?.borderColor = SettingsStyle.cardBorder.cgColor
+        }
     }
 }
 
 final class SettingsSeparatorView: NSView {
-    override init(frame: NSRect) {
-        super.init(frame: frame)
+    private let color: NSColor
+
+    init(height: CGFloat = 0.5, color: NSColor = SettingsStyle.rowSeparator) {
+        self.color = color
+        super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
-        heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+        heightAnchor.constraint(equalToConstant: height).isActive = true
         applyColor()
     }
 
@@ -213,7 +220,9 @@ final class SettingsSeparatorView: NSView {
     }
 
     private func applyColor() {
-        layer?.backgroundColor = SettingsStyle.rowSeparator.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = color.cgColor
+        }
     }
 }
 
@@ -528,7 +537,7 @@ final class SettingsSidebar: NSView {
         ])
 
         search.placeholderString = "Поиск"
-        search.controlSize = .small
+        search.controlSize = .large
         search.font = .systemFont(ofSize: 12.5)
         search.sendsSearchStringImmediately = true
         search.target = self
@@ -549,9 +558,9 @@ final class SettingsSidebar: NSView {
 
         NSLayoutConstraint.activate([
             search.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            search.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            search.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-            search.heightAnchor.constraint(equalToConstant: 26),
+            search.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            search.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            search.heightAnchor.constraint(equalToConstant: 32),
 
             stack.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 14),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
@@ -728,6 +737,36 @@ extension NSStackView {
 
 // MARK: - Табличные данные
 
+private final class SettingsTableHeaderView: NSTableHeaderView {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        SettingsStyle.cardBackground.setFill()
+        dirtyRect.fill()
+        guard let tableView else { return }
+
+        for (index, column) in tableView.tableColumns.enumerated() {
+            let rect = headerRect(ofColumn: index)
+            if rect.intersects(dirtyRect) {
+                let title = column.headerCell.attributedStringValue
+                let height = ceil(title.size().height)
+                let titleRect = NSRect(x: rect.minX + 5, y: floor(rect.midY - height / 2),
+                                       width: rect.width - 10, height: height)
+                title.draw(with: titleRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+                if index < tableView.numberOfColumns - 1 {
+                    SettingsStyle.rowSeparator.setFill()
+                    NSRect(x: rect.maxX - 0.5, y: rect.minY + 5, width: 0.5, height: rect.height - 10).fill()
+                }
+            }
+        }
+        SettingsStyle.cardBorder.setFill()
+        NSRect(x: bounds.minX, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
+    }
+}
+
 final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
     struct Column {
         let id: String
@@ -754,7 +793,7 @@ final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegat
         table.rowHeight = rowHeight
         table.intercellSpacing = NSSize(width: 5, height: 0)
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.headerView = NSTableHeaderView()
+        table.headerView = SettingsTableHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: SettingsStyle.tablePanelHeight))
         for value in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(value.id))
             column.title = value.title
@@ -795,7 +834,10 @@ final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegat
         let card = SettingsCard()
         if let header { card.addRow(SettingsContentRow(header, verticalInset: 6, horizontalInset: 8)) }
         card.addRow(scroll)
-        card.addRow(SettingsContentRow(footer, verticalInset: 4, horizontalInset: 8))
+        let footerRow = SettingsContentRow(footer, verticalInset: 4, horizontalInset: 8)
+        footerRow.heightAnchor.constraint(greaterThanOrEqualToConstant: SettingsStyle.tablePanelHeight - 1).isActive = true
+        card.addRow(SettingsSeparatorView(height: 1, color: SettingsStyle.cardBorder), separated: false)
+        card.addRow(footerRow, separated: false)
         addSubview(card)
         card.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
