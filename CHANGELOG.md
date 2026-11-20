@@ -7,6 +7,10 @@
 
 ## Не выпущено
 
+### Сборка
+
+- `make install-app` собирает приложение один раз; read-only лицензии FluidAudio и fastcluster перезаписываются без ошибки `Permission denied`.
+
 ## [1.1.16]
 
 ### Настройки

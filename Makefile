@@ -49,7 +49,9 @@ test-api:
 test-pause:
 	bash scripts/test-pause.sh
 
-install-app: app
+# install-app.sh сам собирает приложение; отдельный prerequisite `app`
+# приводил ко второй полной сборке и повторному копированию лицензий.
+install-app:
 	./scripts/install-app.sh
 
 # Установочные DMG: отдельно для Apple Silicon и Intel

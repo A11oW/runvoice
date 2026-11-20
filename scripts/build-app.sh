@@ -108,9 +108,9 @@ build_variant() {
     cp "$ASR" "$app/Contents/Resources/RunvoiceASR"
     codesign --force --sign "$SIGN_ID" "$app/Contents/Resources/RunvoiceASR" >/dev/null
     mkdir -p "$app/Contents/Resources/licenses"
-    cp "$BUILD/streaming/checkouts/FluidAudio/LICENSE" "$app/Contents/Resources/licenses/FluidAudio-LICENSE"
+    cp -f "$BUILD/streaming/checkouts/FluidAudio/LICENSE" "$app/Contents/Resources/licenses/FluidAudio-LICENSE"
     cp "$REPO/resources/Parakeet-NOTICE.txt" "$app/Contents/Resources/licenses/Parakeet-NOTICE.txt"
-    cp "$BUILD/streaming/checkouts/FluidAudio/ThirdPartyLicenses/fastcluster-LICENSE.md" \
+    cp -f "$BUILD/streaming/checkouts/FluidAudio/ThirdPartyLicenses/fastcluster-LICENSE.md" \
       "$app/Contents/Resources/licenses/fastcluster-LICENSE.md"
   fi
 
