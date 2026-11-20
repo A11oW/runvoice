@@ -1,6 +1,6 @@
 REPO := $(CURDIR)
 
-.PHONY: all install app install-app dmg clean reload test-live-hud test-native test-editing test-recognition test-pause test-api test-updates
+.PHONY: all install app test-app test-launch test-keychain-isolation install-app dmg clean reload test-live-hud test-native test-editing test-recognition test-pause test-api test-updates
 
 all: bin/pastev bin/dictatehud
 
@@ -17,6 +17,16 @@ install: all
 # GUI-приложение (menu bar, свои хоткеи)
 app:
 	./scripts/build-app.sh
+
+# Тестовая сборка: изолированный Keychain, ad-hoc-подпись, без сертификата.
+test-app:
+	./scripts/build-app.sh test
+
+test-launch:
+	bash scripts/test-app-launch.sh
+
+test-keychain-isolation: test-app
+	bash scripts/test-keychain-isolation.sh
 
 test-live-hud:
 	bash scripts/test-live-hud.sh

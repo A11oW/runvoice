@@ -3,11 +3,35 @@
 #   dist/Runvoice-arm64.app  (Apple Silicon, Whisper с Metal)
 #   dist/Runvoice-intel.app  (Intel, Whisper на CPU)
 # и копию для текущей машины: dist/Runvoice.app
+#
+# build-app.sh test — тестовая сборка dist/Runvoice-test.app:
+#   отдельный bundle id, ad-hoc-подпись, Keychain в памяти и каталог Runvoice-Test.
+#   Сертификат подписи не используется и не запрашивается.
 set -euo pipefail
+
+MODE="${1:-final}"
+case "$MODE" in
+  final|test) ;;
+  *)
+    echo "Неизвестный режим сборки: $MODE (ожидается final или test)" >&2
+    exit 2
+    ;;
+esac
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$REPO/dist"
 BUILD="$REPO/.build"
+
+if [ "$MODE" = "test" ]; then
+  TEST_ARCH="${RUNVOICE_TEST_ARCH:-$(uname -m)}"
+  case "$TEST_ARCH" in
+    arm64|x86_64) ;;
+    *)
+      echo "Неизвестная архитектура тестовой сборки: $TEST_ARCH" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 bash "$REPO/scripts/prepare-sparkle.sh"
 
@@ -18,10 +42,13 @@ fi
 
 mkdir -p "$DIST" "$BUILD"
 
-echo "==> потоковый ASR (Apple Silicon)"
-swift build --package-path "$REPO/streaming" --scratch-path "$BUILD/streaming" \
-  -c release --product RunvoiceASR --arch arm64
-ASR="$BUILD/streaming/arm64-apple-macosx/release/RunvoiceASR"
+ASR=""
+if [ "$MODE" = "final" ] || [ "$TEST_ARCH" = "arm64" ]; then
+  echo "==> потоковый ASR (Apple Silicon)"
+  swift build --package-path "$REPO/streaming" --scratch-path "$BUILD/streaming" \
+    -c release --product RunvoiceASR --arch arm64
+  ASR="$BUILD/streaming/arm64-apple-macosx/release/RunvoiceASR"
+fi
 
 echo "==> иконка"
 "$REPO/scripts/make-icon.sh" "$BUILD/AppIcon.icns"
@@ -31,12 +58,16 @@ while IFS= read -r file; do SWIFT_SOURCES+=("$file"); done < <(find "$REPO/app" 
 
 VAD="${WHISPER_VAD_MODEL:-$HOME/.local/share/whisper/ggml-silero-v5.1.2.bin}"
 
-IDENTITY="${RUNVOICE_SIGN_IDENTITY:-Runvoice Local Signing}"
-if security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
-  SIGN_ID="$IDENTITY"
-else
+if [ "$MODE" = "test" ]; then
   SIGN_ID="-"
-  echo "    ad-hoc (сертификат '$IDENTITY' не найден)"
+else
+  IDENTITY="${RUNVOICE_SIGN_IDENTITY:-Runvoice Local Signing}"
+  if security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
+    SIGN_ID="$IDENTITY"
+  else
+    SIGN_ID="-"
+    echo "    ad-hoc (сертификат '$IDENTITY' не найден)"
+  fi
 fi
 
 build_variant() {
@@ -50,11 +81,23 @@ build_variant() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
   cp "$BUILD/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
-  swiftc -O -target "$arch-apple-macos15.0" \
-    -F "$BUILD/sparkle" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-    -o "$app/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
+  if [ "$MODE" = "test" ]; then
+    swiftc -O -target "$arch-apple-macos15.0" \
+      -F "$BUILD/sparkle" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+      -D RUNVOICE_TEST_BUILD \
+      -o "$app/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
+  else
+    swiftc -O -target "$arch-apple-macos15.0" \
+      -F "$BUILD/sparkle" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+      -o "$app/Contents/MacOS/Runvoice" "${SWIFT_SOURCES[@]}"
+  fi
 
   cp "$REPO/app/Info.plist" "$app/Contents/Info.plist"
+  if [ "$MODE" = "test" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ai.opencode.runvoice.test" "$app/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName Runvoice Test" "$app/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Runvoice Test" "$app/Contents/Info.plist"
+  fi
   /usr/libexec/PlistBuddy -c "Set :SUFeedURL https://github.com/A11oW/runvoice/releases/latest/download/appcast-$label.xml" "$app/Contents/Info.plist"
   mkdir -p "$app/Contents/Frameworks"
   ditto "$BUILD/sparkle/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
@@ -102,6 +145,13 @@ build_variant() {
   codesign --force --deep --sign "$SIGN_ID" "$app" >/dev/null 2>&1 || true
   echo "    $app ($(lipo -info "$app/Contents/MacOS/Runvoice" | sed 's/.*: //'))"
 }
+
+if [ "$MODE" = "test" ]; then
+  build_variant "$TEST_ARCH" test "Test ($TEST_ARCH)"
+  echo "==> тестовая сборка: $DIST/Runvoice-test.app ($TEST_ARCH)"
+  echo "Готово."
+  exit 0
+fi
 
 build_variant arm64 arm64 "Apple Silicon (arm64)"
 build_variant x86_64 intel "Intel (x86_64)"

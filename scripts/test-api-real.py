@@ -16,7 +16,7 @@ for name in ['RunvoiceASR', 'warmup.wav', 'whisper']:
 support = Path.home() / 'Library/Application Support/Runvoice'
 model = json.loads((support / 'settings.json').read_text())['whisperModelPath']
 home = out / 'home'
-models = home / 'Library/Application Support/Runvoice/models'
+models = home / 'Library/Application Support/Runvoice-Test/models'
 models.mkdir(parents=True, exist_ok=True)
 fluid = support / 'models/nemotron'
 if fluid.exists() and not (models / 'nemotron').exists(): (models / 'nemotron').symlink_to(fluid)
@@ -27,7 +27,7 @@ if not audio.exists():
     audio = out / 'speech.wav'
 sources = sorted(str(p) for p in (root/'app').rglob('*.swift') if p.name not in ['main.swift','AppDelegate.swift'])
 executable = app/'Contents/MacOS/APIProbe'
-subprocess.run(['swiftc','-parse-as-library','-module-cache-path',str(root/'.build/clang-module-cache'),*sources,str(root/'tests/api/RealEngine.swift'),'-o',str(executable)],check=True)
+subprocess.run(['swiftc','-parse-as-library','-D','RUNVOICE_TEST_BUILD','-module-cache-path',str(root/'.build/clang-module-cache'),*sources,str(root/'tests/api/RealEngine.swift'),'-o',str(executable)],check=True)
 def free_port():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1',0))

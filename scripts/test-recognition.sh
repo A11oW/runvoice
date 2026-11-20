@@ -20,7 +20,8 @@ SOURCES=()
 while IFS= read -r source; do SOURCES+=("$source"); done < <(
   find "$REPO/app" -name '*.swift' ! -name main.swift ! -name AppDelegate.swift -print | sort
 )
-swiftc -target "$(uname -m)-apple-macos15.0" -module-cache-path "$REPO/.build/clang-module-cache" \
+swiftc -target "$(uname -m)-apple-macos15.0" -D RUNVOICE_TEST_BUILD \
+  -module-cache-path "$REPO/.build/clang-module-cache" \
   "${SOURCES[@]}" "$REPO/tests/recognition/audio-sample.swift" "$REPO/tests/recognition/pause-hud.swift" "$REPO/tests/recognition/main.swift" -o "$APP/Contents/MacOS/RecognitionTests"
 runvoice_test_home=$(mktemp -d "$BUILD/home.XXXXXX")
 trap 'rm -rf "$runvoice_test_home"' EXIT

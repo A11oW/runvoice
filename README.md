@@ -230,6 +230,11 @@ make install-app        # собрать и установить в /Application
 
 Только собрать: `make app` → `dist/Runvoice.app`.
 
+Тестовая сборка без сертификата и пользовательского Keychain:
+`make test-app` → `dist/Runvoice-test.app`; проверка запуска —
+`make test-launch`; изоляция Keychain — `make test-keychain-isolation`.
+Финальные `make app` и `make dmg` не меняются.
+
 ### Меню
 
 - **Диктовка** ⌥Space

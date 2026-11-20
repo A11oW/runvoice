@@ -3,7 +3,8 @@ set -euo pipefail
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="$REPO/.build/native-tests"
 mkdir -p "$BUILD"
-swiftc -target "$(uname -m)-apple-macos15.0" -module-cache-path "$REPO/.build/clang-module-cache" \
+swiftc -target "$(uname -m)-apple-macos15.0" -D RUNVOICE_TEST_BUILD \
+  -module-cache-path "$REPO/.build/clang-module-cache" \
   "$REPO/app/Core/LiveTranscriber.swift" "$REPO/app/Core/SpeechVocabulary.swift" \
   "$REPO/app/Core/LivePreviewText.swift" \
   "$REPO/app/Core/RecognitionPreview.swift" \

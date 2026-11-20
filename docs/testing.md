@@ -1090,7 +1090,35 @@ make test-recognition
 make test-pause
 make test-api
 make test-updates
+
+# тестовая сборка без доступа к пользовательскому Keychain
+make test-app
+make test-launch
 ```
+
+`make test-app` собирает `dist/Runvoice-test.app` с отдельным bundle identifier
+`ai.opencode.runvoice.test`: Keychain хранится в памяти процесса, данные — в
+`Runvoice-Test`, подпись ad-hoc, сертификат не используется. `make test-launch`
+запускает снимок тестовой сборки во временном домашнем каталоге; запрос пароля
+Keychain не появляется. `make test-keychain-isolation` проверяет bundle id,
+ad-hoc-подпись, отсутствие символов Keychain в тестовой сборке и работу
+in-memory backend. `test-native`, `test-recognition`, `test-pause` и `test-api`
+компилируются с `RUNVOICE_TEST_BUILD`; интеграционный `test-api-real.py` также
+использует этот флаг и каталог `Runvoice-Test`. Финальные `make app` и `make dmg`
+не меняются, проверки реального Keychain выполняются на финальной сборке.
+
+### Финальный регресс Keychain
+
+Обычные проверки выполняются на тестовой сборке без диалога Keychain.
+Финальный регресс выполняется на `dist/Runvoice-arm64.app` или
+`dist/Runvoice-intel.app`; системный запрос пароля в нём допустим.
+
+- `S13`, `V2`, `V4`, `V14`, `H13`, `I16`, `J4`, `J16`, `J25`.
+- Использовать одноразовый тестовый профиль с тестовым ключом; после проверки
+  удалить профиль и его ключ.
+- Существующие пользовательские ключи и настройки не изменять.
+- Значения ключей не выводить в общий лог; для `security` перенаправлять вывод.
+- Отмена системного запроса считается неуспешной проверкой, тихого обхода нет.
 
 `test-native` проверяет преобразование PCM, словарь, совместимость настроек,
 Enter/Esc/Space и протокол потокового помощника. `test-pause` проверяет очереди
