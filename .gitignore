@@ -8,7 +8,11 @@ dist/
 .swiftpm/
 
 # Не относится к инструменту
-.opencode/
+.opencode/*
+!.opencode/agents/
+!.opencode/commands/
+!.opencode/skills/
+!.opencode/templates/
 qr/
 
 # Системный мусор
