@@ -425,14 +425,18 @@ final class SettingsSidebarItem: NSButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private static func icon(symbol: String, color: NSColor) -> NSImage? {
-        let size = NSSize(width: 20, height: 20)
+        let leading: CGFloat = 9
+        let iconSize: CGFloat = 20
+        let size = NSSize(width: iconSize + leading, height: iconSize)
         let image = NSImage(size: size, flipped: false) { rect in
             color.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+            let square = NSRect(x: rect.minX + leading, y: rect.minY,
+                                width: iconSize, height: iconSize)
+            NSBezierPath(roundedRect: square, xRadius: 5, yRadius: 5).fill()
             if let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
                 .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.white])) {
                 glyph.isTemplate = false
-                glyph.draw(in: NSRect(x: rect.minX + 4, y: rect.minY + 4, width: 12, height: 12))
+                glyph.draw(in: NSRect(x: square.minX + 4, y: square.minY + 4, width: 12, height: 12))
             }
             return true
         }
