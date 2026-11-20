@@ -16,6 +16,8 @@ final class APIRecognitionEngine: APIRecognitionBackend {
     private let backendPort: Int
     private let session = URLSession(configuration: .ephemeral)
     private var process: Process?
+    private var retiringWhisper: Process?
+    private var pendingPreparation: (() -> Void)?
     private var task: URLSessionDataTask?
     private var timer: Timer?
     private var signature = ""
@@ -62,6 +64,21 @@ final class APIRecognitionEngine: APIRecognitionBackend {
         shutdown()
         let token = generation
         preparing = completion
+        if retiringWhisper?.isRunning == true {
+            pendingPreparation = { [weak self] in self?.startPreparation(settings, key: key, token: token) }
+            let timeout = Timer(timeInterval: 5, repeats: false) { [weak self] _ in
+                guard let self, self.generation == token else { return }
+                self.finishPreparation(.failure(LocalAPIError(503, "Прежний API-движок Whisper ещё не остановился")))
+            }
+            timer = timeout
+            RunLoop.main.add(timeout, forMode: .common)
+        } else {
+            startPreparation(settings, key: key, token: token)
+        }
+    }
+
+    private func startPreparation(_ settings: Settings, key: String, token: UUID) {
+        timer?.invalidate(); timer = nil
         started = ProcessInfo.processInfo.systemUptime
         if settings.recognitionTechnology == .fluidAudio {
             fluid.warmUp(model: settings.fluidModel)
@@ -76,6 +93,15 @@ final class APIRecognitionEngine: APIRecognitionBackend {
                                "--request-path", privatePath, "-t", "8"]
             if let vad = vadModel() { child.arguments! += ["--vad", "-vm", vad.path] }
             child.standardOutput = FileHandle.nullDevice; child.standardError = FileHandle.nullDevice
+            child.terminationHandler = { [weak self] exited in
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.retiringWhisper === exited else { return }
+                    self.retiringWhisper = nil
+                    let resume = self.pendingPreparation
+                    self.pendingPreparation = nil
+                    resume?()
+                }
+            }
             process = child
             do { try child.run() }
             catch { finishPreparation(.failure(LocalAPIError(503, "Не удалось запустить API-движок Whisper"))); return }
@@ -191,10 +217,13 @@ final class APIRecognitionEngine: APIRecognitionBackend {
     }
 
     func shutdown() {
-        generation = UUID(); preparing = nil
+        generation = UUID(); preparing = nil; pendingPreparation = nil
         timer?.invalidate(); timer = nil
         task?.cancel(); task = nil
-        if process?.isRunning == true { process?.terminate() }
+        if let process, process.isRunning {
+            retiringWhisper = process
+            process.terminate()
+        }
         process = nil
         fluid.unload(); signature = ""
         if let file { try? FileManager.default.removeItem(at: file) }

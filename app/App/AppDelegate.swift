@@ -346,6 +346,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func showSettings(tab: String?) {
         if settingsWindow == nil {
             settingsWindow = SettingsWindow()
+            settingsWindow?.canRemoveModel = { [weak self] in
+                guard let self else { return false }
+                return !self.dictation.isBusy && self.transcribeWindow?.isTranscribingFile != true
+                    && !LocalAPIService.shared.hasPendingWork
+            }
+            settingsWindow?.onModelRemoved = { [weak self] in
+                self?.dictation.wake()
+                LocalAPIService.shared.stop()
+                LocalAPIService.shared.configure(SettingsStore.load())
+            }
             settingsWindow?.onCaptureStateChanged = { [weak self] capturing in
                 self?.hotkeys.setSuspended(capturing)
             }
@@ -500,7 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        var captures: [(String, String)] = [
+        let captures: [(String, String)] = [
             ("general", "/tmp/runvoice-settings.png"),
             ("models", "/tmp/runvoice-settings-models.png"),
             ("dictionary", "/tmp/runvoice-settings-dictionary.png"),
@@ -514,15 +524,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             ("samples", "/tmp/runvoice-settings-samples.png"),
             ("sample-recording", "/tmp/runvoice-settings-sample-recording.png"),
         ]
-        if CommandLine.arguments.contains("--snapshot-backup") {
-            captures.append(("backup", "/tmp/runvoice-settings-backup.png"))
-        }
         func next(_ index: Int) {
             guard index < captures.count else { NSApp.terminate(nil); return }
             let (tab, path) = captures[index]
-            if tab == "backup" || tab == "samples" || tab == "sample-recording" {
-                let target = tab == "backup" ? self.settingsWindow?.prepareBackupSnapshot()
-                    : self.settingsWindow?.prepareSampleSnapshot(recording: tab == "sample-recording")
+            if tab == "samples" || tab == "sample-recording" {
+                let target = self.settingsWindow?.prepareSampleSnapshot(recording: tab == "sample-recording")
                 guard let view = target else { next(index + 1); return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                     NSApp.activate(ignoringOtherApps: true)

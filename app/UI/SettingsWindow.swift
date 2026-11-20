@@ -41,8 +41,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var improveProviderPopup: NSPopUpButton!
     private var dictationProviderNote: NSTextField!
     private var improveProviderNote: NSTextField!
-    private var providersStack: SettingsCard!
-    private var providersEmptyLabel: NSTextField!
+    private var providersGrid: SettingsDataTable!
+    private var markedProviders: Set<UUID> = []
+    private lazy var removeProvidersButton = SettingsDataTable.iconButton(
+        "minus", "Удалить выбранных провайдеров", target: self, action: #selector(deleteMarkedProviders))
     private var providerEditor: ProviderEditorWindow?
     private var providers: [AIProvider] = []
     private var providerKeys: [UUID: String] = [:]
@@ -62,6 +64,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let apiPortField = NSTextField(string: "8790")
     private let apiAddress = NSTextField(labelWithString: "")
     private let apiStatus = NSTextField(wrappingLabelWithString: "")
+    private let apiActivity = NSProgressIndicator()
+    private lazy var apiCopyAddressButton = SettingsText.linkButton("Копировать", target: self, action: #selector(copyAPIAddress))
+    private lazy var apiCheckButton = SettingsText.secondaryButton("Проверить соединение", target: self, action: #selector(checkAPIConnection))
+    private lazy var apiRestartButton = SettingsText.secondaryButton("Перезапустить сервер", target: self, action: #selector(restartAPI))
+    private var apiCheckTask: URLSessionDataTask?
+    private var apiCheckToken: UUID?
+    private var apiCheckedConnection: UUID?
+    private var apiCheckResult: LocalAPIService.ConnectionCheck?
+    private var apiCheckStatus: String?
     private let apiModel = NSTextField(wrappingLabelWithString: "")
     private let apiModelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private var selectedAPIModel: APIRecognitionModel = .application
@@ -75,16 +86,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var accessLabel: NSTextField!
     private var accessButton: NSButton!
     private var modelsStack: NSStackView!
-    private var modelsDiskLabel: NSTextField!
     private var modelDirs: [String] = []
+    private var externalModelPaths: [String] = []
     private var hiddenModelPaths: [String] = []
     private var selectedModelPath = ""
     private var selectedTechnology: RecognitionTechnology = .whisper
     private var selectedFluidModel: FluidModel = .nemotron
     private let technologyPopup = NSPopUpButton()
-    private var backupPanel: NSPanel?
-    private var backupModelsStack: NSStackView?
-    private var backupDraft: (path: String, directories: [String], hidden: [String])?
     private var recognitionValidationMessage = ""
     private let vocabularyEditor = SpeechVocabularyEditor()
     private let previewControls = RecognitionPreviewControls()
@@ -92,8 +100,16 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private var fluidDownloadProgress: Double = 0
     private var downloadingFluidModel: FluidModel?
     private var fluidStatuses: [FluidModel: NSTextField] = [:]
+    private var fluidBars: [FluidModel: NSProgressIndicator] = [:]
+    private var downloadErrors: [String: String] = [:]
+    var canRemoveModel: () -> Bool = { true }
+    var onModelRemoved: (() -> Void)?
     private var fluidErrors: [FluidModel: String] = [:]
     private var historyTable: NSTableView!
+    private var historyGrid: SettingsDataTable!
+    private lazy var clearHistoryButton = SettingsText.destructiveButton(
+        "Очистить историю…", target: self, action: #selector(clearHistory))
+    private var historyRecordCount = 0
     private var historyDetail: NSTextView!
     private var historySearch: NSSearchField!
     private var historyEnabledCheck: NSSwitch!
@@ -542,11 +558,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         apiModelPopup.autoenablesItems = false
         apiModelPopup.target = self
         apiModelPopup.action = #selector(apiModelChanged)
+        apiModelPopup.cell?.lineBreakMode = .byTruncatingTail
         apiModelPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 380).isActive = true
 
         apiEnable.target = self; apiEnable.action = #selector(refreshAPI)
         apiImprove.target = self; apiImprove.action = #selector(refreshAPI)
         apiPortField.target = self; apiPortField.action = #selector(refreshAPI)
+        apiPortField.delegate = self
         apiPortField.widthAnchor.constraint(equalToConstant: 80).isActive = true
 
         apiAddress.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -554,12 +572,30 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         apiAddress.isSelectable = true
         apiAddress.lineBreakMode = .byTruncatingMiddle
         apiAddress.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let copy = SettingsText.linkButton("Копировать", target: self, action: #selector(copyAPIAddress))
+        apiCopyAddressButton.setAccessibilityLabel("Копировать адрес API")
+        let alias = NSTextField(labelWithString: LocalAPIWire.modelAlias)
+        alias.font = apiAddress.font
+        alias.textColor = .secondaryLabelColor
+        alias.isSelectable = true
+        let copyAlias = SettingsText.linkButton("Копировать", target: self, action: #selector(copyAPIModelAlias))
+        copyAlias.setAccessibilityLabel("Копировать модель распознавания API")
 
         apiStatus.font = .systemFont(ofSize: 11.5)
         apiStatus.maximumNumberOfLines = 0
-        apiStatus.preferredMaxLayoutWidth = 430
+        apiStatus.preferredMaxLayoutWidth = 260
         apiStatus.textColor = .secondaryLabelColor
+        apiActivity.style = .spinning
+        apiActivity.controlSize = .small
+        apiActivity.isHidden = true
+        apiActivity.widthAnchor.constraint(equalToConstant: 12).isActive = true
+        apiActivity.heightAnchor.constraint(equalToConstant: 12).isActive = true
+        let apiStatusLine = NSStackView(views: [apiActivity, apiStatus])
+        apiStatusLine.orientation = .horizontal
+        apiStatusLine.alignment = .centerY
+        apiStatusLine.spacing = 5
+        for button in [apiCheckButton, apiRestartButton] {
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
         apiModel.font = .systemFont(ofSize: 11.5)
         apiModel.textColor = .secondaryLabelColor
         apiModel.maximumNumberOfLines = 0
@@ -574,12 +610,13 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                        subtitle: "Работает вместе с Runvoice. Язык и словарь общие, модель можно выбрать отдельно.",
                                        trailing: [apiEnable]))
         serviceCard.addRow(SettingsRow(title: "Порт", trailing: [apiPortField]))
-        serviceCard.addRow(SettingsRow(title: "Адрес", subtitleView: apiAddress, trailing: [copy]))
-        serviceCard.addRow(SettingsRow(title: "Модель распознавания",
-                                       trailing: [apiModelPopup]))
+        serviceCard.addRow(SettingsRow(title: "Адрес", subtitleView: apiAddress, trailing: [apiCopyAddressButton]))
+        serviceCard.addRow(SettingsRow(title: "Модель распознавания", subtitleView: alias, trailing: [copyAlias]))
         serviceCard.addRow(SettingsRow(title: "Текущая модель", subtitleView: apiModel))
-        serviceCard.addRow(SettingsRow(title: "Состояние", subtitleView: apiStatus))
-        let contract = SettingsText.footnote("Для ktalk-assist: способ «Свой сервис», модель runvoice-active, ключ пустой. Сервер доступен только на 127.0.0.1. Изменения применяются после сохранения.")
+        serviceCard.addRow(SettingsRow(title: "Использовать для распознавания", trailing: [apiModelPopup]))
+        serviceCard.addRow(SettingsRow(title: "Состояние", subtitleView: apiStatusLine,
+                                       trailing: [apiCheckButton, apiRestartButton], subtitleWidth: 278))
+        let contract = SettingsText.footnote("Для ktalk-assist: способ «Свой сервис», модель \(LocalAPIWire.modelAlias), ключ пустой. Сервер доступен только на 127.0.0.1. Изменения применяются после сохранения.")
 
         apiFilter.identifier = NSUserInterfaceItemIdentifier("api-audio-filter")
         apiVocabulary.identifier = NSUserInterfaceItemIdentifier("api-use-vocabulary")
@@ -634,13 +671,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         var draft = loadedSettings
         draft.whisperModelPath = selectedModelPath
         draft.whisperModelDirs = modelDirs
+        draft.whisperExternalModelPaths = externalModelPaths
         draft.hiddenModelPaths = hiddenModelPaths
         refreshAPIModels(settings: draft)
-        let port = Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        setLabel(apiAddress, LocalAPIService.validPort(port) ? LocalAPIService.endpoint(port: port) : "Укажите корректный порт")
-        setLabel(apiStatus, LocalAPIService.shared.status)
-        apiStatus.textColor = LocalAPIService.shared.status.hasPrefix("Ошибка") ? .systemOrange : .secondaryLabelColor
+        let validPort = LocalAPIService.validPort(apiDraftPort)
+        setLabel(apiAddress, validPort ? LocalAPIService.endpoint(port: apiDraftPort) : "Укажите корректный порт")
+        apiAddress.textColor = validPort ? .secondaryLabelColor : .systemOrange
+        apiCopyAddressButton.isEnabled = validPort
         let settings = SettingsStore.load()
+        refreshAPIStatus(settings: settings)
         let effective = settings.apiRecognitionSettings
         setLabel(apiModel, LocalAPIService.shared.loadedModelDescription.map { "Загружено: " + $0 }
             ?? ("Сохранено: " + effective.recognitionTechnology.title + " · " + LocalAPIService.modelName(settings)))
@@ -648,6 +687,88 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         setLabel(apiProfile, selected.map { "AI: " + $0.displayTitle + " · " + $0.detail }
             ?? "Для AI выберите профиль правки диктовки в разделе «Постобработка».")
         apiProfile.textColor = apiImprove.state == .on && selected == nil ? .systemOrange : .secondaryLabelColor
+    }
+
+    private var apiDraftPort: Int {
+        Int(apiPortField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    private func resetAPICheck() {
+        apiCheckTask?.cancel()
+        apiCheckTask = nil
+        apiCheckToken = nil
+        apiCheckedConnection = nil
+        apiCheckResult = nil
+        apiCheckStatus = nil
+    }
+
+    private func refreshAPIStatus(settings: Settings) {
+        let service = LocalAPIService.shared
+        let changedPort = apiDraftPort != settings.apiPort
+        let changedToggle = (apiEnable.state == .on) != settings.apiEnabled
+        if changedPort || changedToggle || !settings.apiEnabled || apiCheckedConnection != service.connectionID {
+            resetAPICheck()
+        }
+        let canAct = settings.apiEnabled && LocalAPIService.validPort(settings.apiPort)
+            && !changedPort && !changedToggle && apiCheckToken == nil
+            && !service.isRestarting && !service.isStarting && !UpdateCoordinator.shared.isInstalling
+        apiCheckButton.isEnabled = canAct
+        apiRestartButton.isEnabled = canAct && !service.isWarming
+
+        var message = service.status
+        var isError = message.hasPrefix("Ошибка")
+        if apiCheckResult?.isError == true, apiCheckStatus != message { resetAPICheck() }
+        if changedPort || changedToggle {
+            message = changedToggle ? "Сохраните настройки API для проверки или перезапуска"
+                : "Сохраните изменения порта для проверки или перезапуска"
+            isError = false
+        } else if apiCheckToken != nil {
+            message += " · Проверяется соединение…"
+        } else if let result = apiCheckResult {
+            switch result {
+            case .ready:
+                if !isError { message += " · " + result.message }
+            case .warming:
+                if !isError && message != "Готов" { message = result.message }
+            default:
+                message += "\n" + result.message
+                isError = result.isError
+            }
+        }
+        let showActivity = apiCheckToken != nil || service.isRestarting
+        if showActivity != !apiActivity.isHidden {
+            apiActivity.isHidden = !showActivity
+            if showActivity { apiActivity.startAnimation(nil) } else { apiActivity.stopAnimation(nil) }
+        }
+        setLabel(apiStatus, message)
+        apiStatus.textColor = isError ? .systemOrange : .secondaryLabelColor
+    }
+
+    @objc private func checkAPIConnection() {
+        refreshAPI()
+        guard apiCheckButton.isEnabled else { return }
+        let service = LocalAPIService.shared
+        let token = UUID()
+        apiCheckToken = token
+        apiCheckedConnection = service.connectionID
+        apiCheckResult = nil
+        apiCheckTask = service.checkConnection { [weak self] result in
+            guard let self, self.apiCheckToken == token else { return }
+            self.apiCheckTask = nil
+            self.apiCheckToken = nil
+            self.apiCheckResult = result
+            self.apiCheckStatus = service.status
+            self.refreshAPI()
+        }
+        refreshAPI()
+    }
+
+    @objc private func restartAPI() {
+        refreshAPI()
+        guard apiRestartButton.isEnabled else { return }
+        resetAPICheck()
+        LocalAPIService.shared.restart()
+        refreshAPI()
     }
 
     private func setLabel(_ field: NSTextField, _ text: String) {
@@ -684,9 +805,14 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     @objc private func copyAPIAddress() {
         refreshAPI()
-        guard LocalAPIService.validPort(Int(apiPortField.stringValue) ?? 0) else { return }
+        guard LocalAPIService.validPort(apiDraftPort) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(apiAddress.stringValue, forType: .string)
+    }
+
+    @objc private func copyAPIModelAlias() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(LocalAPIWire.modelAlias, forType: .string)
     }
 
     // MARK: - Providers
@@ -697,79 +823,54 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         root.alignment = .leading
         root.spacing = SettingsStyle.sectionSpacing
 
-        providersStack = SettingsCard()
-        providersEmptyLabel = SettingsText.footnote("Провайдеры не добавлены. Добавьте хотя бы один, чтобы использовать AI.")
-        providersEmptyLabel.maximumNumberOfLines = 0
-        providersEmptyLabel.preferredMaxLayoutWidth = 430
-
-        let add = SettingsText.secondaryButton("+ Добавить провайдера", target: self, action: #selector(addProvider))
-        let addRow = NSStackView(views: [add])
-        addRow.orientation = .horizontal
-        addRow.spacing = 8
-
-        root.addArrangedFullWidth(SettingsSection(title: "AI-провайдеры",
-                                                note: "Какой профиль использовать для диктовки и улучшения — выбирается в «Постобработке».",
-                                                card: providersStack))
-        root.addArrangedFullWidth(addRow)
+        let add = SettingsDataTable.iconButton("plus", "Добавить провайдера…", target: self, action: #selector(addProvider))
+        providersGrid = SettingsDataTable("AI-провайдеры", columns: [
+            .init(id: "mark", title: "", width: 36, fixed: true),
+            .init(id: "name", title: "Профиль", width: 286),
+            .init(id: "type", title: "Тип", width: 125, fixed: true),
+            .init(id: "model", title: "Модель", width: 165, fixed: true),
+            .init(id: "actions", title: "", width: 44, fixed: true)
+        ], height: 190, actions: [add, removeProvidersButton], empty: "Провайдеры не добавлены")
+        root.addArrangedFullWidth(SettingsSection(title: "AI-провайдеры", card: providersGrid))
+        root.addArrangedFullWidth(SettingsText.footnote("Используемые профили защищены. Профиль и связанный ключ удаляются после сохранения настроек."))
         refreshProvidersList()
         return root
     }
 
-    private func providerRow(_ provider: AIProvider) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 12
-        row.edgeInsets = NSEdgeInsets(top: 11, left: 16, bottom: 11, right: 16)
+    private func providerIsProtected(_ id: UUID) -> Bool {
+        id == dictationProviderID || id == improveProviderID
+    }
 
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.systemPurple]))
-        icon.contentTintColor = .systemPurple
-        icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 18).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 18).isActive = true
+    private func providerCells(_ provider: AIProvider) -> [NSView] {
+        let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(markProvider(_:)))
+        check.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
+        check.setAccessibilityLabel("Выбрать провайдера \(provider.displayTitle)")
+        check.state = markedProviders.contains(provider.id) ? .on : .off
+        check.isEnabled = !providerIsProtected(provider.id)
+        if !check.isEnabled { check.toolTip = "Профиль используется в «Постобработке»" }
 
-        let info = NSStackView()
-        info.orientation = .vertical
-        info.alignment = .leading
-        info.spacing = 2
-        info.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let menu = SettingsDataTable.iconButton("ellipsis", "Действия с провайдером \(provider.displayTitle)",
+                                                target: self, action: #selector(providerMenu(_:)))
+        menu.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
+        return [
+            SettingsDataTable.padded(check, centered: true),
+            SettingsDataTable.padded(SettingsDataTable.label(provider.displayTitle)),
+            SettingsDataTable.padded(SettingsDataTable.label(provider.typeTitle)),
+            SettingsDataTable.padded(SettingsDataTable.label(provider.model)),
+            SettingsDataTable.padded(menu, centered: true)
+        ]
+    }
 
-        let name = SettingsText.rowTitle(provider.displayTitle)
-        name.font = .systemFont(ofSize: 13, weight: .medium)
-        let details = SettingsText.rowSubtitle("\(provider.typeTitle) · \(provider.detail)")
-        details.lineBreakMode = .byTruncatingMiddle
-        var usageParts: [String] = []
-        if provider.id == dictationProviderID { usageParts.append("диктовка") }
-        if provider.id == improveProviderID { usageParts.append("улучшение") }
-        let usage = SettingsText.rowSubtitle(usageParts.isEmpty
-                                             ? "Не используется"
-                                             : "Используется: " + usageParts.joined(separator: ", "))
-        usage.textColor = usageParts.isEmpty ? .secondaryLabelColor : .systemGreen
-        usage.font = .systemFont(ofSize: 11)
+    @objc private func markProvider(_ sender: NSButton) {
+        guard let id = providerID(from: sender), !providerIsProtected(id),
+              providers.contains(where: { $0.id == id }) else { return }
+        if sender.state == .on { markedProviders.insert(id) } else { markedProviders.remove(id) }
+        updateProviderCount()
+    }
 
-        info.addArrangedSubview(name)
-        info.addArrangedSubview(details)
-        info.addArrangedSubview(usage)
-
-        let menuButton = NSButton()
-        menuButton.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Действия с провайдером")
-        menuButton.isBordered = false
-        menuButton.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
-        menuButton.target = self
-        menuButton.action = #selector(providerMenu(_:))
-        menuButton.toolTip = "Изменить или удалить провайдера"
-        menuButton.setAccessibilityLabel("Действия с провайдером \(provider.displayTitle)")
-
-        row.addArrangedSubview(icon)
-        row.addArrangedSubview(info)
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(menuButton)
-        return row
+    private func updateProviderCount() {
+        providersGrid?.showCount(providers.count, selected: markedProviders.count)
+        removeProvidersButton.isEnabled = !markedProviders.isEmpty
     }
 
     @objc private func providerMenu(_ sender: NSButton) {
@@ -778,33 +879,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let edit = NSMenuItem(title: "Изменить…", action: #selector(editProviderMenu(_:)), keyEquivalent: "")
         edit.target = self
         edit.representedObject = id
-        let delete = NSMenuItem(title: "Удалить…", action: #selector(deleteProviderMenu(_:)), keyEquivalent: "")
-        delete.target = self
-        delete.representedObject = id
         menu.addItem(edit)
-        menu.addItem(.separator())
-        menu.addItem(delete)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
     @objc private func editProviderMenu(_ item: NSMenuItem) {
-        guard let id = item.representedObject as? UUID,
-              let provider = providers.first(where: { $0.id == id }) else { return }
-        showProviderEditor(provider, apiKey: providerKeys[id] ?? "")
+        guard let id = item.representedObject as? UUID else { return }
+        editProvider(id: id)
     }
 
     private func refreshProvidersList() {
-        guard let providersStack else { return }
-        providersStack.removeAllRows()
-        providersEmptyLabel?.isHidden = !providers.isEmpty
-
-        if providers.isEmpty {
-            providersStack.addRow(SettingsContentRow(providersEmptyLabel, verticalInset: 12))
-            return
-        }
-        for provider in providers {
-            providersStack.addRow(providerRow(provider))
-        }
+        guard let providersGrid else { return }
+        markedProviders.formIntersection(providers.filter { !providerIsProtected($0.id) }.map(\.id))
+        providersGrid.showRows(providers.map(providerCells))
+        updateProviderCount()
     }
 
     private func refreshProviderMenus() {
@@ -870,31 +958,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         showProviderEditor(provider, apiKey: providerKeys[id] ?? "")
     }
 
-    @objc private func deleteProviderMenu(_ item: NSMenuItem) {
-        guard let id = item.representedObject as? UUID else { return }
-        deleteProvider(id: id)
-    }
-
-    private func deleteProvider(id: UUID) {
-        guard let provider = providers.first(where: { $0.id == id }) else { return }
-        if id == dictationProviderID || id == improveProviderID {
-            let alert = NSAlert()
-            alert.messageText = "Провайдер используется"
-            alert.informativeText = "Сначала выберите другого провайдера в «Постобработке»."
-            alert.runModal()
-            return
-        }
+    @objc private func deleteMarkedProviders() {
+        let ids = markedProviders.filter { !providerIsProtected($0) }
+        guard !ids.isEmpty else { return }
         let confirm = NSAlert()
-        confirm.messageText = "Удалить провайдера «\(provider.displayTitle)»?"
-        confirm.informativeText = "Профиль и его API-ключ будут удалены после сохранения настроек."
+        confirm.messageText = "Удалить выбранные профили?"
+        confirm.informativeText = "Выбрано: \(ids.count). Профили и их API-ключи будут удалены после сохранения настроек."
         confirm.addButton(withTitle: "Удалить")
         confirm.addButton(withTitle: "Отмена")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        providers.removeAll { $0.id == id }
-        providerKeys.removeValue(forKey: id)
+        let removable = ids.filter { !providerIsProtected($0) }
+        providers.removeAll { removable.contains($0.id) }
+        for id in removable { providerKeys.removeValue(forKey: id) }
+        markedProviders.removeAll()
         refreshProvidersList()
         refreshProviderMenus()
+        updateDirtyState()
     }
 
     private func providerID(from sender: NSButton) -> UUID? {
@@ -1040,43 +1120,20 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         storageCard.addRow(SettingsRow(title: "Удалять старше",
                                        trailing: [historyDaysField, historyDaysStepper, daysSuffix]))
 
-        historyTable = NSTableView()
-        historyTable.rowHeight = 28
-        historyTable.style = .inset
-        historyTable.usesAlternatingRowBackgroundColors = false
-        historyTable.backgroundColor = .clear
+        let searchSpacer = NSView()
+        searchSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let searchRow = NSStackView(views: [historySearch, refresh, searchSpacer])
+        searchRow.alignment = .centerY
+        searchRow.spacing = 8
+        historyGrid = SettingsDataTable("Записи истории", columns: [
+            .init(id: "date", title: "Когда", width: 135, fixed: true),
+            .init(id: "text", title: "Текст", width: 483)
+        ], header: searchRow, actions: [clearHistoryButton], empty: "История пуста")
+        historyTable = historyGrid.table
         historyTable.dataSource = self
         historyTable.delegate = self
         historyTable.target = self
         historyTable.doubleAction = #selector(copySelectedHistory)
-        historyTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        let dateColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("date"))
-        dateColumn.title = "Когда"
-        dateColumn.width = 120
-        let textColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("text"))
-        textColumn.title = "Текст"
-        textColumn.width = 500
-        historyTable.addTableColumn(dateColumn)
-        historyTable.addTableColumn(textColumn)
-        historyTable.headerView = NSTableHeaderView()
-
-        let tableScroll = NSScrollView()
-        tableScroll.hasVerticalScroller = true
-        tableScroll.autohidesScrollers = true
-        tableScroll.borderType = .noBorder
-        tableScroll.drawsBackground = false
-        tableScroll.documentView = historyTable
-        tableScroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
-
-        let searchRow = NSStackView(views: [historySearch, refresh, NSView()])
-        searchRow.orientation = .horizontal
-        searchRow.alignment = .centerY
-        searchRow.spacing = 8
-        searchRow.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let recordsCard = SettingsCard()
-        recordsCard.addRow(SettingsContentRow(searchRow, verticalInset: 10))
-        recordsCard.addRow(SettingsContentRow(tableScroll, verticalInset: 0, horizontalInset: 0))
 
         historyStatusLabel = SettingsText.rowSubtitle("", width: 160)
         let copy = SettingsText.linkButton("Копировать", target: self, action: #selector(copySelectedHistory))
@@ -1101,16 +1158,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         detailCard.addRow(SettingsContentRow(detailHeader, verticalInset: 10))
         detailCard.addRow(SettingsContentRow(detailScroll, verticalInset: 0))
 
-        let clear = SettingsText.destructiveButton("Очистить историю…", target: self, action: #selector(clearHistory))
-        let clearRow = NSStackView(views: [clear, NSView()])
-        clearRow.orientation = .horizontal
-        clearRow.spacing = 8
-        clearRow.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
         root.addArrangedFullWidth(SettingsSection(title: "Хранение", card: storageCard))
-        root.addArrangedFullWidth(SettingsSection(title: "Записи", card: recordsCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Записи", card: historyGrid))
         root.addArrangedFullWidth(SettingsSection(title: "Выбранная запись", card: detailCard))
-        root.addArrangedFullWidth(clearRow)
         return root
     }
 
@@ -1119,6 +1169,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         HistoryStore.shared.load()
         let query = historySearch?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let all = HistoryStore.shared.entries
+        historyRecordCount = all.count
         if query.isEmpty {
             filteredHistory = all
         } else {
@@ -1128,7 +1179,10 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             }
         }
         historyTable.reloadData()
-        historyStatusLabel?.stringValue = "Записей: \(filteredHistory.count)"
+        historyGrid.showCount(historyRecordCount, visible: filteredHistory.count,
+                              empty: all.isEmpty ? "История пуста" : "Совпадений не найдено")
+        clearHistoryButton.isEnabled = !all.isEmpty
+        historyStatusLabel?.stringValue = ""
         if filteredHistory.isEmpty {
             historyTable.deselectAll(nil)
             historyDetail?.string = "Выберите запись в списке."
@@ -1171,7 +1225,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         historyStatusLabel?.stringValue = "Скопировано"
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self, self.historyStatusLabel.stringValue == "Скопировано" else { return }
-            self.historyStatusLabel.stringValue = "Записей: \(self.filteredHistory.count)"
+            self.historyStatusLabel.stringValue = ""
         }
     }
 
@@ -1193,7 +1247,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         guard !HistoryStore.shared.entries.isEmpty else { return }
         let alert = NSAlert()
         alert.messageText = "Очистить историю?"
-        alert.informativeText = "Все сохранённые распознавания будут удалены."
+        alert.informativeText = "Все сохранённые распознавания, включая записи вне текущего поиска, будут удалены."
         alert.addButton(withTitle: "Очистить")
         alert.addButton(withTitle: "Отмена")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -1232,9 +1286,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         downloadBars.removeAll()
         downloadPercents.removeAll()
         downloadSpeedLabels.removeAll()
-        downloadSpeeds.removeAll()
         fluidStatuses.removeAll()
-        modelsDiskLabel = nil
+        fluidBars.removeAll()
 
         technologyPopup.selectItem(at: RecognitionTechnology.allCases.firstIndex(of: selectedTechnology) ?? 0)
 
@@ -1263,48 +1316,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             addSectionFootnote(SettingsText.footnote(recognitionValidationMessage))
         }
 
-        if selectedTechnology == .fluidAudio {
-            addFluidModels()
-        } else {
-            addWhisperModels(to: modelsStack)
-        }
-
-        if selectedTechnology == .fluidAudio {
-            let backup = SettingsText.secondaryButton("Настроить резервный Whisper…",
-                                                      target: self,
-                                                      action: #selector(openRecognitionBackup))
-            backup.setAccessibilityLabel("Резервное распознавание Whisper")
-            let row = NSStackView(views: [backup, NSView()])
-            row.orientation = .horizontal
-            row.spacing = 8
-            row.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-            addSectionFootnote(row)
-        }
-
-        if let backupModelsStack {
-            for view in backupModelsStack.arrangedSubviews {
-                backupModelsStack.removeArrangedSubview(view)
-                view.removeFromSuperview()
-            }
-            backupModelsStack.spacing = SettingsStyle.sectionSpacing
-            addWhisperModels(to: backupModelsStack)
-        }
-    }
-
-    private func addFluidModels() {
-        let card = SettingsCard()
-        for model in FluidModel.allCases {
-            card.addRow(SettingsContentRow(fluidModelRow(model), verticalInset: 9))
-        }
-        addSection(SettingsSection(title: "Модель", card: card))
-
-        if !FluidModelStore.installed(selectedFluidModel) {
-            addSectionFootnote(SettingsText.footnote("Выбрана \(selectedFluidModel.title). Для диктовки сначала скачайте модель.",
-                                                     warning: true))
-        }
-        if selectedFluidModel.usesWindowedRecognition {
-            addSectionFootnote(SettingsText.footnote("Технический словарь для этой модели учитывается при AI-правке текста."))
-        }
+        addModelTables()
     }
 
     private func addSection(_ view: NSView) {
@@ -1322,365 +1334,211 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         wrapper.widthAnchor.constraint(equalTo: modelsStack.widthAnchor).isActive = true
     }
 
-    private func addWhisperModels(to stack: NSStackView) {
-        let widthInset = stack.edgeInsets.left + stack.edgeInsets.right
-        func appendFullWidth(_ view: NSView) {
-            stack.addArrangedSubview(view)
-            view.translatesAutoresizingMaskIntoConstraints = false
-            view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -widthInset).isActive = true
+    private func addModelTables() {
+        let whisper = selectedTechnology == .whisper
+        let found = whisper ? knownWhisperModels() : []
+        let installed = whisper ? [] : FluidModel.allCases.filter { FluidModelStore.installed($0) }
+        var actions = [SettingsText.secondaryButton("Открыть папку моделей", target: self, action: #selector(openModelsFolder))]
+        if whisper {
+            actions.append(SettingsDataTable.iconButton("plus", "Добавить внешний файл…", target: self, action: #selector(addModelFile)))
         }
-        let active = WhisperModelStore.file(at: selectedModelPath)
-        var found = WhisperModelStore.foundModels(extraDirectories: modelDirs,
-                                                  excluding: hiddenModelPaths)
-        if let active, !found.contains(where: { $0.path == active.path }) {
-            found.insert(active, at: 0)
+        let local = SettingsDataTable("Найдены на компьютере", columns: [
+            .init(id: "active", title: "", width: 34, fixed: true),
+            .init(id: "model", title: "Модель", width: 300),
+            .init(id: "size", title: "Размер", width: 92, fixed: true),
+            .init(id: "actions", title: "Действия", width: 222, fixed: true)
+        ], rowHeight: 44, height: 157, actions: actions, empty: "Модели не найдены")
+        local.showRows(whisper ? found.map(whisperModelCells) : installed.map(fluidModelCells))
+        addSection(SettingsSection(title: "Найдены на компьютере", card: local))
+        if whisper, !selectedModelPath.isEmpty, WhisperModelStore.file(at: selectedModelPath) == nil {
+            addSectionFootnote(SettingsText.footnote("Выбранная модель недоступна. Выберите другую.", warning: true))
+        } else if !whisper, !FluidModelStore.installed(selectedFluidModel) {
+            addSectionFootnote(SettingsText.footnote("Для диктовки скачайте \(selectedFluidModel.title) или выберите установленную модель.", warning: true))
         }
 
-        let banner = SettingsText.footnote("")
-        if selectedModelPath.isEmpty {
-            banner.stringValue = "Модель не выбрана. Скачайте модель или добавьте уже скачанную."
-            banner.textColor = .systemOrange
-        } else if let active {
-            banner.stringValue = "\(selectedTechnology == .fluidAudio ? "Резервная модель" : "Выбрана"): \(active.fileName) · \(active.sizeText)"
+        let catalog = SettingsDataTable("Скачивание", columns: [
+            .init(id: "model", title: "Модель", width: 340),
+            .init(id: "size", title: "Размер", width: 92, fixed: true),
+            .init(id: "status", title: "Состояние", width: 181, fixed: true),
+            .init(id: "actions", title: "Действия", width: 76, fixed: true)
+        ], rowHeight: 52, height: 182, empty: "Все совместимые модели скачаны")
+        if whisper {
+            let names = Set(found.map(\.fileName))
+            let missing = WhisperModelCatalog.models.filter { downloads[$0.id] != nil || !names.contains($0.fileName) }
+                .sorted { $0.recommended != $1.recommended ? $0.recommended : $0.sizeBytes < $1.sizeBytes }
+            catalog.showRows(missing.map(whisperDownloadCells))
         } else {
-            banner.stringValue = "Выбранная модель недоступна: \(selectedModelPath)"
-            banner.textColor = .systemOrange
+            catalog.showRows(FluidModel.allCases.filter { !installed.contains($0) }.map(fluidDownloadCells))
         }
-
-        let refresh = SettingsText.linkButton("Обновить", target: self, action: #selector(refreshModelsList))
-        let modelCard = SettingsCard()
-        modelCard.addRow(SettingsContentRow(banner, verticalInset: 10))
-        modelCard.addRow(SettingsRow(title: "Найдены на компьютере",
-                                     subtitle: found.isEmpty ? "Модели ggml-*.bin не найдены." : "Выберите модель для диктовки.",
-                                     trailing: [refresh]))
-        for model in found {
-            modelCard.addRow(SettingsContentRow(modelRow(model), verticalInset: 7))
+        addSection(SettingsSection(title: "Скачивание", card: catalog))
+        addSectionFootnote(SettingsText.footnote("Модели скачиваются в хранилище Runvoice."))
+        if !whisper, selectedFluidModel.usesWindowedRecognition {
+            addSectionFootnote(SettingsText.footnote("Технический словарь для этой модели учитывается при AI-правке текста."))
         }
-
-        let buttons = NSStackView()
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        buttons.addArrangedSubview(SettingsText.secondaryButton("Добавить файл…", target: self, action: #selector(addModelFile)))
-        buttons.addArrangedSubview(SettingsText.secondaryButton("Добавить папку…", target: self, action: #selector(addModelFolder)))
-        buttons.addArrangedSubview(SettingsText.secondaryButton("Открыть папку моделей", target: self, action: #selector(openModelsFolder)))
-        modelCard.addRow(SettingsContentRow(buttons, verticalInset: 10))
-
-        appendFullWidth(SettingsSection(title: "Модель", card: modelCard))
-
-        if !hiddenModelPaths.isEmpty || !modelDirs.isEmpty {
-            let extras = SettingsCard()
-            if !hiddenModelPaths.isEmpty {
-                for path in hiddenModelPaths {
-                    extras.addRow(SettingsContentRow(hiddenModelRow(path), verticalInset: 7))
-                }
-            }
-            if !modelDirs.isEmpty {
-                for dir in modelDirs {
-                    extras.addRow(SettingsContentRow(folderRow(dir), verticalInset: 7))
-                }
-            }
-            appendFullWidth(SettingsDisclosure(title: "Папки и скрытые модели", content: [extras]))
-        }
-
-        let hiddenNames = Set(hiddenModelPaths.map { URL(fileURLWithPath: $0).lastPathComponent })
-        let missing = WhisperModelCatalog.models
-            .filter { model in
-                !hiddenNames.contains(model.fileName)
-                    && !found.contains(where: { $0.fileName == model.fileName })
-            }
-            .sorted { a, b in
-                if a.recommended != b.recommended { return a.recommended }
-                return a.sizeBytes < b.sizeBytes
-            }
-        if !missing.isEmpty {
-            let downloadCard = SettingsCard()
-            for model in missing {
-                downloadCard.addRow(SettingsContentRow(downloadRow(model), verticalInset: 12))
-            }
-            appendFullWidth(SettingsSection(title: "Скачивание (\(missing.count))",
-                                            note: "Сначала скачайте модель, затем выберите её выше. Q5/Q8 уменьшают размер; точность сравнивайте на своей речи.",
-                                            card: downloadCard))
-        }
-
-        modelsDiskLabel = SettingsText.footnote("")
-        updateDiskLabel()
-        let storageCard = SettingsCard()
-        storageCard.addRow(SettingsRow(title: "Хранилище", subtitleView: modelsDiskLabel))
-        appendFullWidth(SettingsSection(title: "Хранилище", card: storageCard))
     }
 
-    private func modelNote(_ text: String, warning: Bool = false) -> NSTextField {
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = warning ? .systemOrange : .secondaryLabelColor
-        return label
+    private func knownWhisperModels() -> [WhisperModelFile] {
+        var files = WhisperModelStore.foundModels(extraDirectories: modelDirs,
+                                                externalPaths: externalModelPaths, excluding: hiddenModelPaths)
+        if let active = WhisperModelStore.file(at: selectedModelPath), !hiddenModelPaths.contains(active.path),
+           !files.contains(where: { $0.path == active.path }) {
+            files.insert(active, at: 0)
+        }
+        return files
     }
 
-    private func fluidModelRow(_ model: FluidModel) -> NSView {
-        let radio = NSButton(radioButtonWithTitle: model.title, target: self, action: #selector(selectFluidModel(_:)))
-        radio.identifier = NSUserInterfaceItemIdentifier(model.rawValue)
-        radio.state = selectedFluidModel == model ? .on : .off
-        radio.isEnabled = FluidModelStore.supported && FluidModelStore.installed(model)
-        radio.toolTip = radio.isEnabled ? nil : "Сначала скачайте и проверьте модель"
-        radio.font = .systemFont(ofSize: 13, weight: .semibold)
-        let detail = NSTextField(wrappingLabelWithString: model.detail)
-        detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .secondaryLabelColor
-        let busy = downloadingFluidModel == model
-        let status = NSTextField(wrappingLabelWithString: busy
-            ? "Загрузка: \(Int(fluidDownloadProgress * 100))% · затем проверка Core ML"
-            : fluidErrors[model] ?? (FluidModelStore.installed(model) ? "Скачана · готова к использованию" : "Не скачана"))
-        status.font = .systemFont(ofSize: 11)
-        status.textColor = fluidErrors[model] == nil ? .secondaryLabelColor : .systemOrange
-        fluidStatuses[model] = status
-        let text = NSStackView(views: [radio, detail, status])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 4
-        let action = NSButton(title: busy ? "Отменить загрузку" : FluidModelStore.installed(model) ? "Проверить" : "Скачать",
-                              target: self, action: #selector(downloadFluidModel(_:)))
-        action.identifier = NSUserInterfaceItemIdentifier(model.rawValue)
-        action.isEnabled = FluidModelStore.supported && (fluidDownload == nil || busy)
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [text, spacer, action])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 12
-        row.edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
-        return row
+    private func modelText(_ name: String, _ detail: String, isPath: Bool = false,
+                           status: NSTextField? = nil) -> NSView {
+        let subtitle = status ?? SettingsDataTable.label(detail, secondary: true)
+        if isPath { subtitle.lineBreakMode = .byTruncatingMiddle }
+        let labels = NSStackView(views: [SettingsDataTable.label(name), subtitle])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+        return SettingsDataTable.padded(labels)
     }
 
-    private func displayTitle(for model: WhisperModelFile) -> String {
+    private func modelControl(_ symbol: String, _ title: String, _ id: String, _ action: Selector) -> NSButton {
+        let button = SettingsDataTable.iconButton(symbol, title, target: self, action: action)
+        button.identifier = NSUserInterfaceItemIdentifier(id)
+        return button
+    }
+
+    private func modelChoice(_ title: String, id: String, selected: Bool, action: Selector) -> NSButton {
+        let radio = NSButton(radioButtonWithTitle: "", target: self, action: action)
+        radio.setAccessibilityLabel("Использовать \(title)")
+        radio.identifier = NSUserInterfaceItemIdentifier(id)
+        radio.state = selected ? .on : .off
+        return radio
+    }
+
+    private func installedActions(path: String, id: String, fluid: Bool) -> NSView {
+        let finder = SettingsText.secondaryButton("Показать в Finder", target: self, action: #selector(revealModel(_:)))
+        finder.identifier = NSUserInterfaceItemIdentifier(path)
+        finder.controlSize = .small
+        let verify: NSView
+        if fluid {
+            let busy = downloadingFluidModel?.rawValue == id
+            let button = modelControl(busy ? "xmark.circle" : "checkmark.circle",
+                                      busy ? "Отменить проверку" : "Проверить", id, #selector(downloadFluidModel(_:)))
+            button.isEnabled = busy || fluidDownload == nil
+            verify = button
+        } else {
+            verify = NSView()
+            verify.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        }
+        let delete = modelControl("trash", "Удалить модель…", id,
+                                  fluid ? #selector(deleteFluidModel(_:)) : #selector(deleteModel(_:)))
+        delete.contentTintColor = .systemRed
+        delete.isEnabled = !fluid || downloadingFluidModel?.rawValue != id
+        let actions = NSStackView(views: [finder, verify, delete])
+        actions.alignment = .centerY
+        actions.spacing = 5
+        return SettingsDataTable.padded(actions, centered: true)
+    }
+
+    private func whisperModelCells(_ model: WhisperModelFile) -> [NSView] {
         let title = model.catalogModel?.title ?? model.fileName
-        return model.catalogModel?.experimental == true ? title + " · экспериментальная" : title
+        let name = model.catalogModel?.experimental == true ? title + " · экспериментальная" : title
+        let radio = modelChoice(name, id: model.path, selected: model.path == selectedModelPath, action: #selector(selectModel(_:)))
+        return [
+            SettingsDataTable.padded(radio, centered: true),
+            modelText(name, model.isManaged ? "Хранилище Runvoice" : "Внешний файл · " + model.directory, isPath: true),
+            SettingsDataTable.padded(SettingsDataTable.label(model.sizeText, alignment: .right)),
+            installedActions(path: model.path, id: model.path, fluid: false)
+        ]
     }
 
-    private func hiddenModelRow(_ path: String) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-
-        let file = WhisperModelStore.file(at: path)
-        let title = NSTextField(labelWithString: file?.fileName ?? path)
-        title.font = .systemFont(ofSize: 12)
-        title.lineBreakMode = .byTruncatingMiddle
-        let subtitle = NSTextField(labelWithString: file.map { "\($0.sizeText) · скрыта" } ?? "файл не найден")
-        subtitle.font = .systemFont(ofSize: 10)
-        subtitle.textColor = .secondaryLabelColor
-        let text = NSStackView(views: [title, subtitle])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let restore = NSButton(title: "Вернуть", target: self, action: #selector(unhideModel(_:)))
-        restore.bezelStyle = .inline
-        restore.identifier = NSUserInterfaceItemIdentifier(path)
-
-        row.addArrangedSubview(text)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(restore)
-        return row
+    private func fluidModelCells(_ model: FluidModel) -> [NSView] {
+        let radio = modelChoice(model.title, id: model.rawValue, selected: selectedFluidModel == model, action: #selector(selectFluidModel(_:)))
+        let busy = downloadingFluidModel == model
+        let status = SettingsDataTable.label(busy ? "Проверка: \(Int(fluidDownloadProgress * 100))%" : fluidErrors[model] ?? model.detail,
+                                             secondary: true)
+        if fluidErrors[model] != nil { status.textColor = .systemOrange }
+        if busy { fluidStatuses[model] = status }
+        return [
+            SettingsDataTable.padded(radio, centered: true),
+            modelText(model.title, model.detail, status: status),
+            SettingsDataTable.padded(SettingsDataTable.label(model.estimatedSize, alignment: .right)),
+            installedActions(path: FluidModelStore.directory(for: model).path, id: model.rawValue, fluid: true)
+        ]
     }
 
-    private func folderRow(_ dir: String) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-
-        let label = NSTextField(labelWithString: dir)
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = .secondaryLabelColor
-        label.lineBreakMode = .byTruncatingMiddle
-        label.toolTip = "Файлы в этой папке не удаляются"
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let remove = NSButton(title: "Убрать", target: self, action: #selector(removeFolder(_:)))
-        remove.bezelStyle = .inline
-        remove.identifier = NSUserInterfaceItemIdentifier(dir)
-        remove.toolTip = "Убрать папку из списка; файлы останутся на диске"
-
-        row.addArrangedSubview(label)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(remove)
-        return row
-    }
-
-    @objc private func refreshModelsList() {
-        refreshModels()
-        refreshDiagnostics(force: true)
-    }
-
-    @objc private func openModelsFolder() {
-        NSWorkspace.shared.open(WhisperModelStore.modelsDirectory)
-    }
-
-    @objc private func unhideModel(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue else { return }
-        hiddenModelPaths.removeAll { $0 == path }
-        refreshModels()
-    }
-
-    @objc private func removeFolder(_ sender: NSButton) {
-        guard let dir = sender.identifier?.rawValue else { return }
-        modelDirs.removeAll { $0 == dir }
-        refreshModels()
-    }
-
-    private func modelRow(_ model: WhisperModelFile) -> NSView {
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 10
-
-        let radio = NSButton(radioButtonWithTitle: "", target: self, action: #selector(selectModel(_:)))
-        radio.identifier = NSUserInterfaceItemIdentifier(model.path)
-        radio.state = (model.path == selectedModelPath) ? .on : .off
-        radio.setContentHuggingPriority(.required, for: .horizontal)
-
-        let title = NSButton(title: displayTitle(for: model),
-                             target: self, action: #selector(selectModel(_:)))
-        title.isBordered = false
-        title.alignment = .left
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.identifier = NSUserInterfaceItemIdentifier(model.path)
-
-        let subtitle = NSTextField(labelWithString: "\(model.sizeText) · \(model.directory)")
-        subtitle.font = .systemFont(ofSize: 10)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.lineBreakMode = .byTruncatingMiddle
-
-        let text = NSStackView(views: [title, subtitle])
-        text.orientation = .vertical
-        text.alignment = .leading
-        text.spacing = 2
-        text.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-
-        let reveal = NSButton(title: "Показать в Finder", target: self, action: #selector(revealModel(_:)))
-        reveal.bezelStyle = .inline
-        reveal.identifier = NSUserInterfaceItemIdentifier(model.path)
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        row.addArrangedSubview(radio)
-        row.addArrangedSubview(text)
-        row.addArrangedSubview(spacer)
-        row.addArrangedSubview(reveal)
-
-        if model.isManaged {
-            let delete = NSButton(title: "Удалить", target: self, action: #selector(deleteModel(_:)))
-            delete.bezelStyle = .inline
-            delete.identifier = NSUserInterfaceItemIdentifier(model.path)
-            row.addArrangedSubview(delete)
-        } else {
-            let hide = NSButton(title: "Скрыть", target: self, action: #selector(hideModel(_:)))
-            hide.bezelStyle = .inline
-            hide.identifier = NSUserInterfaceItemIdentifier(model.path)
-            hide.toolTip = "Убрать модель из списка; файл на диске останется"
-            row.addArrangedSubview(hide)
-        }
-        return row
-    }
-
-    private func downloadRow(_ model: WhisperModel) -> NSView {
-        let container = NSStackView()
-        container.orientation = .vertical
-        container.alignment = .leading
-        container.spacing = 4
-
-        let header = NSStackView()
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.spacing = 10
-
-        let title = NSTextField(labelWithString: model.title)
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let subtitle = NSTextField(labelWithString: model.sizeText)
-        subtitle.font = .systemFont(ofSize: 10)
-        subtitle.textColor = .secondaryLabelColor
-
-        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
-        let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
-        let notEnoughSpace = free < model.sizeBytes + 200 * 1024 * 1024
-
-        let recommended = NSTextField(labelWithString: "Рекомендуется")
-        recommended.font = .systemFont(ofSize: 10, weight: .medium)
-        recommended.textColor = .systemGreen
-        recommended.stringValue = model.experimental ? "Экспериментальная" : "Рекомендуется"
-        recommended.isHidden = !model.recommended && !model.experimental
-        recommended.textColor = model.experimental ? .secondaryLabelColor : .systemGreen
-
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let percent = NSTextField(labelWithString: "")
-        percent.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        percent.textColor = .secondaryLabelColor
-        percent.isHidden = downloads[model.id] == nil
-        if let value = downloadProgress[model.id] {
-            percent.stringValue = "\(Int(value * 100))%"
-        }
-
-        let button = NSButton(title: downloads[model.id] == nil ? "Скачать" : "Отмена",
-                              target: self, action: #selector(downloadModel(_:)))
-        button.bezelStyle = .rounded
-        button.identifier = NSUserInterfaceItemIdentifier(model.id)
-        button.isEnabled = downloads[model.id] != nil || !notEnoughSpace
-        button.toolTip = notEnoughSpace ? "Недостаточно свободного места" : nil
-
-        header.addArrangedSubview(title)
-        header.addArrangedSubview(subtitle)
-        header.addArrangedSubview(recommended)
-        header.addArrangedSubview(spacer)
-        header.addArrangedSubview(percent)
-        header.addArrangedSubview(button)
-
-        let note = NSTextField(wrappingLabelWithString: model.note)
-        note.font = .systemFont(ofSize: 10)
-        note.textColor = notEnoughSpace ? .systemOrange : .secondaryLabelColor
-        if notEnoughSpace {
-            note.stringValue += " Недостаточно свободного места: нужно \(model.sizeText) плюс запас 200 МБ."
-        }
-
-        let speedLabel = NSTextField(labelWithString: "")
-        speedLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
-        speedLabel.textColor = .secondaryLabelColor
-        speedLabel.isHidden = downloads[model.id] == nil
-        if let speed = downloadSpeeds[model.id], let progress = downloadProgress[model.id] {
-            speedLabel.stringValue = speedText(speed, model: model, progress: progress)
-        }
-
+    private func progressBar(_ fraction: Double) -> NSProgressIndicator {
         let bar = NSProgressIndicator()
         bar.style = .bar
         bar.isIndeterminate = false
         bar.minValue = 0
         bar.maxValue = 1
-        bar.doubleValue = downloadProgress[model.id] ?? 0
-        bar.isHidden = downloads[model.id] == nil
+        bar.doubleValue = fraction
         bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        return bar
+    }
 
-        container.addArrangedSubview(header)
-        container.addArrangedSubview(note)
-        container.addArrangedSubview(speedLabel)
-        container.addArrangedSubview(bar)
+    private func modelStatus(_ text: String, warning: Bool = false, waiting: Bool = false,
+                             fraction: Double = 0, speed: String? = nil)
+        -> (cell: NSView, label: NSTextField, bar: NSProgressIndicator, speed: NSTextField) {
+        let label = SettingsDataTable.label(text, secondary: true)
+        if warning { label.textColor = .systemOrange }
+        let bar = progressBar(fraction)
+        let rate = SettingsDataTable.label(speed ?? "", secondary: true)
+        let views: [NSView] = waiting ? [label, bar] + (speed == nil ? [] : [rate]) : [label]
+        let stack = NSStackView(views: views)
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 2
+        if waiting { bar.widthAnchor.constraint(equalToConstant: 106).isActive = true }
+        return (SettingsDataTable.padded(stack), label, bar, rate)
+    }
 
-        header.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
-        note.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
-        speedLabel.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
-        bar.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
+    private func downloadControl(_ id: String, busy: Bool, retry: Bool, action: Selector) -> NSButton {
+        let title = busy ? "Отменить загрузку" : retry ? "Повторить загрузку" : "Скачать"
+        let symbol = busy ? "xmark.circle" : retry ? "arrow.clockwise" : "arrow.down.to.line"
+        return modelControl(symbol, title, id, action)
+    }
 
-        downloadBars[model.id] = bar
-        downloadPercents[model.id] = percent
-        downloadSpeedLabels[model.id] = speedLabel
-        return container
+    private func whisperDownloadCells(_ model: WhisperModel) -> [NSView] {
+        let id = model.id
+        let busy = downloads[id] != nil
+        let fraction = downloadProgress[id] ?? 0
+        let free = ((try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()))?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        let noSpace = free < model.sizeBytes + 200 * 1024 * 1024
+        let error = downloadErrors[id]
+        let status = modelStatus(busy ? "Загрузка: \(Int(fraction * 100))%" :
+            noSpace ? "Недостаточно места" : error ?? "Не скачана",
+            warning: !busy && (error != nil || noSpace), waiting: busy, fraction: fraction,
+            speed: busy ? speedText(downloadSpeeds[id] ?? 0, model: model, progress: fraction) : nil)
+        if busy {
+            downloadBars[id] = status.bar
+            downloadPercents[id] = status.label
+            downloadSpeedLabels[id] = status.speed
+        }
+        let button = downloadControl(id, busy: busy, retry: error != nil, action: #selector(downloadModel(_:)))
+        button.isEnabled = busy || !noSpace
+        if noSpace && !busy { button.toolTip = "Для загрузки нужно \(model.sizeText) плюс запас 200 МБ." }
+        let title = model.experimental ? model.title + " · экспериментальная" : model.title
+        return [modelText(title, model.note), SettingsDataTable.padded(SettingsDataTable.label(model.sizeText, alignment: .right)),
+                status.cell, SettingsDataTable.padded(button, centered: true)]
+    }
+
+    private func fluidDownloadCells(_ model: FluidModel) -> [NSView] {
+        let busy = downloadingFluidModel == model
+        let error = fluidErrors[model]
+        let status = modelStatus(busy ? "Загрузка: \(Int(fluidDownloadProgress * 100))%" : error ?? "Не скачана",
+                                 warning: error != nil, waiting: busy, fraction: fluidDownloadProgress)
+        if busy {
+            fluidStatuses[model] = status.label
+            fluidBars[model] = status.bar
+        }
+        let button = downloadControl(model.rawValue, busy: busy, retry: error != nil, action: #selector(downloadFluidModel(_:)))
+        button.isEnabled = fluidDownload == nil || busy
+        return [modelText(model.title, model.detail),
+                SettingsDataTable.padded(SettingsDataTable.label(model.estimatedSize, alignment: .right)),
+                status.cell, SettingsDataTable.padded(button, centered: true)]
+    }
+
+    @objc private func openModelsFolder() {
+        NSWorkspace.shared.open(WhisperModelStore.modelsDirectory)
     }
 
     private func speedText(_ speed: Double, model: WhisperModel, progress: Double) -> String {
@@ -1699,7 +1557,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     @objc private func downloadModel(_ sender: NSButton) {
         guard !UpdateCoordinator.shared.isInstalling else { return }
-        guard selectedTechnology == .whisper || backupPanel != nil,
+        guard selectedTechnology == .whisper,
               let id = sender.identifier?.rawValue,
               let model = WhisperModelCatalog.models.first(where: { $0.id == id }) else { return }
 
@@ -1723,20 +1581,21 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let downloader = ModelDownloader(model: model)
         downloads[id] = downloader
+        downloadErrors[id] = nil
         downloadProgress[id] = 0
 
-        downloader.onProgress = { [weak self] value, speed in
-            guard let self else { return }
+        downloader.onProgress = { [weak self, weak downloader] value, speed in
+            guard let self, let downloader, self.downloads[id] === downloader else { return }
             self.downloadProgress[id] = value
             self.downloadSpeeds[id] = speed
             self.downloadBars[id]?.doubleValue = value
-            self.downloadPercents[id]?.stringValue = "\(Int(value * 100))%"
+            self.downloadPercents[id]?.stringValue = "Загрузка: \(Int(value * 100))%"
             self.downloadPercents[id]?.isHidden = false
             self.downloadSpeedLabels[id]?.stringValue = self.speedText(speed, model: model, progress: value)
             self.downloadSpeedLabels[id]?.isHidden = false
         }
-        downloader.onFinish = { [weak self] result in
-            guard let self else { return }
+        downloader.onFinish = { [weak self, weak downloader] result in
+            guard let self, let downloader, self.downloads[id] === downloader else { return }
             self.downloads[id] = nil
             self.downloadProgress[id] = nil
             self.downloadSpeeds[id] = nil
@@ -1746,6 +1605,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                 self.refreshDiagnostics(force: true)
                 Log.write("model: скачана \(url.lastPathComponent)")
             case .failure(let error):
+                self.downloadErrors[id] = "Не удалось скачать"
                 self.refreshModels()
                 Log.write("model: ошибка загрузки \(model.id): \(error.localizedDescription)")
                 let alert = NSAlert()
@@ -1758,21 +1618,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         refreshModels()
     }
 
-    private func updateDiskLabel() {
-        guard let modelsDiskLabel else { return }
-        let fm = FileManager.default
-        let managed = WhisperModelStore.foundModels()
-            .filter { $0.isManaged }
-            .reduce(Int64(0)) { $0 + $1.sizeBytes }
-        let attrs = try? fm.attributesOfFileSystem(forPath: NSHomeDirectory())
-        let free = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
-        modelsDiskLabel.stringValue =
-            "Скачанные приложением: \(WhisperSize.text(managed))"
-            + " · свободно: \(WhisperSize.text(free))"
-    }
-
     @objc private func selectModel(_ sender: NSButton) {
-        guard selectedTechnology == .whisper || backupPanel != nil,
+        guard selectedTechnology == .whisper,
               let path = sender.identifier?.rawValue,
               WhisperModelStore.file(at: path) != nil else { return }
         selectedModelPath = path
@@ -1785,23 +1632,85 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    @objc private func deleteModel(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue, WhisperModelStore.isManaged(path: path) else { return }
-        let alert = NSAlert()
-        alert.messageText = "Удалить модель?"
-        alert.informativeText = "Файл будет удалён с диска. Это действие нельзя отменить."
-        alert.addButton(withTitle: "Удалить")
-        alert.addButton(withTitle: "Отмена")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        try? FileManager.default.removeItem(atPath: path)
-        if selectedModelPath == path { selectedModelPath = "" }
-        refreshModels()
+    private func modelRemovalAllowed() -> Bool {
+        guard canRemoveModel(), !UpdateCoordinator.shared.isInstalling else {
+            let alert = NSAlert()
+            alert.messageText = "Модель сейчас может использоваться"
+            alert.informativeText = "Дождитесь завершения распознавания или обновления и повторите."
+            alert.runModal()
+            return false
+        }
+        return true
     }
 
-    @objc private func hideModel(_ sender: NSButton) {
-        guard let path = sender.identifier?.rawValue else { return }
-        if !hiddenModelPaths.contains(path) { hiddenModelPaths.append(path) }
+    @objc private func deleteModel(_ sender: NSButton) {
+        guard selectedTechnology == .whisper, let path = sender.identifier?.rawValue,
+              let model = WhisperModelStore.file(at: path), modelRemovalAllowed() else { return }
+        if !model.isManaged {
+            let alert = NSAlert()
+            alert.messageText = "Удалить «\(model.fileName)»?"
+            alert.informativeText = "При удалении из приложения файл останется на диске.\n\n\(model.path)"
+            alert.addButton(withTitle: "Отмена")
+            alert.addButton(withTitle: "Удалить из приложения")
+            alert.addButton(withTitle: "Удалить с диска…")
+            switch alert.runModal() {
+            case .alertSecondButtonReturn:
+                forgetWhisperModel(path, excludeFile: true)
+                return
+            case .alertThirdButtonReturn: break
+            default: return
+            }
+        }
+        let detail = "Файл модели будет удалён с диска. Это действие нельзя отменить.\n\n" + model.path
+        guard confirmDiskRemoval(model.fileName, detail: detail),
+              modelRemovalAllowed() else { return }
+        do {
+            guard WhisperModelStore.file(at: path) != nil else { throw CocoaError(.fileNoSuchFile) }
+            try FileManager.default.removeItem(atPath: path)
+            forgetWhisperModel(path, excludeFile: false)
+            onModelRemoved?()
+        } catch { reportModelRemoval(error) }
+    }
+
+    @objc private func deleteFluidModel(_ sender: NSButton) {
+        guard selectedTechnology == .fluidAudio, let id = sender.identifier?.rawValue,
+              let model = FluidModel(rawValue: id), FluidModelStore.installed(model),
+              downloadingFluidModel != model, modelRemovalAllowed(),
+              confirmDiskRemoval(model.title, detail: "Папка модели будет удалена с диска. Это действие нельзя отменить."),
+              downloadingFluidModel != model, modelRemovalAllowed() else { return }
+        do {
+            try FluidModelStore.removeInstalled(model)
+            fluidErrors[model] = nil
+            refreshModels()
+            refreshAPI()
+            onModelRemoved?()
+        } catch { reportModelRemoval(error) }
+    }
+
+    private func forgetWhisperModel(_ path: String, excludeFile: Bool) {
+        externalModelPaths.removeAll { $0 == path }
+        if excludeFile, !hiddenModelPaths.contains(path) { hiddenModelPaths.append(path) }
         if selectedModelPath == path { selectedModelPath = "" }
+        refreshModels()
+        refreshAPI()
+        updateDirtyState()
+    }
+
+    private func confirmDiskRemoval(_ name: String, detail: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Удалить «\(name)» с диска?"
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Отмена")
+        let remove = alert.addButton(withTitle: "Удалить с диска")
+        remove.hasDestructiveAction = true
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func reportModelRemoval(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Не удалось удалить модель"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
         refreshModels()
     }
 
@@ -1819,20 +1728,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             alert.runModal()
             return
         }
-        let dir = url.deletingLastPathComponent().path
-        if !modelDirs.contains(dir) { modelDirs.append(dir) }
-        hiddenModelPaths.removeAll { $0 == url.standardized.path }
-        selectedModelPath = url.standardized.path
-        refreshModels()
-    }
-
-    @objc private func addModelFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        if !modelDirs.contains(url.path) { modelDirs.append(url.path) }
+        let path = url.standardized.path
+        if !WhisperModelStore.isManaged(path: path), !externalModelPaths.contains(path) { externalModelPaths.append(path) }
+        hiddenModelPaths.removeAll { $0 == path }
+        selectedModelPath = path
+        recognitionValidationMessage = ""
         refreshModels()
     }
 
@@ -2401,7 +2301,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func changeRecognitionTechnology() {
-        guard backupPanel == nil else { return }
         let index = max(0, technologyPopup.indexOfSelectedItem)
         let technology = RecognitionTechnology.allCases[index]
         guard technology.isSupported else { return }
@@ -2417,93 +2316,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         selectedFluidModel = model
         recognitionValidationMessage = ""
         refreshModels()
-    }
-
-    @objc private func openRecognitionBackup() {
-        guard selectedTechnology == .fluidAudio, backupPanel == nil, let window else { return }
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 860, height: 540),
-                            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-        panel.title = "Резервное распознавание Whisper"
-        panel.contentMinSize = NSSize(width: 720, height: 400)
-        panel.isReleasedWhenClosed = false
-        let content = panel.contentView!
-        let note = modelNote("При ошибке FluidAudio полную запись распознает Whisper. Изменения применятся после «Сохранить» в основном окне настроек.")
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.drawsBackground = false
-        let document = FlippedView()
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
-        scroll.documentView = document
-        document.addSubview(stack)
-        let done = NSButton(title: "Готово", target: self, action: #selector(acceptRecognitionBackup))
-        done.bezelStyle = .rounded
-        done.keyEquivalent = "\r"
-        let cancel = NSButton(title: "Отмена", target: self, action: #selector(cancelRecognitionBackup))
-        cancel.bezelStyle = .rounded
-        cancel.keyEquivalent = "\u{1b}"
-        let footer = NSStackView(views: [cancel, done])
-        footer.spacing = 10
-        for view in [note, scroll, footer] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(view)
-        }
-        document.translatesAutoresizingMaskIntoConstraints = false
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            note.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
-            note.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            note.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            scroll.topAnchor.constraint(equalTo: note.bottomAnchor, constant: 10),
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
-            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            stack.topAnchor.constraint(equalTo: document.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor)
-        ])
-        backupDraft = (selectedModelPath, modelDirs, hiddenModelPaths)
-        backupPanel = panel
-        backupModelsStack = stack
-        refreshModels()
-        window.beginSheet(panel) { [weak self] response in
-            guard let self else { return }
-            if response != .OK, let draft = self.backupDraft {
-                self.selectedModelPath = draft.path
-                self.modelDirs = draft.directories
-                self.hiddenModelPaths = draft.hidden
-            }
-            self.backupDraft = nil
-            self.backupModelsStack = nil
-            self.backupPanel = nil
-            self.refreshModels()
-        }
-    }
-
-    /// Только для встроенного рендера снимка, без сохранения настроек.
-    func prepareBackupSnapshot() -> NSView? {
-        openRecognitionBackup()
-        return backupPanel?.contentView
-    }
-
-    @objc private func acceptRecognitionBackup() {
-        guard let backupPanel else { return }
-        window?.endSheet(backupPanel, returnCode: .OK)
-        backupPanel.orderOut(nil)
-    }
-
-    @objc private func cancelRecognitionBackup() {
-        guard let backupPanel else { return }
-        window?.endSheet(backupPanel, returnCode: .cancel)
-        backupPanel.orderOut(nil)
     }
 
     @objc private func downloadFluidModel(_ sender: NSButton) {
@@ -2529,7 +2341,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             switch event["event"] as? String {
             case "progress":
                 self.fluidDownloadProgress = max(0, min(1, event["progress"] as? Double ?? 0))
-                self.fluidStatuses[model]?.stringValue = "Загрузка: \(Int(self.fluidDownloadProgress * 100))% · затем проверка Core ML"
+                let verb = FluidModelStore.installed(model) ? "Проверка" : "Загрузка"
+                self.fluidStatuses[model]?.stringValue = "\(verb): \(Int(self.fluidDownloadProgress * 100))%"
+                self.fluidBars[model]?.doubleValue = self.fluidDownloadProgress
             case "installed":
                 completed = true
                 self.fluidDownload = nil
@@ -2598,6 +2412,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         settings.apiRecognitionModel = selectedAPIModel
         settings.whisperModelPath = selectedModelPath
         settings.whisperModelDirs = modelDirs
+        settings.whisperExternalModelPaths = externalModelPaths
         settings.hiddenModelPaths = hiddenModelPaths
         settings.recognitionTechnology = selectedTechnology
         settings.fluidModel = selectedFluidModel
@@ -2628,6 +2443,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         languagePopup.selectItem(at: languages.firstIndex(of: settings.language) ?? 0)
         reloadMicrophones(selected: settings.microphone, uid: settings.microphoneUID)
 
+        markedProviders.removeAll()
         providers = settings.providers
         dictationProviderID = settings.dictationProviderID
         improveProviderID = settings.improveProviderID
@@ -2665,6 +2481,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         updateAIProviderState()
 
         modelDirs = settings.whisperModelDirs
+        externalModelPaths = settings.whisperExternalModelPaths
         hiddenModelPaths = settings.hiddenModelPaths
         selectedModelPath = settings.whisperModelPath
         if selectedModelPath.isEmpty,
@@ -2742,6 +2559,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             recognitionValidationMessage = ""
             languagePopup.selectItem(at: 0)
             modelDirs = []
+            externalModelPaths = []
             hiddenModelPaths = []
             selectedModelPath = WhisperModelStore.autoSelect(
                 from: WhisperModelStore.foundModels())?.path ?? ""
@@ -2798,7 +2616,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         if settings.recognitionTechnology == .fluidAudio, (changedTechnology || changedFluid),
            !FluidModelStore.installed(settings.fluidModel) {
             recognitionValidationMessage = "Сначала скачайте и проверьте выбранную модель FluidAudio."
-        } else if ((settings.recognitionTechnology == .whisper && changedTechnology) || changedWhisper),
+        } else if ((settings.recognitionTechnology == .whisper && changedTechnology)
+                    || (changedWhisper && !settings.whisperModelPath.isEmpty)),
                   WhisperModelStore.activeModel(settings: settings) == nil {
             recognitionValidationMessage = "Сначала скачайте и выберите доступную модель Whisper."
         } else { recognitionValidationMessage = "" }
@@ -2931,7 +2750,8 @@ extension SettingsWindow: NSTableViewDataSource, NSTableViewDelegate, NSSearchFi
         }
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
-        return label
+        label.toolTip = value
+        return SettingsDataTable.padded(label)
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -2944,7 +2764,8 @@ extension SettingsWindow: NSTableViewDataSource, NSTableViewDelegate, NSSearchFi
     }
 
     func controlTextDidChange(_ obj: Notification) {
-        guard let field = obj.object as? NSTextField, field === historySearch else { return }
-        reloadHistory()
+        guard let field = obj.object as? NSTextField else { return }
+        if field === historySearch { reloadHistory() }
+        if field === apiPortField { refreshAPI() }
     }
 }

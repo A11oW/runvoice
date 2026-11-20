@@ -43,9 +43,8 @@
 | Раздел | Файл |
 |---|---|
 | Основные (микрофон, вставка, запуск, разрешения и диагностика, обновления) | [settings-general.png](settings-general.png) |
-| Распознавание: whisper.cpp, подсказка языка и модели Whisper | [settings-models.png](settings-models.png) |
-| Распознавание: FluidAudio, подсказка выбранной модели и совместимый каталог | [settings-fluid.png](settings-fluid.png) |
-| Отдельное окно резервного распознавания Whisper для FluidAudio | [settings-backup.png](settings-backup.png) |
+| Распознавание: whisper.cpp, таблицы найденных моделей и скачивания | [settings-models.png](settings-models.png) |
+| Распознавание: FluidAudio, те же таблицы для совместимых моделей | [settings-fluid.png](settings-fluid.png) |
 | Словарь (пояснение применения, карточка терминов и добавление списка) | [settings-dictionary.png](settings-dictionary.png) |
 | Провайдеры (список профилей, меню действий, добавление) | [settings-providers.png](settings-providers.png) |
 | Постобработка (выбор провайдеров, промпты) | [settings-ai.png](settings-ai.png) |
@@ -53,7 +52,7 @@
 | Постобработка → промпт саммари аудио | [settings-summary.png](settings-summary.png) |
 | История (хранение, поиск, список и выбранная запись) | [settings-history.png](settings-history.png) |
 | Хоткеи (диктовка, улучшение, Enter, Esc, пауза по Space, конфликты macOS) | [settings-hotkeys.png](settings-hotkeys.png) |
-| API: включение, порт, адрес, выбор скачанной модели, фильтр громкости/VAD, словарь и отдельная AI-правка | [settings-api.png](settings-api.png) |
+| API: копирование адреса и `runvoice-active`, выбор модели, проверка соединения и перезапуск | [settings-api.png](settings-api.png) |
 | Скрытая модалка аудиосэмплов: четыре клика по версии | [settings-samples.png](settings-samples.png) |
 | Сэмпл в процессе записи: индикатор, секунды, стандартный эквалайзер | [settings-sample-recording.png](settings-sample-recording.png) |
 
@@ -153,11 +152,6 @@ env CFFIXED_USER_HOME="$runvoice_snapshot_home" \
 Для проверки переноса добавить `--snapshot-preview-lines 1` либо
 `--snapshot-preview-lines 10`, для записи без текста — `--snapshot-preview-off`.
 Эти флаги не сохраняются в настройках.
-
-Для снимка отдельного резервного окна выбрать FluidAudio в демонстрационных
-настройках и добавить `--snapshot-backup` к `--snapshot`. Дополнительный файл —
-`/tmp/runvoice-settings-backup.png`. Окно содержит только каталог Whisper;
-скачивание и экспериментальные модели видны независимо от основной технологии.
 
 ## Индикатор обновления в строке меню
 

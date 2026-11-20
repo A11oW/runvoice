@@ -95,6 +95,7 @@ final class AudioTranscribeWindow: NSWindowController, NSWindowDelegate {
     var onOpenSettings: (() -> Void)?
 
     private var isBusy: Bool { isRunning || isSummarizing }
+    var isTranscribingFile: Bool { isRunning }
 
     init(runner: DictationRunner) {
         self.runner = runner

@@ -188,7 +188,7 @@ enum WhisperModelStore {
 
     /// Модели в стандартных папках + дополнительные каталоги пользователя.
     static func foundModels(extraDirectories: [String] = [],
-                            excluding: [String] = []) -> [WhisperModelFile] {
+                            externalPaths: [String] = [], excluding: [String] = []) -> [WhisperModelFile] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         var directories = [
             modelsDirectory.path,
@@ -214,7 +214,12 @@ enum WhisperModelStore {
                 byName[name] = model
             }
         }
-        return byName.values.sorted { $0.sizeBytes > $1.sizeBytes }
+        var byPath = Dictionary(uniqueKeysWithValues: byName.values.map { ($0.path, $0) })
+        for path in externalPaths {
+            guard let model = file(at: path), !hidden.contains(model.path) else { continue }
+            byPath[model.path] = model
+        }
+        return byPath.values.sorted { $0.sizeBytes == $1.sizeBytes ? $0.path < $1.path : $0.sizeBytes > $1.sizeBytes }
     }
 
     /// Выбранная пользователем модель или автовыбор, если выбор ещё не сделан.
@@ -225,7 +230,7 @@ enum WhisperModelStore {
             return file(at: selected)
         }
         return autoSelect(from: foundModels(extraDirectories: settings.whisperModelDirs,
-                                            excluding: settings.hiddenModelPaths))
+                                            externalPaths: settings.whisperExternalModelPaths, excluding: settings.hiddenModelPaths))
     }
 
     static func autoSelect(from models: [WhisperModelFile]) -> WhisperModelFile? {

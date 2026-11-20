@@ -16,6 +16,15 @@ enum FluidModelStore {
         return (url == directory || url.path.hasPrefix(directory.path + "/"))
             && FileManager.default.fileExists(atPath: url.path)
     }
+
+    static func removeInstalled(_ model: FluidModel) throws {
+        let url = directory(for: model)
+        guard installed(model),
+              try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        try FileManager.default.removeItem(at: url)
+    }
 }
 
 /// Ограниченный JSON-lines транспорт. Ни чтение pipe, ни ожидание Core ML

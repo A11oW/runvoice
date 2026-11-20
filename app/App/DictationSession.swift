@@ -1,6 +1,6 @@
 import Foundation
 
-/// Модель и язык фиксируются на всю диктовку. Файл WAV остаётся резервом
+/// Модель и язык фиксируются на всю диктовку. Файл WAV сохраняется
 /// до окончания конвейера; частичные гипотезы никогда не вставляются в поле.
 final class DictationSession {
     var onTranscript: ((String) -> Void)?
@@ -59,10 +59,9 @@ final class DictationSession {
             self.onTranscript?(text)
         }
         fluid.onFailure = { [weak self] in
-            guard let self, self.isBusy else { return }
-            Log.write("ASR: \(self.settings.fluidModel.rawValue) fallback to Whisper (full WAV)")
-            self.previewNeedsRestart = true
-            if self.isRecording { self.startWhisperPreview() }
+            guard let self, self.settings.recognitionTechnology == .fluidAudio,
+                  self.recordingSessionID != nil else { return }
+            self.cancel(message: Failure.fluidRecognitionFailed.localizedDescription, error: true)
         }
     }
 
@@ -70,8 +69,9 @@ final class DictationSession {
         if recordingSessionID != nil { stop(); return }
         guard phase == "idle" else { return }
         let settings = loadSettings()
-        let useFluid = settings.recognitionTechnology == .fluidAudio && FluidModelStore.supported
+        let useFluid = settings.recognitionTechnology == .fluidAudio
         if useFluid {
+            guard FluidModelStore.supported else { throw Failure.unsupportedFluidAudio }
             guard FluidModelStore.installed(settings.fluidModel) else { throw Failure.missingFluidModel(settings.fluidModel) }
         } else if WhisperModelStore.activeModel(settings: settings) == nil {
             throw DictationRunner.Failure.missingModel(path: settings.whisperModelPath.isEmpty ? nil : settings.whisperModelPath)
@@ -87,7 +87,10 @@ final class DictationSession {
         try? FileManager.default.removeItem(at: Paths.lastResult)
         phase = "preparing"
         status("preparing")
-        if useFluid { fluid.start(model: settings.fluidModel, language: settings.language, vocabulary: settings.speechVocabulary) }
+        if useFluid {
+            fluid.start(model: settings.fluidModel, language: settings.language, vocabulary: settings.speechVocabulary)
+            guard fluid.healthy else { fail(Failure.fluidRecognitionFailed); return }
+        }
         recorder.onAudio = { [weak self] pcm in
             guard let self, self.generation == token,
                   self.phase != "idle" else { return }
@@ -102,11 +105,15 @@ final class DictationSession {
             self.cancel(message: error.localizedDescription, error: true)
         }
         if useFluid, fluid.healthy, settings.fluidModel.usesWindowedRecognition { startParakeetPreview() }
-        else if !useFluid || !fluid.healthy { startWhisperPreview() }
+        else if !useFluid { startWhisperPreview() }
         recorder.start(microphone: settings.microphone, deviceUID: settings.microphoneUID, url: url) { [weak self] result in
             guard let self, self.generation == token else { return }
             switch result {
             case .success:
+                if useFluid, !self.fluid.healthy {
+                    self.cancel(message: Failure.fluidRecognitionFailed.localizedDescription, error: true)
+                    return
+                }
                 self.phase = "recording"
                 self.status("recording")
                 Log.write("capture: native PCM16/16000 started technology=\(settings.recognitionTechnology.rawValue) model=\(useFluid ? settings.fluidModel.rawValue : "whisper")")
@@ -116,7 +123,7 @@ final class DictationSession {
     }
 
     private func startWhisperPreview() {
-        guard settings.showsRecognitionPreview,
+        guard settings.recognitionTechnology == .whisper, settings.showsRecognitionPreview,
               let model = WhisperModelStore.activeModel(settings: settings) else { return }
         live.start(modelPath: model.path, language: settings.language,
                    vocabulary: settings.speechVocabulary, inMemory: true)
@@ -236,9 +243,13 @@ final class DictationSession {
             case .failure(let error): self.fail(error)
             case .success(let recording):
                 Log.write("performance: capture_stop_ms=\(Int(Date().timeIntervalSince(start) * 1000)) frames=\(recording.frames)")
-                if self.settings.recognitionTechnology == .fluidAudio, self.fluid.healthy {
+                if self.settings.recognitionTechnology == .fluidAudio {
+                    guard self.fluid.healthy else { self.fail(Failure.fluidRecognitionFailed); return }
                     self.fluid.finish(audio: recording.url) { [weak self] text in
                         guard let self, self.generation == token else { return }
+                        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            self.fail(Failure.fluidRecognitionFailed); return
+                        }
                         self.process(recording.url, transcript: text, token: token)
                     }
                 } else { self.process(recording.url, transcript: nil, token: token) }
@@ -259,7 +270,7 @@ final class DictationSession {
                 }
             }
         } catch DictationRunner.Failure.missingModel(_) {
-            fail(Failure.missingWhisperModel(isBackup: settings.recognitionTechnology == .fluidAudio))
+            fail(Failure.missingWhisperModel)
         } catch { fail(error) }
     }
 
@@ -281,8 +292,10 @@ final class DictationSession {
     func prewarm() {
         guard !isBusy else { return }
         let saved = SettingsStore.load()
-        if saved.recognitionTechnology == .fluidAudio, FluidModelStore.supported {
-            fluid.warmUp(model: saved.fluidModel)
+        if saved.recognitionTechnology == .fluidAudio {
+            if FluidModelStore.supported, FluidModelStore.installed(saved.fluidModel) {
+                fluid.warmUp(model: saved.fluidModel)
+            }
             return
         }
         fluid.unload()
@@ -350,14 +363,18 @@ final class DictationSession {
     }
     enum Failure: LocalizedError {
         case missingFluidModel(FluidModel)
-        case missingWhisperModel(isBackup: Bool)
+        case missingWhisperModel
+        case unsupportedFluidAudio
+        case fluidRecognitionFailed
         var errorDescription: String? {
             switch self {
             case .missingFluidModel(let model): return "Скачайте \(model.title) в «Настройки» → «Распознавание» → FluidAudio"
-            case .missingWhisperModel(let isBackup):
-                return isBackup
-                    ? "Распознавание FluidAudio не удалось. Настройте резервную модель Whisper в «Распознавании»"
-                    : "Модель Whisper недоступна. Выберите её в «Распознавании»"
+            case .missingWhisperModel:
+                return "Модель Whisper недоступна. Выберите её в «Распознавании»"
+            case .unsupportedFluidAudio:
+                return "FluidAudio недоступен на этом Mac. Выберите whisper.cpp в «Распознавании»"
+            case .fluidRecognitionFailed:
+                return "FluidAudio не распознал запись. Проверьте модель в «Распознавании»"
             }
         }
     }

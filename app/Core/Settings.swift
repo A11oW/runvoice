@@ -111,7 +111,8 @@ struct Settings: Codable, Equatable {
     var dictationProviderID: UUID?
     var improveProviderID: UUID?
     var whisperModelPath = ""
-    var whisperModelDirs: [String] = []
+    var whisperModelDirs: [String] = [] // Прежние каталоги, только для совместимости.
+    var whisperExternalModelPaths: [String] = []
     var hiddenModelPaths: [String] = []
     var recognitionTechnology: RecognitionTechnology = .whisper
     var fluidModel: FluidModel = .nemotron
@@ -142,7 +143,7 @@ struct Settings: Codable, Equatable {
         case apiEnabled, apiPort, apiImproveText, apiRecognitionModel, apiAudioFilterEnabled, apiMinimumSpeechDbfs, apiUseVocabulary
         case promptFix, promptImprove, promptSummary, improveEnabled
         case providers, dictationProviderID, improveProviderID
-        case whisperModelPath, whisperModelDirs, hiddenModelPaths
+        case whisperModelPath, whisperModelDirs, whisperExternalModelPaths, hiddenModelPaths
         case recognitionTechnology, fluidModel, speechVocabulary
         case language, microphone, microphoneUID
         case restoreClipboard
@@ -205,6 +206,7 @@ struct Settings: Codable, Equatable {
 
         whisperModelPath = try c.decodeIfPresent(String.self, forKey: .whisperModelPath) ?? ""
         whisperModelDirs = try c.decodeIfPresent([String].self, forKey: .whisperModelDirs) ?? []
+        whisperExternalModelPaths = try c.decodeIfPresent([String].self, forKey: .whisperExternalModelPaths) ?? []
         hiddenModelPaths = try c.decodeIfPresent([String].self, forKey: .hiddenModelPaths) ?? []
         let legacy = try decoder.container(keyedBy: LegacyKeys.self)
         let technology = try c.decodeIfPresent(String.self, forKey: .recognitionTechnology)

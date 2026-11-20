@@ -427,7 +427,9 @@ final class SettingsSidebarItem: NSButton {
     private static func icon(symbol: String, color: NSColor) -> NSImage? {
         let leading: CGFloat = 9
         let iconSize: CGFloat = 20
-        let size = NSSize(width: iconSize + leading, height: iconSize)
+        // NSButton добавляет 2 pt между изображением и подписью.
+        let trailing: CGFloat = 6
+        let size = NSSize(width: leading + iconSize + trailing, height: iconSize)
         let image = NSImage(size: size, flipped: false) { rect in
             color.setFill()
             let square = NSRect(x: rect.minX + leading, y: rect.minY,
@@ -721,5 +723,153 @@ extension NSStackView {
         addArrangedSubview(view)
         view.translatesAutoresizingMaskIntoConstraints = false
         view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+    }
+}
+
+// MARK: - Табличные данные
+
+final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegate {
+    struct Column {
+        let id: String
+        let title: String
+        var width: CGFloat = 120
+        var fixed = false
+    }
+
+    let table = NSTableView()
+    private let count = NSTextField(labelWithString: "")
+    private let emptyLabel = NSTextField(labelWithString: "")
+    private let scroll = NSScrollView()
+    private var rows: [[NSView]] = []
+
+    init(_ title: String, columns: [Column], rowHeight: CGFloat = 28, height: CGFloat = 220,
+         header: NSView? = nil, actions: [NSButton] = [], empty: String = "Нет записей") {
+        super.init(frame: .zero)
+        table.setAccessibilityLabel(title)
+        table.style = .fullWidth
+        table.backgroundColor = .controlBackgroundColor
+        table.usesAlternatingRowBackgroundColors = true
+        table.gridStyleMask = []
+        table.allowsColumnReordering = false
+        table.rowHeight = rowHeight
+        table.intercellSpacing = NSSize(width: 5, height: 0)
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.headerView = NSTableHeaderView()
+        for value in columns {
+            let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(value.id))
+            column.title = value.title
+            column.width = value.width
+            column.minWidth = value.fixed ? value.width : 90
+            column.maxWidth = value.fixed ? value.width : 1000
+            column.resizingMask = value.fixed ? [] : [.autoresizingMask, .userResizingMask]
+            table.addTableColumn(column)
+        }
+
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+        scroll.heightAnchor.constraint(equalToConstant: height).isActive = true
+
+        emptyLabel.stringValue = empty
+        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.alignment = .center
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(emptyLabel)
+        NSLayoutConstraint.activate([
+            emptyLabel.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
+            emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: scroll.leadingAnchor, constant: 8),
+            emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: scroll.trailingAnchor, constant: -8)
+        ])
+
+        count.font = .systemFont(ofSize: 11)
+        count.textColor = .secondaryLabelColor
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let footer = NSStackView(views: actions + [spacer, count])
+        footer.alignment = .centerY
+        footer.spacing = 7
+        let card = SettingsCard()
+        if let header { card.addRow(SettingsContentRow(header, verticalInset: 6, horizontalInset: 8)) }
+        card.addRow(scroll)
+        card.addRow(SettingsContentRow(footer, verticalInset: 4, horizontalInset: 8))
+        addSubview(card)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            card.leadingAnchor.constraint(equalTo: leadingAnchor),
+            card.trailingAnchor.constraint(equalTo: trailingAnchor),
+            card.topAnchor.constraint(equalTo: topAnchor),
+            card.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        table.sizeToFit()
+    }
+
+    func showCount(_ total: Int, selected: Int = 0, visible: Int? = nil, empty: String? = nil) {
+        count.stringValue = (selected > 0 ? "Выбрано: \(selected). " : "") + "Всего: \(total)"
+        emptyLabel.isHidden = (visible ?? total) > 0
+        if let empty { emptyLabel.stringValue = empty }
+    }
+
+    func showRows(_ rows: [[NSView]]) {
+        self.rows = rows
+        table.dataSource = self
+        table.delegate = self
+        table.reloadData()
+        showCount(rows.count)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, viewFor column: NSTableColumn?, row: Int) -> NSView? {
+        guard let column, let index = tableView.tableColumns.firstIndex(of: column),
+              rows.indices.contains(row), rows[row].indices.contains(index) else { return nil }
+        return rows[row][index]
+    }
+
+    static func iconButton(_ symbol: String, _ title: String, target: AnyObject?, action: Selector?) -> NSButton {
+        let button = NSButton(title: title, target: target, action: action)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageOnly
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        button.widthAnchor.constraint(equalToConstant: 28).isActive = true
+        return button
+    }
+
+    static func padded(_ view: NSView, horizontal: CGFloat = 8, centered: Bool = false) -> NSView {
+        let cell = NSTableCellView()
+        cell.addSubview(view)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        var constraints = [view.centerYAnchor.constraint(equalTo: cell.centerYAnchor)]
+        if centered {
+            constraints.append(view.centerXAnchor.constraint(equalTo: cell.centerXAnchor))
+        } else {
+            constraints += [view.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: horizontal),
+                            view.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -horizontal)]
+        }
+        NSLayoutConstraint.activate(constraints)
+        return cell
+    }
+
+    static func label(_ text: String, secondary: Bool = false, alignment: NSTextAlignment = .left) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: secondary ? 11 : 13)
+        field.textColor = secondary ? .secondaryLabelColor : .labelColor
+        field.alignment = alignment
+        field.lineBreakMode = .byTruncatingTail
+        field.maximumNumberOfLines = 1
+        field.toolTip = text
+        return field
     }
 }

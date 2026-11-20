@@ -14,8 +14,9 @@ enum APIRecognitionModel: Codable, Equatable {
     static func choices(settings: Settings) -> [Choice] {
         var result = [Choice(model: .application, title: "Как в приложении")]
         var files = WhisperModelStore.foundModels(extraDirectories: settings.whisperModelDirs,
-                                                  excluding: settings.hiddenModelPaths)
+                                                  externalPaths: settings.whisperExternalModelPaths, excluding: settings.hiddenModelPaths)
         if let active = WhisperModelStore.file(at: settings.whisperModelPath),
+           !settings.hiddenModelPaths.contains(active.path),
            !files.contains(where: { $0.path == active.path }) {
             files.insert(active, at: 0)
         }

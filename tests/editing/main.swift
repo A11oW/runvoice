@@ -155,17 +155,21 @@ func runChecks() {
     expect(!dictionary.commit() && dictionary.terms == beforeInvalid && !dictionary.input.string.isEmpty,
            "Переполнение отклоняется целиком, текст остаётся в поле")
     dictionary.input.string = ""
-    dictionary.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+    dictionary.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+    let markCell = dictionary.table.view(atColumn: 0, row: 1, makeIfNecessary: true)!
+    let mark = markCell.subviews.compactMap { $0 as? NSButton }.first!
+    mark.performClick(nil)
+    expect(dictionary.table.usesAlternatingRowBackgroundColors, "Словарь использует системное чередование строк")
     dictionary.removeSelected()
     expect(dictionary.terms == ["Cypress", "GitHub Actions", "Redis"], "Удаление выбранной строки сохраняет остальные")
-    let cell = dictionary.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSTableCellView
+    let cell = dictionary.table.view(atColumn: 1, row: 0, makeIfNecessary: true) as! NSTableCellView
     cell.textField!.selectText(nil)
     let termEditor = cell.textField!.currentEditor() as! NSTextView
     termEditor.setSelectedRange(NSRange(location: 0, length: termEditor.string.utf16.count))
     termEditor.insertText("Cypress Cloud", replacementRange: termEditor.selectedRange())
     expect(dictionary.hasChanges, "Активное редактирование строки учитывается до потери фокуса")
     expect(dictionary.commit() && dictionary.terms.first == "Cypress Cloud", "Save завершает редактирование строки без потери текста")
-    let activeCell = dictionary.table.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSTableCellView
+    let activeCell = dictionary.table.view(atColumn: 1, row: 0, makeIfNecessary: true) as! NSTableCellView
     activeCell.textField!.selectText(nil)
     let activeEditor = activeCell.textField!.currentEditor() as! NSTextView
     activeEditor.setSelectedRange(NSRange(location: 0, length: activeEditor.string.utf16.count))

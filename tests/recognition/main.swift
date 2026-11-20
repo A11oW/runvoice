@@ -28,12 +28,43 @@ func runChecks() throws {
     initial.fluidModel = .nemotron
     initial.language = "auto"
     SettingsStore.save(initial)
+    HistoryStore.shared.add(text: "Пример записи", raw: nil, model: nil)
+    HistoryStore.shared.add(text: "Ещё одна запись", raw: nil, model: nil)
     let isolation = SettingsWindow()
     var commonSaves = 0, apiSaves = 0
     isolation.onSettingsSaved = { commonSaves += 1 }
     isolation.onAPISettingsSaved = { apiSaves += 1 }
     isolation.show(); isolation.selectTab("api")
     let isolationViews = descendants(isolation.window!.contentView!)
+    let apiLabels = isolationViews.compactMap { ($0 as? NSTextField)?.stringValue }
+    expect(apiLabels.contains("Модель распознавания") && apiLabels.contains("runvoice-active")
+           && apiLabels.contains("Использовать для распознавания"), "В API отдельно показаны псевдоним клиента и выбор модели")
+    let apiButtons = isolationViews.compactMap { $0 as? NSButton }
+    let checkConnection = apiButtons.first { $0.title == "Проверить соединение" }!
+    let restartServer = apiButtons.first { $0.title == "Перезапустить сервер" }!
+    expect(!checkConnection.isEnabled && !restartServer.isEnabled, "При выключенном API диагностика недоступна")
+    let copyAddress = apiButtons.first { $0.accessibilityLabel() == "Копировать адрес API" }!
+    let copyAlias = apiButtons.first { $0.accessibilityLabel() == "Копировать модель распознавания API" }!
+    let clipboard = NSPasteboard.general
+    let previousItems = (clipboard.pasteboardItems ?? []).map { item in
+        let copy = NSPasteboardItem()
+        for type in item.types { if let data = item.data(forType: type) { copy.setData(data, forType: type) } }
+        return copy
+    }
+    copyAddress.performClick(nil)
+    let copiedAddress = clipboard.string(forType: .string)
+    copyAlias.performClick(nil)
+    let copiedAlias = clipboard.string(forType: .string)
+    clipboard.clearContents()
+    if !previousItems.isEmpty { clipboard.writeObjects(previousItems) }
+    expect(copiedAddress == "http://127.0.0.1:8790/runvoice/v1/audio/transcriptions"
+           && copiedAlias == "runvoice-active", "Кнопки копируют адрес и псевдоним отдельно")
+    let isolationPort = isolationViews.compactMap { $0 as? NSTextField }.first { $0.identifier?.rawValue == "api-port" }!
+    isolationPort.stringValue = "8799"
+    isolation.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: isolationPort))
+    expect(!copyAddress.isEnabled && copyAlias.isEnabled, "Неверный порт отключает только копирование адреса")
+    isolationPort.stringValue = "8790"
+    isolation.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: isolationPort))
     let filter = isolationViews.compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "api-audio-filter" }!
     let dictionary = isolationViews.compactMap { $0 as? NSSwitch }.first { $0.identifier?.rawValue == "api-use-vocabulary" }!
     let threshold = isolationViews.compactMap { $0 as? NSSlider }.first { $0.identifier?.rawValue == "api-minimum-dbfs" }!
@@ -49,11 +80,33 @@ func runChecks() throws {
     controller.show()
     controller.selectTab("models")
     let root = controller.window!.contentView!
-    func views() -> [NSView] { descendants(root) }
-    func labels() -> [String] { views().compactMap { ($0 as? NSTextField)?.stringValue } }
-    func button(_ predicate: (NSButton) -> Bool) -> NSButton {
-        views().compactMap { $0 as? NSButton }.first(where: predicate)!
+    func views() -> [NSView] {
+        let visible = descendants(root)
+        let cells = visible.compactMap { $0 as? NSTableView }.flatMap { table in
+            (0..<table.numberOfRows).flatMap { row in
+                (0..<table.numberOfColumns).compactMap { table.view(atColumn: $0, row: row, makeIfNecessary: true) }
+            }.flatMap(descendants)
+        }
+        var seen = Set<ObjectIdentifier>()
+        return (visible + cells).filter { seen.insert(ObjectIdentifier($0)).inserted }
     }
+    func labels() -> [String] { views().compactMap { ($0 as? NSTextField)?.stringValue } }
+    func button(_ predicate: (NSButton) -> Bool, line: UInt = #line) -> NSButton {
+        let buttons = views().compactMap { $0 as? NSButton }
+        guard let match = buttons.first(where: predicate) else {
+            preconditionFailure("Кнопка не найдена в сценарии на строке \(line): \(buttons.map(\.title))")
+        }
+        return match
+    }
+    controller.selectTab("history")
+    let historyList = views().compactMap { $0 as? NSTableView }.first!
+    expect(historyList.usesAlternatingRowBackgroundColors && labels().contains("Всего: 2"),
+           "История отображает общий счётчик и системное чередование")
+    let search = views().compactMap { $0 as? NSSearchField }.first { $0.placeholderString == "Поиск по тексту" }!
+    search.stringValue = "Нет совпадений"
+    controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: search))
+    expect(historyList.numberOfRows == 0 && labels().contains("Всего: 2") && button { $0.title == "Очистить историю…" }.isEnabled,
+           "Фильтр истории не меняет общий итог и не блокирует очистку")
     controller.selectTab("general")
     expect(views().contains { $0.identifier?.rawValue == "check-updates" }, "В Основных доступна ручная проверка обновлений")
     expect(labels().contains { $0.contains("Проверка при запуске и раз в сутки") }, "Основные показывают состояние механизма обновлений без сетевого запуска в тестах")
@@ -141,15 +194,15 @@ func runChecks() throws {
     let whisperButtons = views().compactMap { $0 as? NSButton }.filter { $0.title == "Скачать" }
     expect(whisperButtons.count == WhisperModelCatalog.models.count, "Все модели Whisper видны сразу, без раскрытия скрытого каталога")
     expect(whisperButtons.contains { $0.identifier?.rawValue == "medium-q5_0" }, "Средняя квантованная модель доступна по кнопке")
-    expect(!views().contains { ($0 as? NSButton)?.title == FluidModel.parakeet.title }, "В каталоге Whisper нет моделей FluidAudio")
-    expect(labels().contains("Экспериментальная"), "Донастройки Whisper явно помечены как экспериментальные")
-    let headings = ["Движок", "Модель"]
+    expect(!labels().contains(FluidModel.parakeet.title), "В каталоге Whisper нет моделей FluidAudio")
+    expect(labels().contains { $0.contains("экспериментальная") }, "Донастройки Whisper явно помечены как экспериментальные")
+    let headings = ["Движок", "Найдены на компьютере", "Скачивание"]
     func expectSectionOrder() {
         expect(labels().filter { headings.contains($0) } == headings,
-               "Блоки идут в порядке: движок, модель")
+               "Обе технологии показывают движок и две таблицы в одинаковом порядке")
     }
     expectSectionOrder()
-    expect(labels().contains { $0.hasPrefix("Скачивание (") },
+    expect(labels().contains("Скачивание"),
            "В каталоге Whisper есть отдельный блок скачивания")
     expect(labels().contains { $0.contains("Язык — подсказка модели") }, "Whisper объясняет язык как подсказку")
     let language = views().compactMap { $0 as? NSPopUpButton }
@@ -183,15 +236,18 @@ func runChecks() throws {
     expect(language.indexOfSelectedItem == 0 && preview.options == RecognitionPreview(enabled: false, lineCount: 7),
            "Смена технологии сохраняет язык и отключённый предпросмотр с выбранным числом строк")
     expect(vocabulary.input.string == "Cypress, shared", "Смена технологии сохраняет незавершённый словарь")
-    for model in FluidModel.allCases {
-        expect(views().contains { ($0 as? NSButton)?.title == model.title }, "Все модели FluidAudio показаны в совместимом каталоге")
+    func fluidChoice(_ model: FluidModel) -> NSButton {
+        button { $0.identifier?.rawValue == model.rawValue && $0.title.isEmpty }
     }
-    expect(button { $0.title == FluidModel.nemotron.title }.state == .on, "Переключение технологии восстанавливает выбранный Nemotron")
-    let unavailable = button { $0.title == FluidModel.parakeet.title }
-    expect(!unavailable.isEnabled, "Нескачанную модель нельзя выбрать до успешной проверки")
-    application.sendAction(unavailable.action!, to: unavailable.target, from: unavailable)
-    expect(button { $0.title == FluidModel.nemotron.title }.state == .on, "Контроллер отклоняет выбор недоступной модели даже при прямом вызове действия")
-    expect(!labels().contains("Найдены на компьютере"), "Основной каталог Whisper скрыт при FluidAudio")
+    for model in FluidModel.allCases {
+        expect(labels().contains(model.title), "Все модели FluidAudio показаны в совместимом каталоге")
+    }
+    expect(fluidChoice(.nemotron).state == .on, "Переключение технологии восстанавливает выбранный Nemotron")
+    expect(!views().contains { ($0 as? NSButton)?.accessibilityLabel() == "Использовать " + FluidModel.parakeet.title },
+           "Нескачанную модель нельзя выбрать до успешной проверки")
+    expect(!labels().contains { $0.contains("Whisper") && $0.contains("Turbo") }, "Модели разных технологий не смешиваются")
+    expect(!views().contains { ($0 as? NSButton)?.title.contains("резервный Whisper") == true },
+           "У FluidAudio нет окна резерва")
     expect(labels().contains { $0.contains("Язык распознавания") }, "Общие параметры доступны для FluidAudio")
     let marker = FluidModelStore.directory(for: .nemotron).appendingPathComponent("installed-model")
     try FileManager.default.removeItem(at: marker)
@@ -199,7 +255,8 @@ func runChecks() throws {
     expect(SettingsStore.load().recognitionTechnology == .whisper, "Новая технология без готовой модели не сохраняется")
     expect(labels().contains { $0.contains("Сначала скачайте и проверьте") }, "Недоступная модель объясняется в окне без блокирующего диалога")
     try install(.nemotron)
-    button { $0.title == FluidModel.nemotron.title }.performClick(nil)
+    selectTechnology(1)
+    fluidChoice(.nemotron).performClick(nil)
 
     let first = WhisperModelStore.modelsDirectory.appendingPathComponent("ggml-tiny.bin")
     let secondModel = WhisperModelCatalog.models.first { $0.experimental }!
@@ -207,36 +264,14 @@ func runChecks() throws {
     let fakeModel = Data("lmgg".utf8) + Data(count: 1_000_001)
     try fakeModel.write(to: first)
     try fakeModel.write(to: second)
-    func openBackup() -> NSView {
-        button { $0.title == "Настроить резервный Whisper…" }.performClick(nil)
-        return controller.window!.attachedSheet!.contentView!
-    }
-    func sheetButton(_ sheet: NSView, _ predicate: (NSButton) -> Bool) -> NSButton {
-        descendants(sheet).compactMap { $0 as? NSButton }.first(where: predicate)!
-    }
-    let cancelledSheet = openBackup()
-    expect(!labels().contains("Найдены на компьютере"), "Открытие резерва не добавляет Whisper в основной каталог FluidAudio")
-    expect(!descendants(cancelledSheet).contains { ($0 as? NSButton)?.title == FluidModel.nemotron.title }, "В отдельном резервном окне только модели Whisper")
-    sheetButton(cancelledSheet) { $0.identifier?.rawValue == first.path && $0.title.isEmpty }.performClick(nil)
-    sheetButton(cancelledSheet) { $0.title == "Отмена" }.performClick(nil)
-    waitFor("Резервное окно закрывается после отмены") { controller.window!.attachedSheet == nil }
-    expect(cancelledSheet.window?.isVisible != true, "Отмена убирает панель с экрана")
-    spin(0.2)
-    let acceptedSheet = openBackup()
-    expect(sheetButton(acceptedSheet) { $0.identifier?.rawValue == first.path && $0.title.isEmpty }.state == .off,
-           "Отмена резервного окна откатывает черновой выбор")
-    sheetButton(acceptedSheet) { $0.identifier?.rawValue == second.path && $0.title.isEmpty }.performClick(nil)
-    expect(descendants(acceptedSheet).contains { ($0 as? NSButton)?.title.contains("экспериментальная") == true },
-           "У установленного экспериментального Whisper сохраняется пометка")
-    sheetButton(acceptedSheet) { $0.title == "Готово" }.performClick(nil)
-    waitFor("Готово закрывает резервное окно") { controller.window!.attachedSheet == nil }
-    expect(acceptedSheet.window?.isVisible != true, "Готово убирает панель с экрана")
-    spin(0.2)
-    expect(SettingsStore.load().whisperModelPath.isEmpty, "Готово сохраняет резерв в черновике, до основного Сохранить")
     selectTechnology(0)
     expect(labels().contains { $0.contains("Язык — подсказка модели") }, "Возврат к Whisper восстанавливает его пояснение")
+    button { $0.identifier?.rawValue == second.path && $0.title.isEmpty }.performClick(nil)
+    expect(labels().contains { $0.contains("экспериментальная") },
+           "У установленного экспериментального Whisper сохраняется пометка")
+    expect(!labels().contains("Папки и скрытые модели"), "Отдельного списка папок и скрытых моделей нет")
     selectTechnology(1)
-    expect(button { $0.title == FluidModel.nemotron.title }.state == .on, "Выбор модели сохраняется при смене технологии")
+    expect(fluidChoice(.nemotron).state == .on, "Выбор модели сохраняется при смене технологии")
     expect(SettingsStore.load().recognitionTechnology == .whisper, "Черновые переключения не сохраняются автоматически")
 
     // Настоящий дочерний процесс проверяет поведение UI при загрузке и отмене.
@@ -254,6 +289,14 @@ func runChecks() throws {
     print('RUNVOICE_ASR ' + json.dumps({'event': 'installed'}), flush=True)
     """.write(to: helper, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+    button { $0.identifier?.rawValue == FluidModel.nemotron.rawValue && $0.title == "Проверить" }.performClick(nil)
+    waitFor("Прогресс проверки виден в строке установленной модели") {
+        labels().contains { $0.contains("Проверка: 50%") }
+    }
+    expect(!button { $0.identifier?.rawValue == FluidModel.nemotron.rawValue && $0.title == "Удалить модель…" }.isEnabled,
+           "Проверяемую модель нельзя удалить")
+    button { $0.title == "Отменить проверку" }.performClick(nil)
+    expect(FluidModelStore.installed(.nemotron), "Отмена проверки сохраняет установленную модель")
     button { $0.identifier?.rawValue == FluidModel.parakeet.rawValue && $0.title == "Скачать" }.performClick(nil)
     let progressDeadline = Date().addingTimeInterval(4)
     while !labels().contains(where: { $0.contains("50%") }), Date() < progressDeadline { spin() }
@@ -268,12 +311,13 @@ func runChecks() throws {
     selectTechnology(0)
     waitFor("Фоновая загрузка заканчивается при открытом каталоге Whisper") { FluidModelStore.installed(.parakeet) }
     selectTechnology(1)
-    expect(button { $0.title == FluidModel.nemotron.title }.state == .on, "Скачивание другой модели не меняет выбор")
-    expect(button { $0.title == FluidModel.parakeet.title }.isEnabled, "После успешной загрузки выбор модели становится доступен")
+    expect(fluidChoice(.nemotron).state == .on, "Скачивание другой модели не меняет выбор")
+    expect(fluidChoice(.parakeet).isEnabled, "После успешной загрузки выбор модели становится доступен")
     vocabulary.input.string = "Vitest"
     for model in FluidModel.allCases {
         try install(model)
-        button { $0.title == model.title }.performClick(nil)
+        selectTechnology(1)
+        fluidChoice(model).performClick(nil)
         expectSectionOrder()
         expect(labels().contains { model == .nemotron ? $0.contains("подсказку потоковой модели")
             : $0.contains("ограничивает алфавит") && $0.contains("English — латиница")
@@ -283,7 +327,7 @@ func runChecks() throws {
         expect(vocabulary.input.string == "Vitest", "Смена модели не очищает черновик словаря")
     }
     language.selectItem(at: 2)
-    button { $0.title == FluidModel.parakeet.title }.performClick(nil)
+    fluidChoice(.parakeet).performClick(nil)
     controller.selectTab("api")
     expect(apiModel.itemTitles.contains("FluidAudio · " + FluidModel.nemotron.title), "Список API обновляется после установки моделей")
     apiModel.selectItem(withTitle: "FluidAudio · " + FluidModel.nemotron.title)
@@ -297,7 +341,7 @@ func runChecks() throws {
     expect(saved.language == "auto", "Перерисовка каталога сохраняет выбранный язык")
     expect(!saved.previewEnabled && saved.previewLineCount == 7, "Сохранить записывает параметры отдельного блока предпросмотра")
     expect(saved.speechVocabulary == ["Cypress", "shared", "Vitest"], "Сохранение включает прежние термины и незавершённый ввод")
-    expect(saved.whisperModelPath == second.path, "Основное Сохранить применяет выбранный резерв, включая явный экспериментальный выбор")
+    expect(saved.whisperModelPath == second.path, "Технологии сохраняют независимые выбранные модели, включая явный экспериментальный Whisper")
     expect(!saved.pauseRecordingOnSpace, "Сохранение настроек записывает отключение паузы, не теряя черновик при смене вкладок")
     controller.window?.orderOut(nil)
     let reopened = SettingsWindow()
@@ -322,7 +366,58 @@ func runChecks() throws {
     expect(missingModel.titleOfSelectedItem?.hasPrefix("Недоступна:") == true && missingModel.selectedItem?.isEnabled == false,
            "Удалённая модель API остаётся видимой и недоступной без подмены выбора")
     missingController.window?.orderOut(nil)
-    SettingsStore.save(saved)
+
+    let external = Paths.support.appendingPathComponent("ggml-external.bin")
+    let unlinkOnly = Paths.support.appendingPathComponent("ggml-keep-file.bin")
+    try fakeModel.write(to: external)
+    try fakeModel.write(to: unlinkOnly)
+    var removalSettings = saved
+    removalSettings.whisperExternalModelPaths = [external.path, unlinkOnly.path]
+    var removableProvider = AIProvider.openCodeDefault()
+    removableProvider.name = "Черновики"
+    let protectedProvider = AIProvider.openCodeDefault()
+    removalSettings.providers = [removableProvider, protectedProvider]
+    removalSettings.dictationProviderID = protectedProvider.id
+    SettingsStore.save(removalSettings)
+    controller.show(); controller.selectTab("models"); selectTechnology(0)
+
+    func removeModel(_ file: URL, via choices: [String]) {
+        var pending = choices
+        let deadline = Date().addingTimeInterval(4)
+        let timer = Timer(timeInterval: 0.05, repeats: true) { _ in
+            guard let alert = application.modalWindow?.contentView else { return }
+            if let title = pending.first,
+               let control = descendants(alert).compactMap({ $0 as? NSButton }).first(where: { $0.title == title }) {
+                pending.removeFirst()
+                control.performClick(nil)
+            } else if Date() > deadline {
+                application.abortModal()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .modalPanel)
+        button { $0.identifier?.rawValue == file.path && $0.title == "Удалить модель…" }.performClick(nil)
+        timer.invalidate()
+        expect(pending.isEmpty, "В диалогах удаления доступны ожидаемые действия: \(choices)")
+    }
+
+    removeModel(first, via: ["Отмена"])
+    expect(FileManager.default.fileExists(atPath: first.path), "Отмена удаления управляемой модели сохраняет файл")
+    removeModel(external, via: ["Удалить с диска…", "Отмена"])
+    expect(FileManager.default.fileExists(atPath: external.path), "Внешняя модель сохраняется без второго подтверждения")
+    removeModel(external, via: ["Удалить с диска…", "Удалить с диска"])
+    expect(!FileManager.default.fileExists(atPath: external.path), "Подтверждение удаляет только внешний файл")
+    removeModel(unlinkOnly, via: ["Удалить из приложения"])
+    expect(FileManager.default.fileExists(atPath: unlinkOnly.path) && !labels().contains("ggml-keep-file.bin"),
+           "Удаление из приложения скрывает строку и сохраняет внешний файл")
+    controller.selectTab("providers")
+    let providerTable = views().compactMap { $0 as? NSTableView }.first!
+    expect(providerTable.tableColumns.map(\.title) == ["", "Профиль", "Тип", "Модель", ""],
+           "В провайдерах только три колонки данных, отметки и действия")
+    expect(!button { $0.accessibilityLabel() == "Выбрать провайдера DeepSeek" }.isEnabled,
+           "Используемый профиль защищён от удаления")
+    button { $0.accessibilityLabel() == "Выбрать провайдера Черновики" }.performClick(nil)
+    expect(labels().contains("Выбрано: 1. Всего: 2"), "У провайдеров единый счётчик отмеченных строк")
+    controller.window?.orderOut(nil)
 }
 
 // Вложенный RunLoop должен обслуживать IPC, поэтому стартуем из timer,

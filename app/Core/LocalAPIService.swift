@@ -4,6 +4,22 @@ import Foundation
 final class LocalAPIService {
     static let shared = LocalAPIService()
     typealias Corrector = (String, Settings, String?, @escaping (Result<String, Error>) -> Void) -> (() -> Void)
+    enum ConnectionCheck: Equatable {
+        case ready, warming, unavailable, timedOut, unreachable, invalidResponse
+
+        var message: String {
+            switch self {
+            case .ready: return "Соединение установлено"
+            case .warming: return "Прогревается…"
+            case .unavailable: return "API ответил, распознавание недоступно"
+            case .timedOut: return "API не ответил за 3 секунды"
+            case .unreachable: return "Сервер недоступен · Проверьте состояние API"
+            case .invalidResponse: return "Неожиданный ответ локального API"
+            }
+        }
+
+        var isError: Bool { self != .ready && self != .warming }
+    }
     private var statusText = "Выключен"
     private(set) var status: String {
         get {
@@ -16,16 +32,22 @@ final class LocalAPIService {
         set { statusText = newValue }
     }
     private(set) var listening = false
+    private(set) var connectionID = UUID()
+    private(set) var isRestarting = false
+    var isStarting: Bool { startAfterStop || (server != nil && !listening) }
+    var isWarming: Bool { warming }
     private let audioFilter: APIAudioFiltering
     private let engine: APIRecognitionBackend
     private let loadSettings: () -> Settings
     private let correct: Corrector
     private let requestDeadline: TimeInterval
     private var server: LocalAPIHTTPServer?
+    private var stoppingServer: LocalAPIHTTPServer?
+    private var startAfterStop = false
     private var config = Settings()
     private var queue: [Job] = []
     private var active: Job?
-    var hasPendingWork: Bool { active != nil || !queue.isEmpty || warming }
+    var hasPendingWork: Bool { active != nil || !queue.isEmpty || warming || isRestarting || isStarting }
     private var warming = false
     private var generation = UUID()
     private var readyProfile: String?
@@ -77,51 +99,121 @@ final class LocalAPIService {
     }
 
     func configure(_ settings: Settings) {
-        let restart = config.apiPort != settings.apiPort || config.apiEnabled != settings.apiEnabled || server == nil
+        let mustRebind = config.apiPort != settings.apiPort || server == nil
         let changed = Self.profile(config) != Self.profile(settings)
             || config.apiAudioFilterEnabled != settings.apiAudioFilterEnabled
+        if changed || config.apiImproveText != settings.apiImproveText
+            || config.dictationProvider != settings.dictationProvider {
+            connectionID = UUID()
+        }
         if !settings.apiAudioFilterEnabled, active == nil { audioFilter.stop() }
         config = settings
         guard settings.apiEnabled else { stop(); return }
         guard Self.validPort(settings.apiPort) else { stop(); status = "Ошибка: недопустимый или внутренний порт"; return }
-        if restart {
-            stop()
-            let server = LocalAPIHTTPServer()
-            self.server = server
-            status = "Запускается…"
-            server.onState = { [weak self, weak server] state in
-                guard let self, self.server === server else { return }
-                if state == "listening" { self.listening = true; self.warmWhenIdle() }
-                else { self.stop(); self.status = "Ошибка запуска: порт занят или недоступен" }
-            }
-            server.onRequest = { [weak self, weak server] request, reply in
-                let id = UUID()
-                DispatchQueue.main.async {
-                    guard let self, self.server === server else { reply(503, ["error": ["message": "API остановлен"]]); return }
-                    self.receive(id: id, request: request, completion: reply)
-                }
-                return { DispatchQueue.main.async { self?.cancel(id: id) } }
-            }
-            do { try server.start(port: UInt16(settings.apiPort)) }
-            catch { stop(); status = "Ошибка запуска локального API" }
+        if mustRebind {
+            replaceServer()
         } else if changed, active == nil {
             generation = UUID(); warming = false; readyProfile = nil; engine.shutdown()
             warmWhenIdle()
         }
     }
 
+    func restart() {
+        let settings = loadSettings()
+        guard settings.apiEnabled, Self.validPort(settings.apiPort), !isRestarting else { return }
+        config = settings
+        isRestarting = true
+        replaceServer()
+    }
+
+    func checkConnection(completion: @escaping (ConnectionCheck) -> Void) -> URLSessionDataTask? {
+        let port = config.apiPort
+        guard listening, Self.validPort(port) else {
+            DispatchQueue.main.async { completion(.unreachable) }
+            return nil
+        }
+        let url = URL(string: "http://127.0.0.1:\(port)\(LocalAPIWire.healthPath)")!
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 3)
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            let result: ConnectionCheck
+            if let error {
+                result = (error as? URLError)?.code == .timedOut ? .timedOut : .unreachable
+            } else if let http = response as? HTTPURLResponse, http.url == url, let data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                switch (http.statusCode, json["status"] as? String) {
+                case (200, "ready"): result = .ready
+                case (503, "warming"): result = .warming
+                case (503, "unavailable"): result = .unavailable
+                default: result = .invalidResponse
+                }
+            } else {
+                result = .invalidResponse
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+        task.resume()
+        return task
+    }
+
+    private func replaceServer() {
+        startAfterStop = true
+        closeServer()
+        if stoppingServer == nil { startServer() }
+        else if isRestarting { status = "Перезапускается…" }
+        else { status = "Запускается…" }
+    }
+
+    private func startServer() {
+        startAfterStop = false
+        isRestarting = false
+        let server = LocalAPIHTTPServer()
+        self.server = server
+        connectionID = UUID()
+        status = "Запускается…"
+        server.onState = { [weak self, weak server] state in
+            guard let self, let server, self.server === server else { return }
+            if state == "listening" { self.listening = true; self.warmWhenIdle() }
+            else { self.stop(); self.status = "Ошибка запуска: порт занят или недоступен" }
+        }
+        server.onRequest = { [weak self, weak server] request, reply in
+            let id = UUID()
+            DispatchQueue.main.async {
+                guard let self, let server, self.server === server else { reply(503, ["error": ["message": "API остановлен"]]); return }
+                self.receive(id: id, request: request, completion: reply)
+            }
+            return { DispatchQueue.main.async { self?.cancel(id: id) } }
+        }
+        do { try server.start(port: UInt16(config.apiPort)) }
+        catch { stop(); status = "Ошибка запуска локального API" }
+    }
+
     func stop() {
+        startAfterStop = false
+        isRestarting = false
+        closeServer()
+        status = "Выключен"
+    }
+
+    private func closeServer() {
         generation = UUID()
+        connectionID = UUID()
         let pending = queue + (active.map { [$0] } ?? [])
         queue.removeAll(); active = nil
         for job in pending {
             job.timeout?.cancel(); job.cancelAI?()
             job.completion(503, ["error": ["message": "Локальный API остановлен"]])
         }
-        server?.stop(); server = nil
+        if let server {
+            self.server = nil
+            stoppingServer = server
+            server.stop { [weak self] in
+                guard let self else { return }
+                self.stoppingServer = nil
+                if self.startAfterStop { self.startServer() }
+            }
+        }
         engine.shutdown(); audioFilter.stop()
         warming = false; listening = false; readyProfile = nil; readyTechnology = nil; readyModel = nil
-        status = "Выключен"
     }
 
     private func warmWhenIdle() {

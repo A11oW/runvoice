@@ -3,11 +3,12 @@ import AppKit
 /// Самостоятельная таблица, чтобы редактирование словаря не зависело от истории
 /// и обновления карточек моделей. Черновики сохраняются до явного исправления.
 final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
-    let table = NSTableView()
+    private var dataTable: SettingsDataTable!
+    var table: NSTableView { dataTable.table }
     let input = NSTextView()
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private let countLabel = NSTextField(labelWithString: "")
-    private let removeButton = NSButton(title: "Удалить", target: nil, action: nil)
+    private lazy var removeButton = SettingsDataTable.iconButton("minus", "Удалить выбранные термины", target: self, action: #selector(removeSelected))
+    private var marked = IndexSet()
     private var rows: [String] = []
     private var baseline: [String] = []
 
@@ -25,6 +26,7 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
 
     func load(_ terms: [String]) {
         window?.makeFirstResponder(nil)
+        marked.removeAll()
         rows = terms
         baseline = terms
         input.string = ""
@@ -34,6 +36,7 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
 
     func reset() {
         window?.makeFirstResponder(nil)
+        marked.removeAll()
         rows = []
         input.string = ""
         table.reloadData()
@@ -51,8 +54,8 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
 
     @objc func removeSelected() {
         window?.makeFirstResponder(nil)
-        let selected = table.selectedRowIndexes
-        rows = rows.enumerated().filter { !selected.contains($0.offset) }.map(\.element)
+        rows = rows.enumerated().filter { !marked.contains($0.offset) }.map(\.element)
+        marked.removeAll()
         table.reloadData()
         refresh()
     }
@@ -60,6 +63,7 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
     private func apply(_ candidates: [String]) -> Bool {
         switch SpeechVocabulary.validate(candidates) {
         case .success(let terms):
+            if rows != terms { marked.removeAll() }
             rows = terms
             input.string = ""
             table.reloadData()
@@ -74,6 +78,12 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableColumn?.identifier.rawValue == "mark" {
+            let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleMark(_:)))
+            check.state = marked.contains(row) ? .on : .off
+            check.setAccessibilityLabel("Выбрать термин \(rows[row])")
+            return SettingsDataTable.padded(check, centered: true)
+        }
         let identifier = NSUserInterfaceItemIdentifier("vocabulary-term")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
             ?? NSTableCellView()
@@ -109,13 +119,16 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
 
     func controlTextDidEndEditing(_ notification: Notification) { controlTextDidChange(notification) }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        removeButton.isEnabled = table.numberOfSelectedRows > 0
+    @objc private func toggleMark(_ sender: NSButton) {
+        let row = table.row(for: sender)
+        guard rows.indices.contains(row) else { return }
+        if sender.state == .on { marked.insert(row) } else { marked.remove(row) }
+        refresh()
     }
 
     private func refresh() {
-        countLabel.stringValue = "\(SpeechVocabulary.normalize(rows).count) из \(SpeechVocabulary.maximumTerms)"
-        removeButton.isEnabled = table.numberOfSelectedRows > 0
+        dataTable.showCount(rows.count, selected: marked.count)
+        removeButton.isEnabled = !marked.isEmpty
         if case .failure(let error) = SpeechVocabulary.validate(rows) {
             errorLabel.stringValue = error.localizedDescription
         } else {
@@ -130,39 +143,12 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         root.spacing = SettingsStyle.sectionSpacing
         root.translatesAutoresizingMaskIntoConstraints = false
 
-        countLabel.font = .systemFont(ofSize: 11)
-        countLabel.textColor = .secondaryLabelColor
-        let headerTitle = SettingsText.rowSubtitle("Терминов", width: 120)
-        let header = NSStackView(views: [headerTitle, NSView(), countLabel])
-        header.orientation = .horizontal
-        header.alignment = .centerY
-        header.arrangedSubviews[1].setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("term"))
-        column.title = "Термин"
-        column.resizingMask = .autoresizingMask
-        table.addTableColumn(column)
-        table.headerView = nil
-        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.rowHeight = 28
-        table.style = .inset
-        table.usesAlternatingRowBackgroundColors = false
-        table.backgroundColor = .clear
-        table.allowsMultipleSelection = true
+        dataTable = SettingsDataTable("Словарь технических терминов",
+                                     columns: [.init(id: "mark", title: "", width: 36, fixed: true),
+                                               .init(id: "term", title: "Термин", width: 580)],
+                                     actions: [removeButton], empty: "Нет терминов")
         table.delegate = self
         table.dataSource = self
-        table.setAccessibilityLabel("Словарь технических терминов")
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder
-        scroll.drawsBackground = false
-        scroll.documentView = table
-        scroll.heightAnchor.constraint(equalToConstant: 220).isActive = true
-
-        let termsCard = SettingsCard()
-        termsCard.addRow(SettingsContentRow(header, verticalInset: 10))
-        termsCard.addRow(SettingsContentRow(scroll, verticalInset: 0))
         let termsNote = [
             "Whisper — термины передаются как подсказка при распознавании.",
             "Nemotron — термины передаются в словарь потоковой модели.",
@@ -192,13 +178,11 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         inputScroll.heightAnchor.constraint(equalToConstant: 74).isActive = true
 
         let addButton = SettingsText.secondaryButton("Добавить", target: self, action: #selector(addTerms))
-        removeButton.bezelStyle = .rounded
-        removeButton.target = self
-        removeButton.action = #selector(removeSelected)
-        let buttons = NSStackView(views: [addButton, removeButton, NSView()])
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        buttons.arrangedSubviews.last?.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let addRow = NSStackView(views: [inputScroll, addButton])
+        addRow.alignment = .top
+        addRow.spacing = 8
+        addButton.setContentHuggingPriority(.required, for: .horizontal)
+        addButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemOrange
         errorLabel.maximumNumberOfLines = 0
@@ -208,16 +192,15 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         inputBlock.orientation = .vertical
         inputBlock.alignment = .leading
         inputBlock.spacing = 8
-        inputBlock.addArrangedFullWidth(inputScroll)
-        inputBlock.addArrangedFullWidth(buttons)
+        inputBlock.addArrangedFullWidth(addRow)
         inputBlock.addArrangedFullWidth(errorLabel)
 
         let inputCard = SettingsCard()
         inputCard.addRow(SettingsContentRow(inputBlock, verticalInset: 12))
 
-        root.addArrangedFullWidth(SettingsSection(title: "Технические термины", note: termsNote, card: termsCard))
+        root.addArrangedFullWidth(SettingsSection(title: "Технические термины", note: termsNote, card: dataTable))
         root.addArrangedFullWidth(SettingsSection(title: "Добавить термины",
-                                                  note: "Одна строка — один термин или фраза, до 80 символов. Можно вставить список через запятую или с новой строки.",
+                                                  note: "Одна строка — один термин или фраза, до 80 символов. Можно вставить список через запятую или с новой строки. До \(SpeechVocabulary.maximumTerms) терминов.",
                                                   card: inputCard))
         addSubview(root)
         NSLayoutConstraint.activate([

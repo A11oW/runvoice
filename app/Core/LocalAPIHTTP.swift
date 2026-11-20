@@ -21,6 +21,7 @@ enum LocalAPIWire {
     static let maximumHeaders = 16_384
     static let transcriptionPath = "/runvoice/v1/audio/transcriptions"
     static let healthPath = "/runvoice/v1/health"
+    static let modelAlias = "runvoice-active"
 
     static func request(_ data: Data, receivedAt: TimeInterval) throws -> LocalAPIRequest? {
         let separator = Data("\r\n\r\n".utf8)
@@ -98,8 +99,8 @@ enum LocalAPIWire {
             fields[name] = data.subdata(in: start..<next.lowerBound)
             cursor = next.upperBound
         }
-        guard fields["model"] == Data("runvoice-active".utf8), fields["response_format"] == Data("json".utf8),
-              let wav = fields["file"] else { throw LocalAPIError(400, "Требуются file, model=runvoice-active и response_format=json") }
+        guard fields["model"] == Data(modelAlias.utf8), fields["response_format"] == Data("json".utf8),
+              let wav = fields["file"] else { throw LocalAPIError(400, "Требуются file, model=\(modelAlias) и response_format=json") }
         return try pcm(from: wav)
     }
 
@@ -147,6 +148,8 @@ final class LocalAPIHTTPServer {
     private let queue = DispatchQueue(label: "Runvoice.api.http")
     private var listener: NWListener?
     private var clients: [UUID: LocalAPIHTTPConnection] = [:]
+    private var stopping = false
+    private var stopCompletions: [() -> Void] = []
     func start(port: UInt16) throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
@@ -157,11 +160,16 @@ final class LocalAPIHTTPServer {
             switch state {
             case .ready: DispatchQueue.main.async { self.onState?("listening") }
             case .failed: DispatchQueue.main.async { self.onState?("failed") }
+            case .cancelled:
+                self.listener = nil
+                let completions = self.stopCompletions
+                self.stopCompletions.removeAll()
+                DispatchQueue.main.async { completions.forEach { $0() } }
             default: break
             }
         }
         listener.newConnectionHandler = { [weak self] connection in
-            guard let self, self.clients.count < 32 else { connection.cancel(); return }
+            guard let self, !self.stopping, self.clients.count < 32 else { connection.cancel(); return }
             let id = UUID()
             let client = LocalAPIHTTPConnection(connection: connection, queue: self.queue)
             self.clients[id] = client
@@ -171,12 +179,19 @@ final class LocalAPIHTTPServer {
         }
         listener.start(queue: queue)
     }
-    func stop() {
+    func stop(completion: (() -> Void)? = nil) {
         queue.async { [self] in
-            listener?.cancel(); listener = nil
+            guard let listener else {
+                if let completion { DispatchQueue.main.async { completion() } }
+                return
+            }
+            if let completion { stopCompletions.append(completion) }
+            guard !stopping else { return }
+            stopping = true
             let active = Array(clients.values)
             active.forEach { $0.close() }
             clients.removeAll()
+            listener.cancel()
         }
     }
 }

@@ -38,13 +38,23 @@ enum FluidModel: String, Codable, CaseIterable {
         }
     }
 
+    var estimatedSize: String {
+        switch self {
+        case .nemotron: return "≈633 МБ"
+        case .parakeet: return "≈500 МБ"
+        case .parakeetUltra: return "≈630 МБ"
+        case .parakeetRedux: return "≈220 МБ"
+        case .phonon25: return "≈290 МБ"
+        }
+    }
+
     var detail: String {
         switch self {
-        case .nemotron: return "Потоковое распознавание · русский и английский · ≈633 МБ"
-        case .parakeet: return "25 языков, включая русский и английский · базовый вариант · ≈500 МБ"
-        case .parakeetUltra: return "Рекомендуется для сравнения качества · 25 языков, включая русский и английский · ≈630 МБ"
-        case .parakeetRedux: return "Компактная · ≈220 МБ · CPU · русский и английский менее точны по тестам разработчика"
-        case .phonon25: return "Компактная многоязычная · ≈290 МБ · GPU · экспериментальная"
+        case .nemotron: return "Потоковое распознавание · русский и английский"
+        case .parakeet: return "25 языков, включая русский и английский · базовый вариант"
+        case .parakeetUltra: return "Рекомендуется для сравнения качества · 25 языков, включая русский и английский"
+        case .parakeetRedux: return "Компактная · CPU · русский и английский менее точны по тестам разработчика"
+        case .phonon25: return "Компактная многоязычная · GPU · экспериментальная"
         }
     }
 

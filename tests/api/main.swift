@@ -57,6 +57,12 @@ private func fetch(_ request: URLRequest) -> (Int, [String: Any]) {
     wait("HTTP-запрос завершился") { answer != nil }
     return answer!
 }
+private func checkConnection(_ service: LocalAPIService) -> LocalAPIService.ConnectionCheck {
+    var result: LocalAPIService.ConnectionCheck?
+    _ = service.checkConnection { result = $0 }
+    wait("Проверка соединения завершилась") { result != nil }
+    return result!
+}
 private final class Backend: APIRecognitionBackend {
     var isReady = false
     var delay: TimeInterval = 0.05
@@ -103,6 +109,11 @@ private final class FilterFixture: APIAudioFiltering {
         try Data("not a model".utf8).write(to: fixtureDir.appendingPathComponent("ggml-incomplete.bin"))
         try weights.write(to: fixtureDir.appendingPathComponent("ggml-incomplete.bin.download"))
         var selectionSettings = Settings()
+        selectionSettings.whisperExternalModelPaths = [q8.path]
+        expect(APIRecognitionModel.choices(settings: selectionSettings).contains { $0.model == .whisper(q8.path) }
+               && !APIRecognitionModel.choices(settings: selectionSettings).contains { $0.model == .whisper(q5.path) },
+               "Явно добавленный внешний файл виден без регистрации соседних моделей")
+        selectionSettings.whisperExternalModelPaths = []
         selectionSettings.whisperModelDirs = [fixtureDir.path]
         selectionSettings.whisperModelPath = q5.path
         let choices = APIRecognitionModel.choices(settings: selectionSettings)
@@ -323,6 +334,65 @@ private final class FilterFixture: APIAudioFiltering {
         wait("Конфликт порта виден в состоянии") { competitor.status.hasPrefix("Ошибка") }
         expect(fetch(request(apiPort)).0 == 200, "Чужой listener при конфликте порта не затрагивается")
         competitor.stop()
+
+        // Перезапуск заменяет listener на том же порту и завершает старую очередь.
+        var restartSettings = settings
+        restartSettings.apiPort = port()
+        restartSettings.apiImproveText = false
+        let restartBackend = Backend()
+        let restarting = LocalAPIService(engine: restartBackend, loadSettings: { restartSettings })
+        restarting.configure(restartSettings)
+        wait("API для перезапуска слушает") { restarting.listening }
+        expect(checkConnection(restarting) == .ready, "Проверка соединения получает готовность через HTTP")
+        restartBackend.delay = 4
+        var interrupted: [Int] = []
+        for _ in 0..<2 {
+            session.dataTask(with: request(restartSettings.apiPort)) { _, response, _ in
+                DispatchQueue.main.async { interrupted.append((response as? HTTPURLResponse)?.statusCode ?? 0) }
+            }.resume()
+        }
+        wait("Есть активный и ожидающий запросы") { restarting.health()["queued"] as? Int == 1 }
+        let previousConnection = restarting.connectionID
+        restarting.restart()
+        expect(restarting.isRestarting && !restarting.listening && restarting.connectionID != previousConnection,
+               "Перезапуск инвалидирует старое соединение до повторного открытия порта")
+        wait("Оба запроса завершены при остановке") { interrupted.count == 2 }
+        expect(interrupted.allSatisfy { $0 == 503 || $0 == 0 } && restartBackend.calls.count == 1,
+               "Активный запрос прерван, очередь не поступила в ASR")
+        wait("API снова слушает тот же порт") { restarting.listening }
+        restartBackend.delay = 0.01
+        expect(checkConnection(restarting) == .ready && fetch(request(restartSettings.apiPort)).0 == 200,
+               "После прогрева проверка и распознавание снова работают")
+        restartBackend.fail = true
+        restarting.restart()
+        wait("Прогрев после перезапуска завершился ошибкой") { restarting.status.hasPrefix("Ошибка прогрева") }
+        expect(checkConnection(restarting) == .unavailable, "Проверка различает ответ API 503 и отсутствие соединения")
+
+        restarting.restart()
+        restartSettings.apiEnabled = false
+        restarting.configure(restartSettings)
+        expect(checkConnection(restarting) == .unreachable && restarting.status == "Выключен",
+               "Выключение отменяет повторный запуск listener")
+
+        let blockedPort = port()
+        let blocker = LocalAPIHTTPServer()
+        var blocked = false
+        blocker.onState = { blocked = $0 == "listening" }
+        try blocker.start(port: UInt16(blockedPort))
+        wait("Тестовый listener занял порт") { blocked }
+        restartSettings.apiEnabled = true
+        restartSettings.apiPort = blockedPort
+        restartBackend.fail = false
+        restarting.configure(restartSettings)
+        wait("API сообщает о занятом порте") { restarting.status.hasPrefix("Ошибка запуска") }
+        expect(checkConnection(restarting) == .unreachable, "Проверка не использует чужой listener")
+        var released = false
+        blocker.stop { released = true }
+        wait("Тестовый listener освободил порт") { released }
+        restarting.restart()
+        wait("Повторный запуск занимает освобождённый порт") { restarting.listening }
+        expect(checkConnection(restarting) == .ready, "API восстановился после ошибки занятого порта")
+        restarting.stop()
 
         // Ошибки AI не записывают тело ответа, отмена закрывает его HTTP-запрос.
         let aiServer = LocalAPIHTTPServer()

@@ -427,7 +427,11 @@ private func fluidScenario(_ model: FluidModel, failOnPause: Bool = false) throw
     if failOnPause {
         _ = worker?.send(["action": "die", "id": "test"])
         wait("Сбой FluidAudio обнаружен во время паузы") { !client.healthy }
-        expect(session.isBusy && status() == "paused" && pipeline.wavs.isEmpty, "Сбой backend на паузе не запускает финальный ASR сам")
+        expect(!session.isBusy && status() == "error" && pipeline.wavs.isEmpty,
+               "Сбой FluidAudio завершает запись ошибкой без перехода на Whisper")
+        expect(!session.finishRecording(expectedSessionID: id), "После сбоя завершение старой записи игнорируется")
+        session.shutdown()
+        return
     } else if model == .nemotron {
         let frozen = visible
         let wireID = commands().first { $0["action"] as? String == "start" }!["id"] as! String
@@ -445,7 +449,7 @@ private func fluidScenario(_ model: FluidModel, failOnPause: Bool = false) throw
     let expected = Array(repeating: Int16(2000), count: 6400)
         + Array(repeating: Int16(3000), count: 800) + Array(repeating: Int16(-4000), count: 6400)
     checkWAV(pipeline.wavs[0], expected)
-    expect(pipeline.transcripts[0] == (failOnPause ? nil : "Начало продолжение"), "Используется финал FluidAudio или существующий полный WAV fallback")
+    expect(pipeline.transcripts[0] == "Начало продолжение", "Используется финал выбранного FluidAudio")
     if !failOnPause {
         let action = model == .nemotron ? "finish" : "transcribe"
         let terminals = commands().filter { $0["action"] as? String == action }
