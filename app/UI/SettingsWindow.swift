@@ -962,7 +962,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             .init(id: "name", title: "Профиль", width: 286),
             .init(id: "type", title: "Тип", width: 125, fixed: true),
             .init(id: "model", title: "Модель", width: 165, fixed: true),
-            .init(id: "actions", title: "", width: 44, fixed: true)
+            .init(id: "actions", title: "", width: 60, fixed: true)
         ], height: 190, actions: [add, removeProvidersButton], empty: "Провайдеры не добавлены")
         root.addArrangedFullWidth(SettingsSection(title: "AI-провайдеры",
                                                   note: "Используемые профили защищены. Профиль и связанный ключ удаляются после сохранения настроек.",
@@ -987,11 +987,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                                                 target: self, action: #selector(providerMenu(_:)))
         menu.identifier = NSUserInterfaceItemIdentifier(provider.id.uuidString)
         return [
-            SettingsDataTable.padded(check, centered: true),
+            SettingsDataTable.padded(check, layout: .leading),
             SettingsDataTable.padded(SettingsDataTable.label(provider.displayTitle)),
             SettingsDataTable.padded(SettingsDataTable.label(provider.typeTitle)),
             SettingsDataTable.padded(SettingsDataTable.label(provider.model)),
-            SettingsDataTable.padded(menu, centered: true)
+            SettingsDataTable.padded(menu, layout: .trailing)
         ]
     }
 
@@ -1283,7 +1283,6 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         historyDetail.isEditable = false
         historyDetail.isSelectable = true
         historyDetail.font = .systemFont(ofSize: 12)
-        historyDetail.textContainerInset = NSSize(width: 6, height: 6)
         historyDetail.string = "Выберите запись в списке."
         let detailScroll = makeScroll(historyDetail)
         detailScroll.heightAnchor.constraint(equalToConstant: 130).isActive = true
@@ -1482,8 +1481,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let local = SettingsDataTable("Найдены на компьютере", columns: [
             .init(id: "active", title: "", width: 34, fixed: true),
             .init(id: "model", title: "Модель", width: 300),
-            .init(id: "size", title: "Размер", width: 92, fixed: true),
-            .init(id: "actions", title: "Действия", width: 222, fixed: true)
+            .init(id: "size", title: "Размер", width: 92, fixed: true, headerAlignment: .right),
+            .init(id: "actions", title: "Действия", width: 232, fixed: true, headerAlignment: .right)
         ], rowHeight: 44, height: 157, actions: actions, empty: "Модели не найдены")
         local.showRows(whisper ? found.map(whisperModelCells) : installed.map(fluidModelCells))
         addSection(SettingsSection(title: "Найдены на компьютере", card: local))
@@ -1495,9 +1494,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
         let catalog = SettingsDataTable("Скачивание", columns: [
             .init(id: "model", title: "Модель", width: 340),
-            .init(id: "size", title: "Размер", width: 92, fixed: true),
+            .init(id: "size", title: "Размер", width: 92, fixed: true, headerAlignment: .right),
             .init(id: "status", title: "Состояние", width: 181, fixed: true),
-            .init(id: "actions", title: "Действия", width: 76, fixed: true)
+            .init(id: "actions", title: "Действия", width: 96, fixed: true, headerAlignment: .right)
         ], rowHeight: 52, height: 182, empty: "Все совместимые модели скачаны")
         if whisper {
             let names = Set(found.map(\.fileName))
@@ -1553,25 +1552,23 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let finder = SettingsText.secondaryButton("Показать в Finder", target: self, action: #selector(revealModel(_:)))
         finder.identifier = NSUserInterfaceItemIdentifier(path)
         finder.controlSize = .small
-        let verify: NSView
+        var buttons = [finder]
         if fluid {
             let busy = downloadingFluidModel?.rawValue == id
             let button = modelControl(busy ? "xmark.circle" : "checkmark.circle",
                                       busy ? "Отменить проверку" : "Проверить", id, #selector(downloadFluidModel(_:)))
             button.isEnabled = busy || fluidDownload == nil
-            verify = button
-        } else {
-            verify = NSView()
-            verify.widthAnchor.constraint(equalToConstant: 28).isActive = true
+            buttons.append(button)
         }
         let delete = modelControl("trash", "Удалить модель…", id,
                                   fluid ? #selector(deleteFluidModel(_:)) : #selector(deleteModel(_:)))
         delete.contentTintColor = .systemRed
         delete.isEnabled = !fluid || downloadingFluidModel?.rawValue != id
-        let actions = NSStackView(views: [finder, verify, delete])
+        buttons.append(delete)
+        let actions = NSStackView(views: buttons)
         actions.alignment = .centerY
-        actions.spacing = 5
-        return SettingsDataTable.padded(actions, centered: true)
+        actions.spacing = 4
+        return SettingsDataTable.padded(actions, layout: .trailing)
     }
 
     private func whisperModelCells(_ model: WhisperModelFile) -> [NSView] {
@@ -1579,7 +1576,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         let name = model.catalogModel?.experimental == true ? title + " · экспериментальная" : title
         let radio = modelChoice(name, id: model.path, selected: model.path == selectedModelPath, action: #selector(selectModel(_:)))
         return [
-            SettingsDataTable.padded(radio, centered: true),
+            SettingsDataTable.padded(radio, layout: .leading),
             modelText(name, model.isManaged ? "Хранилище Runvoice" : "Внешний файл · " + model.directory, isPath: true),
             SettingsDataTable.padded(SettingsDataTable.label(model.sizeText, alignment: .right)),
             installedActions(path: model.path, id: model.path, fluid: false)
@@ -1594,7 +1591,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         if fluidErrors[model] != nil { status.textColor = .systemOrange }
         if busy { fluidStatuses[model] = status }
         return [
-            SettingsDataTable.padded(radio, centered: true),
+            SettingsDataTable.padded(radio, layout: .leading),
             modelText(model.title, model.detail, status: status),
             SettingsDataTable.padded(SettingsDataTable.label(model.estimatedSize, alignment: .right)),
             installedActions(path: FluidModelStore.directory(for: model).path, id: model.rawValue, fluid: true)
@@ -1655,7 +1652,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         if noSpace && !busy { button.toolTip = "Для загрузки нужно \(model.sizeText) плюс запас 200 МБ." }
         let title = model.experimental ? model.title + " · экспериментальная" : model.title
         return [modelText(title, model.note), SettingsDataTable.padded(SettingsDataTable.label(model.sizeText, alignment: .right)),
-                status.cell, SettingsDataTable.padded(button, centered: true)]
+                status.cell, SettingsDataTable.padded(button, layout: .trailing)]
     }
 
     private func fluidDownloadCells(_ model: FluidModel) -> [NSView] {
@@ -1671,7 +1668,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         button.isEnabled = fluidDownload == nil || busy
         return [modelText(model.title, model.detail),
                 SettingsDataTable.padded(SettingsDataTable.label(model.estimatedSize, alignment: .right)),
-                status.cell, SettingsDataTable.padded(button, centered: true)]
+                status.cell, SettingsDataTable.padded(button, layout: .trailing)]
     }
 
     @objc private func openModelsFolder() {
@@ -2004,7 +2001,8 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
-        textView.textContainerInset = NSSize(width: 11, height: 8)
+        textView.textContainerInset = NSSize(width: SettingsStyle.rowHorizontalInset, height: 8)
+        textView.textContainer?.lineFragmentPadding = 0
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]

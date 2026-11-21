@@ -82,7 +82,7 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
             let check = NSButton(checkboxWithTitle: "", target: self, action: #selector(toggleMark(_:)))
             check.state = marked.contains(row) ? .on : .off
             check.setAccessibilityLabel("Выбрать термин \(rows[row])")
-            return SettingsDataTable.padded(check, centered: true)
+            return SettingsDataTable.padded(check, layout: .leading)
         }
         let identifier = NSUserInterfaceItemIdentifier("vocabulary-term")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
@@ -100,8 +100,8 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
             cell.addSubview(field)
             cell.textField = field
             NSLayoutConstraint.activate([
-                field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-                field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
+                field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: SettingsStyle.rowHorizontalInset),
+                field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -SettingsStyle.rowHorizontalInset),
                 field.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
             ])
         }
@@ -162,7 +162,8 @@ final class SpeechVocabularyEditor: NSView, NSTableViewDataSource, NSTableViewDe
         input.isAutomaticQuoteSubstitutionEnabled = false
         input.isAutomaticDashSubstitutionEnabled = false
         input.isAutomaticSpellingCorrectionEnabled = false
-        input.textContainerInset = NSSize(width: 11, height: 8)
+        input.textContainerInset = NSSize(width: SettingsStyle.rowHorizontalInset, height: 8)
+        input.textContainer?.lineFragmentPadding = 0
         input.isVerticallyResizable = true
         input.isHorizontallyResizable = false
         input.autoresizingMask = [.width]

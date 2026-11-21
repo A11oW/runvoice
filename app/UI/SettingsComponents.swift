@@ -753,8 +753,9 @@ private final class SettingsTableHeaderView: NSTableHeaderView {
             if rect.intersects(dirtyRect) {
                 let title = column.headerCell.attributedStringValue
                 let height = ceil(title.size().height)
-                let titleRect = NSRect(x: rect.minX + 5, y: floor(rect.midY - height / 2),
-                                       width: rect.width - 10, height: height)
+                let inset = SettingsStyle.rowHorizontalInset
+                let titleRect = NSRect(x: rect.minX + inset, y: floor(rect.midY - height / 2),
+                                       width: rect.width - 2 * inset, height: height)
                 title.draw(with: titleRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
                 if index < tableView.numberOfColumns - 1 {
                     SettingsStyle.rowSeparator.setFill()
@@ -773,7 +774,10 @@ final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegat
         let title: String
         var width: CGFloat = 120
         var fixed = false
+        var headerAlignment: NSTextAlignment = .left
     }
+
+    enum CellLayout { case fill, leading, trailing }
 
     let table = NSTableView()
     private let count = NSTextField(labelWithString: "")
@@ -785,18 +789,19 @@ final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegat
          header: NSView? = nil, actions: [NSButton] = [], empty: String = "Нет записей") {
         super.init(frame: .zero)
         table.setAccessibilityLabel(title)
-        table.style = .fullWidth
+        table.style = .plain
         table.backgroundColor = .controlBackgroundColor
         table.usesAlternatingRowBackgroundColors = true
         table.gridStyleMask = []
         table.allowsColumnReordering = false
         table.rowHeight = rowHeight
-        table.intercellSpacing = NSSize(width: 5, height: 0)
+        table.intercellSpacing = .zero
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.headerView = SettingsTableHeaderView(frame: NSRect(x: 0, y: 0, width: 0, height: SettingsStyle.tablePanelHeight))
         for value in columns {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(value.id))
             column.title = value.title
+            column.headerCell.alignment = value.headerAlignment
             column.width = value.width
             column.minWidth = value.fixed ? value.width : 90
             column.maxWidth = value.fixed ? value.width : 1000
@@ -832,9 +837,9 @@ final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegat
         footer.alignment = .centerY
         footer.spacing = 7
         let card = SettingsCard()
-        if let header { card.addRow(SettingsContentRow(header, verticalInset: 6, horizontalInset: 8)) }
+        if let header { card.addRow(SettingsContentRow(header, verticalInset: 6)) }
         card.addRow(scroll)
-        let footerRow = SettingsContentRow(footer, verticalInset: 4, horizontalInset: 8)
+        let footerRow = SettingsContentRow(footer, verticalInset: 4)
         footerRow.heightAnchor.constraint(greaterThanOrEqualToConstant: SettingsStyle.tablePanelHeight - 1).isActive = true
         card.addRow(SettingsSeparatorView(height: 1, color: SettingsStyle.cardBorder), separated: false)
         card.addRow(footerRow, separated: false)
@@ -889,16 +894,17 @@ final class SettingsDataTable: NSView, NSTableViewDataSource, NSTableViewDelegat
         return button
     }
 
-    static func padded(_ view: NSView, horizontal: CGFloat = 8, centered: Bool = false) -> NSView {
+    static func padded(_ view: NSView, layout: CellLayout = .fill) -> NSView {
         let cell = NSTableCellView()
         cell.addSubview(view)
         view.translatesAutoresizingMaskIntoConstraints = false
+        let inset = SettingsStyle.rowHorizontalInset
         var constraints = [view.centerYAnchor.constraint(equalTo: cell.centerYAnchor)]
-        if centered {
-            constraints.append(view.centerXAnchor.constraint(equalTo: cell.centerXAnchor))
-        } else {
-            constraints += [view.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: horizontal),
-                            view.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -horizontal)]
+        if layout != .trailing {
+            constraints.append(view.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: inset))
+        }
+        if layout != .leading {
+            constraints.append(view.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -inset))
         }
         NSLayoutConstraint.activate(constraints)
         return cell
