@@ -59,13 +59,16 @@ Ad-hoc подпись в выпуске не публикуется: задач�
 
    ```sh
    read -rs RUNVOICE_SIGN_P12_PASSWORD && export RUNVOICE_SIGN_P12_PASSWORD
-   openssl pkcs12 -in /защищённая/папка/runvoice-sign.p12 -nokeys \
+   /usr/bin/openssl pkcs12 -in /защищённая/папка/runvoice-sign.p12 -nokeys \
      -passin env:RUNVOICE_SIGN_P12_PASSWORD | grep -c 'BEGIN CERTIFICATE'
-   openssl pkcs12 -in /защищённая/папка/runvoice-sign.p12 -nokeys -clcerts \
+   /usr/bin/openssl pkcs12 -in /защищённая/папка/runvoice-sign.p12 -nokeys -clcerts \
      -passin env:RUNVOICE_SIGN_P12_PASSWORD \
-     | openssl x509 -noout -fingerprint -sha1 \
+     | /usr/bin/openssl x509 -noout -fingerprint -sha1 \
      | sed 's/.*=//; s/://g' | tr 'A-F' 'a-f'
    ```
+
+   На macOS используется системный `/usr/bin/openssl` (LibreSSL); Homebrew OpenSSL 3+
+   требует для такого `.p12` флаг `-legacy`.
 
    Первая команда должна вывести `1`; вторая — `4ffe265ebd1f1e1d196faefb795df66c8c17585c`
    (нижний регистр без двоеточий), совпадающий с отпечатком в
