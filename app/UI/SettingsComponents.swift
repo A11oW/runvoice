@@ -226,6 +226,38 @@ final class SettingsSeparatorView: NSView {
     }
 }
 
+/// Иконка-действие без рамки кнопки с подсветкой при наведении.
+final class SettingsIconButton: NSButton {
+    private var hovered = false {
+        didSet {
+            contentTintColor = hovered ? .labelColor : .secondaryLabelColor
+            needsDisplay = true
+        }
+    }
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: bounds,
+                                  options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { if isEnabled { hovered = true } }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if hovered, isEnabled {
+            NSColor.labelColor.withAlphaComponent(0.06).setFill()
+            NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
+        }
+        super.draw(dirtyRect)
+    }
+}
+
 /// Строка карточки: заголовок, пояснение и контрол справа.
 final class SettingsRow: NSView {
     private let stack = NSStackView()

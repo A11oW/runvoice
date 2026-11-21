@@ -43,7 +43,7 @@
 | Раздел | Файл |
 |---|---|
 | Основные (микрофон, вставка, запуск, разрешения и диагностика, обновления) | [settings-general.png](settings-general.png) |
-| Основные → Память (кеш, скачанные модели, история и очистка) | [settings-memory.png](settings-memory.png) |
+| Основные → Память (кеш с корзиной, ссылки на модели и историю) | [settings-memory.png](settings-memory.png) |
 | Распознавание: whisper.cpp, таблицы найденных моделей и скачивания | [settings-models.png](settings-models.png) |
 | Распознавание: FluidAudio, те же таблицы для совместимых моделей | [settings-fluid.png](settings-fluid.png) |
 | Словарь (пояснение применения, карточка терминов и кнопка добавления в нижней панели) | [settings-dictionary.png](settings-dictionary.png) |

@@ -39,8 +39,18 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
     private let storageHistoryLabel = SettingsText.rowTitle("—")
     private let storageTotalLabel = SettingsText.rowTitle("—")
     private let storageStatus = SettingsText.footnote("")
-    private lazy var clearCacheButton = SettingsText.secondaryButton("Очистить кеш", target: self, action: #selector(clearCache))
-    private lazy var clearDataButton = SettingsText.destructiveButton("Очистить данные…", target: self, action: #selector(clearStorageData))
+    private lazy var storageStatusRow: NSView = {
+        let content = SettingsContentRow(storageStatus, verticalInset: 8)
+        let stack = NSStackView(views: [SettingsSeparatorView(), content])
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 0
+        stack.isHidden = true
+        return stack
+    }()
+    private lazy var clearCacheButton = storageIconButton("trash", "Удалить временные файлы", #selector(clearCache))
+    private lazy var openModelsButton = storageIconButton("chevron.right", "Открыть раздел моделей", #selector(openModelsSection))
+    private lazy var openHistoryButton = storageIconButton("chevron.right", "Открыть раздел истории", #selector(openHistorySection))
     private var storageUsage: SettingsStorage.Usage?
     private var storageRequest: UUID?
     private var lastStorageRefresh = Date.distantPast
@@ -200,7 +210,7 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         allowClose = false
         loadValues()
         refreshDiagnostics(force: true)
-        storageStatus.stringValue = ""
+        setStorageStatus("")
         refreshStorage(force: true)
         refreshTimer?.invalidate()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
@@ -572,19 +582,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             label.font = .monospacedDigitSystemFont(ofSize: 13, weight: label === storageTotalLabel ? .semibold : .regular)
         }
         card.addRow(SettingsRow(title: "Кеш приложения", subtitle: "Временные файлы, которые Runvoice может создать снова.",
-                                 trailing: [storageCacheLabel]))
+                                 trailing: [storageCacheLabel, clearCacheButton]))
         card.addRow(SettingsRow(title: "Скачанные модели", subtitle: "Модели Whisper и FluidAudio в хранилище Runvoice.",
-                                 trailing: [storageModelsLabel]))
+                                 trailing: [storageModelsLabel, openModelsButton]))
         card.addRow(SettingsRow(title: "История распознаваний", subtitle: "Сохранённые расшифровки на этом Mac.",
-                                 trailing: [storageHistoryLabel]))
-        card.addRow(SettingsRow(title: "Всего", trailing: [storageTotalLabel], verticalInset: 8))
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let actions = NSStackView(views: [storageStatus, spacer, clearCacheButton, clearDataButton])
-        actions.alignment = .centerY
-        actions.spacing = 8
-        card.addRow(SettingsContentRow(actions, verticalInset: 8))
+                                 trailing: [storageHistoryLabel, openHistoryButton]))
+        let totalSlot = NSView()
+        totalSlot.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        card.addRow(SettingsRow(title: "Всего", trailing: [storageTotalLabel, totalSlot], verticalInset: 8))
+        card.addRow(storageStatusRow, separated: false)
         updateStorageActions()
         return SettingsSection(title: "Память", note: "Место на диске, которое занимают кеш, скачанные модели и история Runvoice.", card: card)
     }
@@ -595,16 +601,15 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
 
     private func updateStorageActions() {
         let available = canClearStorage && storageRequest == nil
+        let cacheIsEmpty = storageUsage?.cache == 0
         clearCacheButton.isEnabled = available && (storageUsage?.cache ?? 0) > 0
-        clearDataButton.isEnabled = available && hasStorageData
-        let hint = canClearStorage ? nil : "Дождитесь завершения распознавания, загрузки или обновления."
-        clearCacheButton.toolTip = hint
-        clearDataButton.toolTip = hint
-    }
-
-    private var hasStorageData: Bool {
-        guard let storageUsage else { return false }
-        return storageUsage.hasFiles || !HistoryStore.shared.entries.isEmpty
+        if !canClearStorage {
+            clearCacheButton.toolTip = "Дождитесь завершения распознавания, загрузки или обновления."
+        } else if cacheIsEmpty {
+            clearCacheButton.toolTip = "Кеш пуст"
+        } else {
+            clearCacheButton.toolTip = "Удалить временные файлы"
+        }
     }
 
     private func refreshStorage(force: Bool = false) {
@@ -627,9 +632,9 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
                 self.storageTotalLabel.stringValue = Self.storageSize(usage.total)
                 let measurementError = "Не удалось подсчитать размер полностью"
                 if usage.total == nil {
-                    if self.storageStatus.stringValue.isEmpty { self.storageStatus.stringValue = measurementError }
+                    if self.storageStatus.stringValue.isEmpty { self.setStorageStatus(measurementError) }
                 } else if self.storageStatus.stringValue == measurementError {
-                    self.storageStatus.stringValue = ""
+                    self.setStorageStatus("")
                 }
                 self.updateStorageActions()
             }
@@ -641,37 +646,40 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
         return bytes == 0 ? "0 МБ" : WhisperSize.text(bytes)
     }
 
-    @objc private func clearCache() { clearStorage(includingData: false) }
-
-    @objc private func clearStorageData() {
-        guard canClearStorage, hasStorageData else { return }
-        let alert = NSAlert()
-        alert.messageText = "Очистить данные Runvoice?"
-        let estimate = storageUsage?.total.map { " Освободится до \(Self.storageSize($0))." } ?? ""
-        alert.informativeText = "Будут удалены кеш, скачанные модели и история распознаваний.\(estimate) Настройки, словарь, профили провайдеров, API-ключи и внешние файлы моделей сохранятся."
-        alert.addButton(withTitle: "Отмена")
-        let remove = alert.addButton(withTitle: "Очистить данные")
-        remove.hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
-        clearStorage(includingData: true)
+    private func storageIconButton(_ symbol: String, _ title: String, _ action: Selector) -> NSButton {
+        let button = SettingsIconButton(title: "", target: self, action: action)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .light))
+        button.imagePosition = .imageOnly
+        button.isBordered = false
+        button.contentTintColor = .secondaryLabelColor
+        button.toolTip = title
+        button.setAccessibilityLabel(title)
+        button.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        return button
     }
 
-    private func clearStorage(includingData: Bool) {
+    private func setStorageStatus(_ text: String) {
+        storageStatus.stringValue = text
+        storageStatusRow.isHidden = text.isEmpty
+    }
+
+    @objc private func clearCache() { clearStorage() }
+
+    @objc private func openModelsSection() { selectTab("models") }
+
+    @objc private func openHistorySection() { selectTab("history") }
+
+    private func clearStorage() {
         guard canClearStorage else {
-            storageStatus.stringValue = "Дождитесь завершения распознавания, загрузки или обновления."
+            setStorageStatus("Дождитесь завершения распознавания, загрузки или обновления.")
             updateStorageActions()
             return
         }
-        let result = SettingsStorage.clear(includingData: includingData)
-        if result.removedModels {
-            refreshModels()
-            refreshAPI()
-            onModelRemoved?()
-        }
-        if let error = result.error {
-            storageStatus.stringValue = "Не удалось очистить всё. \(error.localizedDescription)"
+        if let error = SettingsStorage.clearCache() {
+            setStorageStatus("Не удалось очистить всё. \(error.localizedDescription)")
         } else {
-            storageStatus.stringValue = includingData ? "Данные очищены" : "Кеш очищен"
+            setStorageStatus("Кеш очищен")
         }
         refreshStorage(force: true)
     }

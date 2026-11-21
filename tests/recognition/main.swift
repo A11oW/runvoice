@@ -448,36 +448,42 @@ func runChecks() throws {
            "Недоступный каталог модели влияет только на подсчёт размера моделей и итога")
     let settingsBeforeClear = SettingsStore.load()
     controller.selectTab("general")
-    let cacheButton = button { $0.title == "Очистить кеш" }
-    let dataButton = button { $0.title == "Очистить данные…" }
+    expect(!views().compactMap { $0 as? NSButton }
+        .contains { $0.title == "Очистить кеш" || $0.title == "Очистить данные…" },
+           "В разделе Память нет кнопок очистки: действия стоят в строках")
+    let cacheButton = button { $0.accessibilityLabel() == "Удалить временные файлы" }
+    let modelsLink = button { $0.accessibilityLabel() == "Открыть раздел моделей" }
+    let historyLink = button { $0.accessibilityLabel() == "Открыть раздел истории" }
     waitFor("Очистка кеша доступна при неполном подсчёте моделей") { cacheButton.isEnabled }
     cacheButton.performClick(nil)
     expect(!fm.fileExists(atPath: partial.path) && !fm.fileExists(atPath: temporaryAudio.path)
            && fm.fileExists(atPath: first.path) && fm.fileExists(atPath: Paths.history.path),
-           "Очистка кеша убирает временные файлы, сохраняя модели и историю")
-    try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: unreadable.path)
-    waitFor("Очистка данных доступна после пересчёта") { dataButton.isEnabled }
-    chooseModalButtons(dataButton, ["Отмена"])
-    expect(fm.fileExists(atPath: first.path) && fm.fileExists(atPath: Paths.history.path), "Отмена общей очистки сохраняет файлы")
-    var modelChanges = 0
-    controller.onModelRemoved = { modelChanges += 1 }
-    chooseModalButtons(dataButton, ["Очистить данные"])
-    let cleared = SettingsStorage.measure()
-    expect(cleared.models == 0 && cleared.history == 0 && !fm.fileExists(atPath: first.path)
-           && !FluidModelStore.installed(.nemotron) && modelChanges == 1, "Очистка данных удаляет загрузки и историю, обновляет движки")
+           "Корзина в строке кеша убирает временные файлы без диалога, сохраняя модели и историю")
     expect(SettingsStore.load() == settingsBeforeClear && fm.fileExists(atPath: unlinkOnly.path)
-           && fm.fileExists(atPath: modelLink.path) && fm.fileExists(atPath: vadFile.path)
-           && fm.fileExists(atPath: unfinishedFluid.path),
-           "Настройки, внешний файл, ссылка, VAD и каталог без валидной установки остаются на месте")
+           && fm.fileExists(atPath: modelLink.path) && fm.fileExists(atPath: vadFile.path),
+           "Очистка кеша не меняет настройки, внешние файлы, ссылки и VAD")
+    waitFor("После очистки размер кеша нулевой, корзина недоступна с подсказкой") {
+        !cacheButton.isEnabled && cacheButton.toolTip == "Кеш пуст"
+    }
+    expect(SettingsStorage.measure().cache == 0, "Размер кеша после очистки равен нулю")
+    try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: unreadable.path)
+
+    controller.selectTab("general")
+    modelsLink.performClick(nil)
+    expect(labels().contains("Распознавание") && labels().contains("Движок") && fm.fileExists(atPath: first.path),
+           "Шеврон строки моделей открывает Распознавание и не удаляет модели")
+    controller.selectTab("general")
+    historyLink.performClick(nil)
+    expect(labels().contains("История") && labels().contains("Всего: 2"),
+           "Шеврон строки истории открывает Историю и не удаляет записи")
 
     HistoryStore.shared.add(text: "Запись только в памяти", raw: nil, model: nil)
     try fm.removeItem(at: Paths.history)
     expect(!HistoryStore.shared.entries.isEmpty, "После внешнего удаления файла записи ещё загружены")
-    waitFor("Общая очистка доступна для загруженной истории") { dataButton.isEnabled }
-    chooseModalButtons(dataButton, ["Очистить данные"])
+    HistoryStore.shared.clear()
     HistoryStore.shared.add(text: "Новая запись", raw: nil, model: nil)
     expect(HistoryStore.shared.entries.map(\.text) == ["Новая запись"],
-           "После общей очистки отсутствующая на диске история не восстанавливается из памяти")
+           "После очистки отсутствующая на диске история не восстанавливается из памяти")
     controller.window?.orderOut(nil)
 }
 

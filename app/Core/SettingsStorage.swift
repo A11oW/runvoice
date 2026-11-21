@@ -9,52 +9,35 @@ enum SettingsStorage {
             guard let cache, let models, let history else { return nil }
             return cache + models + history
         }
-        var hasFiles: Bool { [cache, models, history].contains { ($0 ?? 0) > 0 } }
-    }
-
-    struct ClearResult {
-        var removedModels = false
-        var error: Error?
     }
 
     private static let fileKeys: Set<URLResourceKey> = [.isSymbolicLinkKey, .isDirectoryKey, .isRegularFileKey, .fileSizeKey]
 
     static func measure() -> Usage {
-        let cache = try? cacheFiles().reduce(Int64(URLCache.shared.currentDiskUsage)) { try $0 + size(of: $1) }
+        let cache = try? cacheFiles().reduce(Int64(0)) { try $0 + size(of: $1) }
         let models = try? modelFiles().reduce(Int64(0)) { try $0 + size(of: $1) }
         let history = try? historySize()
         return Usage(cache: cache, models: models, history: history)
     }
 
-    static func clear(includingData: Bool) -> ClearResult {
-        var result = ClearResult()
+    /// Удаляет кеш приложения и возвращает первую ошибку, если что-то удалить не удалось.
+    static func clearCache() -> Error? {
         URLCache.shared.removeAllCachedResponses()
-        func remove(_ files: () throws -> [URL], models: Bool = false) {
-            do {
-                for item in try files() {
-                    do {
-                        try FileManager.default.removeItem(at: item)
-                        if models { result.removedModels = true }
-                    } catch let error as CocoaError where isMissing(error) {
-                        continue
-                    } catch {
-                        if result.error == nil { result.error = error }
-                    }
+        var failure: Error?
+        do {
+            for item in try cacheFiles() {
+                do {
+                    try FileManager.default.removeItem(at: item)
+                } catch let error as CocoaError where isMissing(error) {
+                    continue
+                } catch {
+                    if failure == nil { failure = error }
                 }
-            } catch {
-                if result.error == nil { result.error = error }
             }
+        } catch {
+            if failure == nil { failure = error }
         }
-        remove(cacheFiles)
-        if includingData {
-            remove(modelFiles, models: true)
-            do {
-                let supportIsOwned = try hasOwnedSupport()
-                try HistoryStore.shared.clearFromDisk(removingFile: supportIsOwned)
-            }
-            catch { if result.error == nil { result.error = error } }
-        }
-        return result
+        return failure
     }
 
     private static func hasOwnedSupport() throws -> Bool {
