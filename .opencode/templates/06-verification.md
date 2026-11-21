@@ -10,6 +10,13 @@
 | AC1 | `make test-...` | passed |
 | AC2 | ручной сценарий «...» | passed |
 
+## Сверка с макетом
+
+| Макет | Снимок приложения | Вердикт |
+|---|---|---|
+| `.opencode/mockups/<слаг>/<файл>.html` | `docs/screenshots/<...>.png` | совпадает |
+| `.opencode/mockups/<слаг>/<файл>.html` | `docs/screenshots/<...>.png` | согласованное отклонение (`decision.md`) |
+
 ## Команды
 
 | Команда | Результат |
