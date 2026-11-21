@@ -46,7 +46,7 @@ for arch in ['arm64','intel']:
     ET.SubElement(item,f'{{{ns}}}version').text=version
     ET.SubElement(item,f'{{{ns}}}shortVersionString').text=display
     ET.SubElement(item,f'{{{ns}}}minimumSystemVersion').text=meta['LSMinimumSystemVersion']
-    ET.SubElement(item,'description').text='<pre>'+html.escape(notes)+'</pre>'
+    ET.SubElement(item,'description').text='<pre style="white-space: pre-wrap; word-wrap: break-word">'+html.escape(notes)+'</pre>'
     ET.SubElement(item,'enclosure',url=f'https://github.com/A11oW/runvoice/releases/download/v{display}/{archive.name}',length=str(archive.stat().st_size),type='application/octet-stream',attrib={f'{{{ns}}}edSignature':signature})
     feed=out/f'appcast-{arch}.xml'
     ET.ElementTree(rss).write(feed,encoding='utf-8',xml_declaration=True)
