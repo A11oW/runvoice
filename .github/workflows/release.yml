@@ -92,7 +92,9 @@ jobs:
       - name: Restore builds
         run: |
           mkdir -p dist .build
-          tar -xf artifacts/.build/release-bundles.tar -C dist
+          bundle="$(find artifacts -name release-bundles.tar -type f -print -quit)"
+          test -n "$bundle" || { echo 'Не найден release-bundles.tar в артефакте'; exit 1; }
+          tar -xf "$bundle" -C dist
           bash scripts/prepare-sparkle.sh
           python3 scripts/release-notes.py > .build/release-notes.txt
       - name: Check signing secrets
