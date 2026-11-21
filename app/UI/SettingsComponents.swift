@@ -60,6 +60,23 @@ enum SettingsStyle {
         }
     }
 
+    static var iconHover: NSColor {
+        NSColor(name: "SettingsIconHover") { appearance in
+            NSColor(white: appearance.isDark ? 1 : 0, alpha: appearance.isDark ? 0.08 : 0.06)
+        }
+    }
+
+    static var iconRest: NSColor {
+        NSColor(srgbRed: 142 / 255, green: 142 / 255, blue: 147 / 255, alpha: 1)
+    }
+
+    static var iconActive: NSColor {
+        NSColor(name: "SettingsIconActive") { appearance in
+            appearance.isDark ? NSColor(srgbRed: 245 / 255, green: 245 / 255, blue: 247 / 255, alpha: 1)
+                              : NSColor(srgbRed: 29 / 255, green: 29 / 255, blue: 31 / 255, alpha: 1)
+        }
+    }
+
     static var footerBackground: NSColor {
         NSColor(name: "SettingsFooterBackground") { appearance in
             appearance.isDark ? NSColor(srgbRed: 0.118, green: 0.118, blue: 0.122, alpha: 1)
@@ -230,11 +247,12 @@ final class SettingsSeparatorView: NSView {
 final class SettingsIconButton: NSButton {
     private var hovered = false {
         didSet {
-            contentTintColor = hovered ? .labelColor : .secondaryLabelColor
+            contentTintColor = hovered ? SettingsStyle.iconActive : SettingsStyle.iconRest
             needsDisplay = true
         }
     }
     private var tracking: NSTrackingArea?
+    private var scrollObserver: NSObjectProtocol?
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -246,12 +264,38 @@ final class SettingsIconButton: NSButton {
         tracking = area
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        observeScroll()
+        syncHover()
+    }
+
     override func mouseEntered(with event: NSEvent) { if isEnabled { hovered = true } }
     override func mouseExited(with event: NSEvent) { hovered = false }
 
+    private func observeScroll() {
+        if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        scrollObserver = nil
+        guard let clip = enclosingScrollView?.contentView else { return }
+        clip.postsBoundsChangedNotifications = true
+        scrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+        ) { [weak self] _ in
+            self?.syncHover()
+        }
+    }
+
+    private func syncHover() {
+        guard let window, isEnabled else {
+            hovered = false
+            return
+        }
+        hovered = bounds.contains(convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil))
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         if hovered, isEnabled {
-            NSColor.labelColor.withAlphaComponent(0.06).setFill()
+            SettingsStyle.iconHover.setFill()
             NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
         }
         super.draw(dirtyRect)

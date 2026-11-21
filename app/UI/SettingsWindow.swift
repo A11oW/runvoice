@@ -652,10 +652,11 @@ final class SettingsWindow: NSWindowController, NSWindowDelegate {
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .light))
         button.imagePosition = .imageOnly
         button.isBordered = false
-        button.contentTintColor = .secondaryLabelColor
+        button.contentTintColor = SettingsStyle.iconRest
         button.toolTip = title
         button.setAccessibilityLabel(title)
         button.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 24).isActive = true
         return button
     }
 
