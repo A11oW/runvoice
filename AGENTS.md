@@ -111,7 +111,7 @@ make dmg                 # два DMG + .sha256
   промпт скрыт.
 - API-ключ хранится в Keychain и не попадает в логи/`settings.json`.
 - После сохранения настроек сервер прогревается в фоне.
-- Для локальной подписи используется сертификат `Runvoice Local Signing`
-  или `RUNVOICE_SIGN_IDENTITY`; без доступного сертификата сборщик применяет
-  ad-hoc-подпись приложения. Для внешнего распространения нужны Developer ID
-  и нотаризация.
+- Локальная сборка подписывается ad-hoc либо сертификатом `Runvoice Local
+  Signing`/`RUNVOICE_SIGN_IDENTITY`, если он доступен. Выпуск подписывается
+  сертификатом `Runvoice Local Signing` в GitHub Actions; Developer ID и
+  нотаризация не используются (процедура — в `docs/updates.md`).
